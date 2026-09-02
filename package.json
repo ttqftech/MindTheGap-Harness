@@ -1,0 +1,26 @@
+{
+	"name": "mindthegap-harness",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "MindTheGap-Harness — AI Coding 桌面应用",
+	"packageManager": "pnpm@8.15.9",
+	"scripts": {
+		"build:fe": "vite build",
+		"dev:fe": "vite --port 5173",
+		"typecheck": "tsc --noEmit",
+		"test": "playwright test"
+	},
+	"devDependencies": {
+		"@playwright/test": "^1.62.1",
+		"@types/bun": "latest",
+		"concurrently": "^9.1.0",
+		"playwright": "^1.62.1",
+		"typescript": "^5.7.2",
+		"vite": "^6.0.3",
+		"vite-plugin-solid": "^2.11.5"
+	},
+	"dependencies": {
+		"solid-js": "^1.9.5",
+		"zod": "^3.24.1"
+	}
+}

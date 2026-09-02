@@ -1,0 +1,126 @@
+/* ==========================================================================
+   MindTheGap-Harness — 主题系统
+   参考 FFBox 的 HWB 色系设计
+   
+   深浅色通过给 <html> 或根元素加 .themeLight / .themeDark 切换
+   HWB = Hue-Whiteness-Blackness，空间比 HSL 更直观
+   ========================================================================== */
+
+/* ---------- 浅色主题 ---------- */
+.themeLight {
+    --fontColor: #222;
+    --fontColorDim: #888;
+    --fontColorMuted: #aaa;
+
+    /* 背景色系（HWB 格式: H W B） */
+    --bg100: 0 100% 0%;   /* 纯黑占位 */
+    --bg99: 0 100% 1%;
+    --bg98: 0 100% 2%;
+    --bg97: 0 100% 3%;
+    --bg96: 0 100% 4%;
+    --bg95: 0 100% 5%;
+    --bg90: 0 100% 10%;
+
+    /* 反向色系（白底上的组件边框/分割线） */
+    --ff: #FFFFFF;
+    --f7: #F7F7F7;
+    --e7: #E7E7E7;
+    --d0: #D0D0D0;
+    --c0: #C0C0C0;
+    --88: #888;
+    --55: #555;
+    --33: #333;
+
+    /* 主题色 */
+    --primary: hwb(220 40% 0%);
+    --primaryHover: hwb(220 35% 0%);
+    --primaryActive: hwb(220 30% 0%);
+    --accent: hwb(140 50% 0%);
+
+    /* 状态色 */
+    --success: hwb(140 50% 0%);
+    --warning: hwb(40 50% 0%);
+    --error: hwb(0 50% 0%);
+    --info: hwb(220 50% 0%);
+
+    /* 组件状态 */
+    --hoverBg: hwb(0 95% 2%);
+    --activeBg: hwb(0 90% 5%);
+    --selectedBg: hwb(220 92% 3%);
+
+    /* 阴影 */
+    --shadowSm: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    --shadowLg: 0 4px 16px rgba(0, 0, 0, 0.12);
+    --shadowXl: 0 8px 32px rgba(0, 0, 0, 0.16);
+
+    /* 边框 */
+    --border: hwb(0 92% 5%);
+    --borderLight: hwb(0 95% 3%);
+
+    /* 代码高亮 */
+    --codeBg: hwb(220 96% 2%);
+    --codeBorder: hwb(220 88% 10%);
+}
+
+/* ---------- 深色主题 ---------- */
+.themeDark {
+    --fontColor: #EEE;
+    --fontColorDim: #BBB;
+    --fontColorMuted: #888;
+
+    /* 背景色系 */
+    --bg100: 0 0% 100%;   /* 纯白占位 */
+    --bg99: 0 2% 98%;
+    --bg98: 0 4% 96%;
+    --bg97: 0 6% 94%;
+    --bg96: 0 8% 92%;
+    --bg95: 0 10% 90%;
+    --bg90: 0 14% 86%;
+
+    /* 反向色系（深色背景上的组件） */
+    --ff: #1a1a1a;
+    --f7: #222;
+    --e7: #2e2e2e;
+    --d0: #3a3a3a;
+    --c0: #444;
+    --88: #888;
+    --55: #BBB;
+    --33: #DDD;
+
+    /* 主题色 */
+    --primary: hwb(220 40% 0%);
+    --primaryHover: hwb(220 45% 5%);
+    --primaryActive: hwb(220 50% 10%);
+    --accent: hwb(140 50% 0%);
+
+    /* 状态色 */
+    --success: hwb(140 50% 0%);
+    --warning: hwb(40 60% 0%);
+    --error: hwb(0 60% 0%);
+    --info: hwb(220 50% 0%);
+
+    /* 组件状态 */
+    --hoverBg: hwb(0 15% 85%);
+    --activeBg: hwb(0 20% 78%);
+    --selectedBg: hwb(220 20% 75%);
+
+    /* 阴影（深色主题下阴影更明显） */
+    --shadowSm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    --shadowLg: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --shadowXl: 0 8px 32px rgba(0, 0, 0, 0.6);
+
+    /* 边框 */
+    --border: hwb(0 15% 85%);
+    --borderLight: hwb(0 10% 90%);
+
+    /* 代码高亮 */
+    --codeBg: hwb(220 8% 88%);
+    --codeBorder: hwb(220 12% 82%);
+}
+
+/* 默认深色主题（如果没有设置类名） */
+html:not(.themeLight):not(.themeDark) {
+    /* fallback: 使用深色 */
+}

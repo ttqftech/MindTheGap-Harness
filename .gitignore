@@ -1,0 +1,10 @@
+.hutch/
+.cottontail*
+node_modules/
+build/
+dist/
+artifacts/
+docs/
+test-results/
+*.tsbuildinfo
+AGENTS*
