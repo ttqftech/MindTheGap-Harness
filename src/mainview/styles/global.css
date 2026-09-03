@@ -319,6 +319,7 @@ input, textarea, select {
     overflow: hidden;
     text-overflow: ellipsis;
     user-select: none;
+    position: relative;
 }
 .tree-item:hover {
     background-color: hwb(var(--bg90) / 1);
@@ -328,6 +329,36 @@ input, textarea, select {
     background-color: var(--selectedBg);
     color: var(--fontColor);
     font-weight: 500;
+}
+
+.tree-item-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tree-item-delete {
+    display: none;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fontColorMuted);
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin-left: 4px;
+}
+.tree-item:hover .tree-item-delete {
+    display: inline-flex;
+}
+.tree-item-delete:hover {
+    background: hwb(var(--bg90) / 1);
+    color: var(--dangerColor, #e5484d);
 }
 
 /* 侧边栏底部 */

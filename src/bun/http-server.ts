@@ -1,32 +1,25 @@
 /* ==========================================================================
    Agent HTTP Server — MindTheGap-Harness
 
-   参照 FFBox 的 serviceBridge 思路：把 Agent 相关调用从 electrobun RPC
-   改为 HTTP 接口，这样：
-   - 浏览器环境（Vite dev / Playwright / 浏览器 Agent）也能连上主进程
-   - WebView2 渲染进程同样走 HTTP，前后端解耦
-
-   接口:
-   - GET  /api/health                       健康检查
-   - POST /api/agent/run                    body: AgentRunRequest
-   - POST /api/agent/cancel                 body: { conversationId }
-   - GET  /api/agent/stream?conversationId= SSE 流式推送 AgentStreamEvent
+   重构后：所有 Agent 相关操作走 HTTP（对齐 FFBox 的 serviceBridge）。
+   新增：会话管理、设置管理、Ctx 同步等路由。
+   Agent Service 可脱离 electrobun 独立运行。
    ========================================================================== */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { AgentStreamEvent } from '../shared/agent';
-import { agentRun, agentCancel } from './rpc-handlers';
+import type { AgentStreamEvent, AgentRunRequest } from '../shared/agent';
+import { AgentEngine } from './agent/engine';
+import { storage } from './storage';
 
 export const HTTP_PORT = 18999;
 
-// SSE 订阅者：conversationId -> Set<Response>
 const sseClients = new Map<string, Set<ServerResponse>>();
 
-// #region 工具函数
+const activeEngines = new Map<string, AgentEngine>();
 
 function setCors(res: ServerResponse) {
 	res.setHeader('Access-Control-Allow-Origin', '*');
-	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 	res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
@@ -44,11 +37,6 @@ function readBody(req: IncomingMessage): Promise<string> {
 	});
 }
 
-// #endregion
-
-// #region 流式广播
-
-/** 向某个 conversation 的所有 SSE 客户端推送事件 */
 export function broadcastAgentStream(conversationId: string, event: AgentStreamEvent) {
 	const clients = sseClients.get(conversationId);
 	if (!clients || clients.size === 0) return;
@@ -62,9 +50,53 @@ export function broadcastAgentStream(conversationId: string, event: AgentStreamE
 	}
 }
 
-// #endregion
+function dispatchStream(conversationId: string, event: AgentStreamEvent) {
+	broadcastAgentStream(conversationId, event);
+}
 
-// #region HTTP 路由
+async function handleAgentRun(params: AgentRunRequest) {
+	const { conversationId } = params;
+	const existing = activeEngines.get(conversationId);
+	if (existing) {
+		console.warn(`[Agent] Conversation ${conversationId} already running.`);
+	}
+
+	try {
+		const engine = new AgentEngine(params, {
+			onStream: (event) => {
+				dispatchStream(conversationId, event);
+			},
+		});
+
+		activeEngines.set(conversationId, engine);
+
+		engine.run().then(() => {
+			activeEngines.delete(conversationId);
+		}).catch((err) => {
+			activeEngines.delete(conversationId);
+			console.error(`[Agent] Engine ${conversationId} error:`, err);
+			dispatchStream(conversationId, {
+				type: 'error',
+				message: err?.message ?? String(err),
+			});
+		});
+
+		return { ok: true, conversationId };
+	} catch (e: any) {
+		activeEngines.delete(conversationId);
+		return { ok: false, error: `Agent error: ${e?.message ?? String(e)}` };
+	}
+}
+
+function handleAgentCancel(conversationId: string) {
+	const engine = activeEngines.get(conversationId);
+	if (!engine) {
+		return { ok: false, error: `No running agent for conversation ${conversationId}` };
+	}
+	engine.abort();
+	activeEngines.delete(conversationId);
+	return { ok: true };
+}
 
 export function startHttpServer() {
 	const server = createServer(async (req, res) => {
@@ -86,11 +118,11 @@ export function startHttpServer() {
 				return;
 			}
 
-			// Agent 运行（立即返回，流式走 SSE）
+			// Agent 运行（立即返回。流式另走 SSE）
 			if (req.method === 'POST' && path === '/api/agent/run') {
 				const body = await readBody(req);
 				const params = JSON.parse(body || '{}');
-				const result = await agentRun(params);
+				const result = await handleAgentRun(params);
 				sendJson(res, 200, result);
 				return;
 			}
@@ -99,7 +131,7 @@ export function startHttpServer() {
 			if (req.method === 'POST' && path === '/api/agent/cancel') {
 				const body = await readBody(req);
 				const { conversationId } = JSON.parse(body || '{}');
-				const result = await agentCancel({ conversationId });
+				const result = handleAgentCancel(conversationId);
 				sendJson(res, 200, result);
 				return;
 			}
@@ -129,6 +161,135 @@ export function startHttpServer() {
 				return;
 			}
 
+			// Ctx
+			if (req.method === 'GET' && path === '/api/agent/ctx') {
+				const conversationId = url.searchParams.get('conversationId') ?? '';
+				const ctx = await storage.getConversationCtx(conversationId);
+				sendJson(res, 200, ctx ?? null);
+				return;
+			}
+
+			// 会话管理
+			if (req.method === 'GET' && path === '/api/conversations') {
+				const conversations = await storage.getConversationMetaList();
+				sendJson(res, 200, { conversations });
+				return;
+			}
+
+			if (req.method === 'GET' && path.startsWith('/api/conversations/')) {
+				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
+				const conv = await storage.getConversation(id);
+				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
+				return;
+			}
+
+			if (req.method === 'POST' && path === '/api/conversations') {
+				const body = await readBody(req);
+				const params = JSON.parse(body || '{}');
+				const conv = await storage.createConversation(params);
+				sendJson(res, 200, conv);
+				return;
+			}
+
+			if (req.method === 'DELETE' && path.startsWith('/api/conversations/')) {
+				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
+				await storage.deleteConversation(id);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			if (req.method === 'PUT' && path.startsWith('/api/conversations/')) {
+				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
+				const body = await readBody(req);
+				const patch = JSON.parse(body || '{}');
+				const conv = await storage.updateConversation(id, patch);
+				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
+				return;
+			}
+
+			if (req.method === 'PUT' && path.startsWith('/api/conversation-data/')) {
+				const id = decodeURIComponent(path.slice('/api/conversation-data/'.length));
+				const body = await readBody(req);
+				const data = JSON.parse(body || '{}');
+				const conv = await storage.saveConversationData(id, data);
+				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
+				return;
+			}
+
+			// 设置 — 模型提供商
+			if (req.method === 'GET' && path === '/api/settings/providers') {
+				const providers = await storage.getProviders();
+				sendJson(res, 200, providers);
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/providers') {
+				const body = await readBody(req);
+				const providers = JSON.parse(body || '[]');
+				await storage.setProviders(providers);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			if (req.method === 'GET' && path === '/api/settings/current-model') {
+				const data = await storage.getCurrentModel();
+				sendJson(res, 200, data);
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/current-model') {
+				const body = await readBody(req);
+				const params = JSON.parse(body || '{}');
+				await storage.setCurrentModel(params);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 设置 — Agent 配置
+			if (req.method === 'GET' && path === '/api/settings/agent-configs') {
+				const configs = await storage.getAgentConfigs();
+				sendJson(res, 200, configs);
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/agent-configs') {
+				const body = await readBody(req);
+				const configs = JSON.parse(body || '[]');
+				await storage.setAgentConfigs(configs);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 设置 — 用量
+			if (req.method === 'GET' && path === '/api/settings/usage') {
+				const usage = await storage.getUsage();
+				sendJson(res, 200, usage);
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/usage') {
+				const body = await readBody(req);
+				const usage = JSON.parse(body || '{}');
+				await storage.setUsage(usage);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 设置 — 文件夹
+			if (req.method === 'GET' && path === '/api/settings/folders') {
+				const folders = await storage.getFolders();
+				sendJson(res, 200, folders);
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/folders') {
+				const body = await readBody(req);
+				const folders = JSON.parse(body || '[]');
+				await storage.setFolders(folders);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
 			sendJson(res, 404, { ok: false, error: `Not found: ${path}` });
 		} catch (e: any) {
 			sendJson(res, 500, { ok: false, error: e?.message ?? String(e) });
@@ -140,5 +301,3 @@ export function startHttpServer() {
 	});
 	return server;
 }
-
-// #endregion

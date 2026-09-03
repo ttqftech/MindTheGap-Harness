@@ -1,5 +1,5 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
-import { buildRpcHandlers, setStreamPusher } from './rpc-handlers';
+import { buildRpcHandlers } from './rpc-handlers';
 import { startHttpServer } from './http-server';
 import type { AppRPC } from '../shared/rpc';
 
@@ -56,26 +56,5 @@ console.log('MindTheGap-Harness started!');
 console.log(`[Main] Window ID: ${mainWindow.id}`);
 
 // 启动 Agent HTTP Server（浏览器 / WebView2 均可访问，参照 FFBox serviceBridge）
+// 流式推送通过 SSE（EventSource），不再需要 RPC send.agentStream
 startHttpServer();
-
-// 设置流式推送函数 —— Agent 运行时通过此函数向渲染进程推送流式事件
-// 需要等 webview 就绪后再获取
-const setupWebviewBridge = () => {
-	try {
-		// mainWindow.webview 应该有 rpc.send.agentStream
-		const webviewRpc = mainWindow.webview?.rpc;
-		if (webviewRpc?.send?.agentStream) {
-			setStreamPusher((conversationId, event) => {
-				webviewRpc.send.agentStream({ conversationId, event });
-			});
-			console.log('[Bridge] Webview stream pusher ready');
-		} else {
-			console.warn('[Bridge] webview.rpc.send.agentStream not available yet, will retry');
-			setTimeout(setupWebviewBridge, 500);
-		}
-	} catch (err) {
-		console.warn('[Bridge] Failed to setup webview bridge:', err);
-		setTimeout(setupWebviewBridge, 500);
-	}
-};
-setupWebviewBridge();

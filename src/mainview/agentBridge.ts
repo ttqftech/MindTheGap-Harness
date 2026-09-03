@@ -1,123 +1,79 @@
 /* ==========================================================================
-   agentBridge — Agent 业务能力（对齐 FFBox 的 serviceBridge 职责）
+   agentBridge — Agent Service HTTP + SSE（对齐 FFBox 的 serviceBridge 职责）
 
-   参照 FFBox：Agent 相关调用全部改用 HTTP 接口（主进程 http-server.ts）。
-   这样浏览器环境（Vite dev / 浏览器 Agent）也能连上真实的 Agent 引擎。
-
-   - 启动时探测主进程 HTTP Server，可用则全程走 HTTP（fetch + SSE）
-   - 否则回退到 electrobun RPC
-   - 传输通道只选一个（避免 SSE / RPC 双通道重复事件）
+   重构后：纯 HTTP + SSE，不再有 RPC 回退。
+   Agent Service 可脱离 electrobun 独立运行。
+   所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
    ========================================================================== */
 
-import { rpc, subscribeAgentStream as _subscribeRpc } from './rpc';
 import type {
 	AgentRunRequest,
 	AgentCtx,
 	AgentStreamEvent,
+	ConversationMeta,
+	ServiceConversation,
+	ServiceSettings,
+	ModelProvider,
+	AgentConfig,
+	UsageStats,
+	Folder,
 } from '../shared/agent';
 
-/** Agent HTTP Server 地址（与主进程 http-server.ts 的 HTTP_PORT 一致） */
 const HTTP_PORT = 18999;
 const HTTP_BASE = `http://localhost:${HTTP_PORT}`;
 
-/** Agent 运行结果 */
-export interface AgentRunResult {
-	ok: boolean;
-	finalSummary?: string;
-	ctx?: AgentCtx;
-	error?: string;
+async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {
+	const resp = await fetch(`${HTTP_BASE}${path}`, init);
+	if (!resp.ok) {
+		const text = await resp.text().catch(() => '');
+		throw new Error(`HTTP ${resp.status}: ${text}`);
+	}
+	return resp.json();
 }
 
-/* ---------- 传输通道探测 ---------- */
+/* ---------- 健康检查 ---------- */
 
-type Transport = 'http' | 'rpc' | 'unknown';
-let transport: Transport = 'unknown';
-let _httpOk: boolean | null = null;
-
-async function probeHttp(): Promise<boolean> {
-	if (_httpOk !== null) return _httpOk;
+export async function health(): Promise<boolean> {
 	try {
 		const ctrl = new AbortController();
 		const timer = setTimeout(() => ctrl.abort(), 1500);
 		const resp = await fetch(`${HTTP_BASE}/api/health`, { signal: ctrl.signal });
 		clearTimeout(timer);
-		_httpOk = resp.ok;
+		return resp.ok;
 	} catch {
-		_httpOk = false;
+		return false;
 	}
-	return _httpOk;
 }
-
-/** 解析传输通道（模块加载即开始探测） */
-async function resolveTransport(): Promise<Transport> {
-	if (transport !== 'unknown') return transport;
-	transport = (await probeHttp()) ? 'http' : 'rpc';
-	console.log(`[agentBridge] transport = ${transport}`);
-	return transport;
-}
-
-// 模块加载时立即开始探测，让用户操作前通道已确定
-void resolveTransport();
 
 /* ---------- Agent 运行 ---------- */
 
-/** 发起 Agent 运行 — 立即返回，真正结果从 agentStream（SSE/RPC）汇总 */
-export async function runAgent(params: AgentRunRequest): Promise<AgentRunResult> {
-	const t = await resolveTransport();
-
-	if (t === 'http') {
-		try {
-			const resp = await fetch(`${HTTP_BASE}/api/agent/run`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(params),
-			});
-			const result = await resp.json();
-			if (!result.ok) {
-				return { ok: false, error: result.error };
-			}
-			return { ok: true, finalSummary: '', ctx: result.data?.ctx };
-		} catch (e: any) {
-			console.warn('[agentBridge] HTTP agentRun failed, fallback to RPC:', e?.message);
-			transport = 'rpc';
-		}
+export async function runAgent(params: AgentRunRequest): Promise<{ ok: boolean; conversationId?: string; error?: string }> {
+	try {
+		return await httpFetch('/api/agent/run', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params),
+		});
+	} catch (e: any) {
+		return { ok: false, error: e?.message };
 	}
-
-	// 回退 RPC
-	const result = await rpc.request.agentRun(params);
-	if (!result.ok) {
-		return { ok: false, error: result.error };
-	}
-	return { ok: true, finalSummary: '', ctx: result.data.ctx };
 }
 
-/** 取消 Agent 运行 */
-export async function cancelAgent(conversationId: string): Promise<boolean> {
-	const t = await resolveTransport();
-
-	if (t === 'http') {
-		try {
-			const resp = await fetch(`${HTTP_BASE}/api/agent/cancel`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ conversationId }),
-			});
-			const result = await resp.json();
-			if (result.ok) return true;
-		} catch (e: any) {
-			console.warn('[agentBridge] HTTP agentCancel failed, fallback to RPC:', e?.message);
-			transport = 'rpc';
-		}
+export async function cancelAgent(conversationId: string): Promise<{ ok: boolean }> {
+	try {
+		return await httpFetch('/api/agent/cancel', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ conversationId }),
+		});
+	} catch {
+		return { ok: false };
 	}
-
-	const result = await rpc.request.agentCancel({ conversationId });
-	return result.ok;
 }
 
 /* ---------- 流式订阅 ---------- */
 
-/** 打开 SSE 连接，返回取消订阅函数 */
-function openSse(
+export function subscribeStream(
 	conversationId: string,
 	listener: (event: AgentStreamEvent) => void,
 ): () => void {
@@ -129,39 +85,200 @@ function openSse(
 			const event = JSON.parse(e.data) as AgentStreamEvent;
 			listener(event);
 		} catch {
-			// 忽略坏消息
+			// ignore
 		}
 	};
-	es.onerror = (e) => {
-		// 不主动 close：让 EventSource 按服务端 retry 间隔自动重连，
-		// 只有调用方显式取消（unsubscribe）才真正断开
-		console.warn(`[agentBridge] SSE ${conversationId} 连接异常，等待自动重连:`, e);
+	es.onerror = () => {
+		// EventSource 自动重连
 	};
 	return () => es.close();
 }
 
-/**
- * 订阅某个 conversation 的 Agent 流式事件。
- * 传输通道与 runAgent 一致（HTTP SSE 或 RPC），保证不重复。
- */
-export function subscribeStream(
-	conversationId: string,
-	listener: (event: AgentStreamEvent) => void,
-): () => void {
-	if (transport === 'http') {
-		return openSse(conversationId, listener);
-	}
+/* ---------- Ctx ---------- */
 
-	// rpc / unknown（unknown 时等 resolveTransport 完成后再注册对应通道）
-	if (transport === 'unknown') {
-		let unsub: (() => void) | null = null;
-		void resolveTransport().then((t) => {
-			unsub = t === 'http'
-				? openSse(conversationId, listener)
-				: _subscribeRpc(conversationId, listener);
+export async function getCtx(conversationId: string): Promise<AgentCtx | null> {
+	try {
+		return await httpFetch<AgentCtx>(`/api/agent/ctx?conversationId=${encodeURIComponent(conversationId)}`);
+	} catch {
+		return null;
+	}
+}
+
+/* ---------- 会话管理 ---------- */
+
+export async function getConversations(): Promise<ConversationMeta[]> {
+	try {
+		const result = await httpFetch<{ conversations: ConversationMeta[] }>('/api/conversations');
+		return result.conversations;
+	} catch {
+		return [];
+	}
+}
+
+export async function getConversation(id: string): Promise<ServiceConversation | null> {
+	try {
+		return await httpFetch<ServiceConversation>(`/api/conversations/${encodeURIComponent(id)}`);
+	} catch {
+		return null;
+	}
+}
+
+export async function createConversation(params: { folderId?: string; title?: string }): Promise<ServiceConversation | null> {
+	try {
+		return await httpFetch<ServiceConversation>('/api/conversations', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params),
 		});
-		return () => unsub?.();
+	} catch {
+		return null;
 	}
+}
 
-	return _subscribeRpc(conversationId, listener);
+export async function deleteConversation(id: string): Promise<boolean> {
+	try {
+		await httpFetch(`/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function updateConversation(id: string, patch: Partial<ConversationMeta>): Promise<boolean> {
+	try {
+		await httpFetch(`/api/conversations/${encodeURIComponent(id)}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(patch),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function saveConversationData(id: string, data: { messages: ServiceConversation['messages']; agentCtx?: ServiceConversation['agentCtx'] }): Promise<boolean> {
+	try {
+		await httpFetch(`/api/conversation-data/${encodeURIComponent(id)}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(data),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/* ---------- 设置 — 模型提供商 ---------- */
+
+export async function getProviders(): Promise<ModelProvider[]> {
+	try {
+		return await httpFetch<ModelProvider[]>('/api/settings/providers');
+	} catch {
+		return [];
+	}
+}
+
+export async function setProviders(providers: ModelProvider[]): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/providers', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(providers),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function getCurrentModel(): Promise<ServiceSettings['currentStandardModel'] & { economy: ServiceSettings['currentEconomyModel'] } | null> {
+	try {
+		return await httpFetch('/api/settings/current-model');
+	} catch {
+		return null;
+	}
+}
+
+export async function setCurrentModel(params: { standard?: ServiceSettings['currentStandardModel']; economy?: ServiceSettings['currentEconomyModel'] }): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/current-model', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/* ---------- 设置 — Agent 配置 ---------- */
+
+export async function getAgentConfigs(): Promise<AgentConfig[]> {
+	try {
+		return await httpFetch<AgentConfig[]>('/api/settings/agent-configs');
+	} catch {
+		return [];
+	}
+}
+
+export async function setAgentConfigs(configs: AgentConfig[]): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/agent-configs', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(configs),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/* ---------- 设置 — 用量 ---------- */
+
+export async function getUsage(): Promise<UsageStats | null> {
+	try {
+		return await httpFetch<UsageStats>('/api/settings/usage');
+	} catch {
+		return null;
+	}
+}
+
+export async function setUsage(usage: UsageStats): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/usage', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(usage),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/* ---------- 设置 — 文件夹 ---------- */
+
+export async function getFolders(): Promise<Folder[]> {
+	try {
+		return await httpFetch<Folder[]>('/api/settings/folders');
+	} catch {
+		return [];
+	}
+}
+
+export async function setFolders(folders: Folder[]): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/folders', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(folders),
+		});
+		return true;
+	} catch {
+		return false;
+	}
 }

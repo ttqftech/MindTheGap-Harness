@@ -30,7 +30,7 @@
    - 渲染进程边收边渲染
    ========================================================================== */
 
-import type { AgentCtx, AgentEvent, AgentMode, AgentRunRequest, AgentStreamEvent, AgentWorkInfo, TokenUsage, ToolResult } from '../../shared/agent';
+import type { AgentCtx, AgentEvent, AgentName, AgentRunRequest, AgentStreamEvent, AgentWorkInfo, TokenUsage, ToolResult } from '../../shared/agent';
 import { logMsg } from '../utils';
 import { callLlm, type LlmMessage, type LlmTool } from './model';
 import { executeTool, getLlmTools, type ToolContext, type AgentTool } from './tools';
@@ -39,7 +39,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 // #region System Prompt 模板
 
-function buildSystemPrompt(agentName: AgentMode, transferableAgents: AgentMode[], runningDir?: string): string {
+function buildSystemPrompt(agentName: AgentName, transferableAgents: AgentName[], runningDir?: string): string {
 	const baseInstructions = `你是 MindTheGap-Harness，一个 AI 编程助手。
 
 # 运行环境
@@ -121,9 +121,9 @@ export class AgentEngine {
 
 		const rootWork: AgentWorkInfo = {
 			workId: rootWorkId,
-			agentName: this.request.mode,
+			agentName: this.request.agentName,
 			runningDir: this.request.runningDir,
-			transferableAgents: [], // 运行时从 modeConfigs 注入
+			transferableAgents: [], // 运行时从 agentConfigs 注入
 			status: 'running',
 			startedAt: now,
 		};
@@ -158,7 +158,7 @@ export class AgentEngine {
 	}
 
 	/** 设置可转接 Agent 列表（从 store 注入） */
-	setTransferableAgents(workId: string, agents: AgentMode[]): void {
+	setTransferableAgents(workId: string, agents: AgentName[]): void {
 		const work = this.ctx.works[workId];
 		if (work) work.transferableAgents = agents;
 	}
@@ -170,7 +170,7 @@ export class AgentEngine {
 		console.log(`[Agent] Engine.run() started, conversationId=${this.request.conversationId}, modelId=${this.request.model?.modelId ?? 'MISSING'}`);
 
 		// 初始化根 Agent 的可转接列表
-		this.setTransferableAgents(rootWorkId, this.getDefaultTransferable(this.request.mode));
+		this.setTransferableAgents(rootWorkId, this.getDefaultTransferable(this.request.agentName));
 
 		// 创建根 Agent start 事件
 		this.emitEvent({
@@ -178,9 +178,9 @@ export class AgentEngine {
 			workId: rootWorkId,
 			type: 'agent_start',
 			timestamp: Date.now(),
-			payload: { agentName: this.request.mode },
+			payload: { agentName: this.request.agentName },
 		});
-		onStream?.({ type: 'agent_start', workId: rootWorkId, agentName: this.request.mode });
+		onStream?.({ type: 'agent_start', workId: rootWorkId, agentName: this.request.agentName });
 
 		// 添加用户消息到根 Agent
 		this.emitEvent({
@@ -215,7 +215,7 @@ export class AgentEngine {
 		onStream?.({
 			type: 'agent_end',
 			workId: rootWorkId,
-			agentName: this.request.mode,
+			agentName: this.request.agentName,
 			summary: rootResult,
 		});
 
@@ -226,13 +226,13 @@ export class AgentEngine {
 	}
 
 	/** 获取默认可转接列表（硬编码 fallback，实际应从 store 注入） */
-	private getDefaultTransferable(mode: AgentMode): AgentMode[] {
-		const map: Record<AgentMode, AgentMode[]> = {
+	private getDefaultTransferable(agentName: AgentName): AgentName[] {
+		const map: Record<AgentName, AgentName[]> = {
 			'默认': ['编码', '文件夹浏览总结'],
 			'编码': ['默认'],
 			'文件夹浏览总结': ['默认', '编码'],
 		};
-		return map[mode] ?? [];
+		return map[agentName] ?? [];
 	}
 
 	/** 运行单个 Agent 的循环 */
@@ -325,7 +325,7 @@ export class AgentEngine {
 						ctx: this.ctx,
 						workId,
 						runningDir: work.runningDir ?? process.cwd(),
-						spawnAgent: (mode, task) => this.spawnAgentFromTool(mode, task, workId),
+						spawnAgent: (agentName, task) => this.spawnAgentFromTool(agentName, task, workId),
 					};
 
 					const toolResult = await executeTool(tc.name, tc.arguments, toolCtx);
@@ -394,7 +394,7 @@ export class AgentEngine {
 
 	/** spawnAgent 的工具调用入口（由 transfer 工具触发） */
 	private async spawnAgentFromTool(
-		mode: AgentMode,
+		agentName: AgentName,
 		task: string,
 		parentWorkId: string,
 	): Promise<string> {
@@ -405,10 +405,10 @@ export class AgentEngine {
 		// 创建子 WorkInfo
 		this.ctx.works[childWorkId] = {
 			workId: childWorkId,
-			agentName: mode,
+			agentName: agentName,
 			parentWorkId,
 			runningDir: parentWork?.runningDir,
-			transferableAgents: this.getDefaultTransferable(mode),
+			transferableAgents: this.getDefaultTransferable(agentName),
 			status: 'running',
 			startedAt: now,
 		};
@@ -428,7 +428,7 @@ export class AgentEngine {
 			workId: parentWorkId,
 			type: 'transfer',
 			timestamp: now,
-			payload: { childWorkId, targetMode: mode, task },
+			payload: { childWorkId, targetAgentName: agentName, task },
 		});
 
 		// 子 agent start
@@ -436,12 +436,12 @@ export class AgentEngine {
 			type: 'transfer',
 			fromWorkId: parentWorkId,
 			toWorkId: childWorkId,
-			targetAgent: mode,
+			targetAgentName: agentName,
 		});
 		this.options.onStream?.({
 			type: 'agent_start',
 			workId: childWorkId,
-			agentName: mode,
+			agentName: agentName,
 		});
 		this.emitEvent({
 			id: uid(),
@@ -449,13 +449,13 @@ export class AgentEngine {
 			parentId: this.ctx.events[this.ctx.events.length - 1]?.id,
 			type: 'agent_start',
 			timestamp: now,
-			payload: { agentName: mode, task },
+			payload: { agentName: agentName, task },
 		});
 
 		// 添加子 agent 的第一条消息：系统告诉它 "你被转接了"
 		const systemMsg = `[来自父 Agent 的任务]\n${task}\n\n请独立完成此任务。完成后输出详细的总结。`;
 		this.workMessages.set(childWorkId, [
-			{ role: 'system', content: buildSystemPrompt(mode, this.getDefaultTransferable(mode), parentWork?.runningDir) },
+			{ role: 'system', content: buildSystemPrompt(agentName, this.getDefaultTransferable(agentName), parentWork?.runningDir) },
 			{ role: 'system', content: systemMsg },
 		]);
 
@@ -469,7 +469,7 @@ export class AgentEngine {
 			this.options.onStream?.({
 				type: 'agent_end',
 				workId: childWorkId,
-				agentName: mode,
+				agentName: agentName,
 				summary,
 			});
 

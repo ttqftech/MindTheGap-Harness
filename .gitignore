@@ -4,7 +4,8 @@ node_modules/
 build/
 dist/
 artifacts/
-docs/
+docs/*
+!docs/日志.md
 test-results/
 *.tsbuildinfo
 AGENTS*

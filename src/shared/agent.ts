@@ -1,12 +1,19 @@
 /* ==========================================================================
    Agent 层共享类型定义 — MindTheGap-Harness
-   
+
    这些类型同时被主进程（Agent 引擎）和渲染进程（UI 展示）引用。
    层级性通过 parentId / workId 体现，顺序性通过扁平数组 + 时间戳体现。
+
+   重构要点：
+   - AgentMode → AgentName（统一命名，消灭 mode/AppMode/AgentMode 混用）
+   - AgentRunRequest.mode → agentName
+   - transfer.targetAgent → targetAgentName
+   - 新增 ServiceConversation / ConversationMeta（后端数据模型）
+   - 新增 ctx_patch / conversation_update SSE 事件
    ========================================================================== */
 
-/** Agent 工作模式 */
-export type AgentMode = '默认' | '编码' | '文件夹浏览总结';
+/** Agent 名称（原 AgentMode / AppMode，统一为一个类型） */
+export type AgentName = '默认' | '编码' | '文件夹浏览总结';
 
 /** 工具调用状态 */
 export type ToolCallStatus = 'pending' | 'running' | 'success' | 'error';
@@ -48,7 +55,7 @@ export type AgentEventType =
 	| 'transfer'            // 转接（创建子 Agent）
 	| 'system';             // 系统事件（错误、状态变更等）
 
-/** Agent 会话上下文 */
+/** Agent 会话上下文（后端完整数据 = ServiceCtx） */
 export interface AgentCtx {
 	/** 会话 ID（对应当前 conversation.id） */
 	conversationId: string;
@@ -67,12 +74,10 @@ export interface AgentCtx {
 /** 一个 Agent 工作实例的信息 */
 export interface AgentWorkInfo {
 	workId: string;
-	agentName: AgentMode;
+	agentName: AgentName;
 	parentWorkId?: string;
-	/** 当前运行文件夹 */
 	runningDir?: string;
-	/** 可转接的 Agent 列表 */
-	transferableAgents: AgentMode[];
+	transferableAgents: AgentName[];	/** 可转接的 Agent 列表 */
 	status: 'running' | 'completed' | 'failed';
 	startedAt: number;
 	endedAt?: number;
@@ -83,9 +88,7 @@ export interface AgentWorkInfo {
 export interface ToolResult {
 	success: boolean;
 	content: string;
-	/** 可选的结构化数据（用于图示模式等） */
-	structured?: Record<string, unknown>;
-	/** 错误信息 */
+	structured?: Record<string, unknown>;	/** 可选的结构化数据（用于图示模式等） */
 	error?: string;
 }
 
@@ -105,10 +108,8 @@ export interface AgentRunRequest {
 	conversationId: string;
 	userMessage: string;
 	runningDir?: string;
-	mode: AgentMode;
-	/** 使用哪个模型 */
+	agentName: AgentName;
 	model: ModelConfig;
-	/** 从哪个事件 ID 继续（用于恢复/重试） */
 	continueFromEventId?: string;
 }
 
@@ -117,9 +118,110 @@ export type AgentStreamEvent =
 	| { type: 'text'; chunk: string }
 	| { type: 'tool_start'; toolName: string; callId: string; input: unknown }
 	| { type: 'tool_end'; toolName: string; callId: string; result: ToolResult }
-	| { type: 'agent_start'; workId: string; agentName: AgentMode }
-	| { type: 'agent_end'; workId: string; agentName: AgentMode; summary: string }
-	| { type: 'transfer'; fromWorkId: string; toWorkId: string; targetAgent: AgentMode }
+	| { type: 'agent_start'; workId: string; agentName: AgentName }
+	| { type: 'agent_end'; workId: string; agentName: AgentName; summary: string }
+	| { type: 'transfer'; fromWorkId: string; toWorkId: string; targetAgentName: AgentName }
 	| { type: 'usage'; tokens: TokenUsage }
 	| { type: 'error'; message: string }
-	| { type: 'done'; finalSummary: string };
+	| { type: 'done'; finalSummary: string }
+	| { type: 'ctx_patch'; patch: Partial<AgentCtx> }
+	| { type: 'conversation_update'; conversationId: string; patch: Partial<ConversationMeta> };
+
+/* ==========================================================================
+   会话 & 设置 — 后端数据模型（Agent Service 管理）
+   ========================================================================== */
+
+export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
+
+export type MessageBlock =
+	| { type: 'text'; key?: string; depth: number; content: string }
+	| { type: 'tool'; key: string; depth: number; name: string; status: 'running' | 'success' | 'error'; detail?: string }
+	| { type: 'agent'; key: string; depth: number; name: string; running: boolean; summary?: string }
+	| { type: 'error'; key?: string; depth: number; message: string };
+
+export interface Message {
+	id: string;
+	role: MessageRole;
+	content: string;
+	createdAt: number;
+	agentName?: string;
+	parentId?: string;
+	tokens?: { input?: number; output?: number; cached?: number };
+	duration?: number;
+	blocks?: MessageBlock[];
+}
+
+/** 会话元信息（列表展示用，不含 messages） */
+export interface ConversationMeta {
+	id: string;
+	folderId: string;
+	title: string;
+	createdAt: number;
+	updatedAt: number;
+}
+
+/** 后端完整会话数据（ServiceConversation） */
+export interface ServiceConversation extends ConversationMeta {
+	messages: Message[];
+	agentCtx?: AgentCtx;
+}
+
+/** 文件夹 */
+export interface Folder {
+	id: string;
+	name: string;
+	path?: string;
+	isLocal?: boolean;
+}
+
+/** 模型提供商（完整配置） */
+export interface ModelProvider {
+	id: string;
+	name: string;
+	apiFormat: 'openai-chat' | 'openai-responses' | 'anthropic';
+	baseUrl: string;
+	apiKey: string;
+	models: ModelProviderModel[];
+	customParams: Record<string, unknown>;
+}
+
+export interface ModelProviderModel {
+	id: string;
+	displayName: string;
+	role: 'standard' | 'economy';
+	customParams?: Record<string, unknown>;
+}
+
+/** Agent 配置（原 ModeConfig） */
+export interface AgentConfig {
+	name: AgentName;
+	transferableAgents: AgentName[];
+}
+
+/** 用量统计设置 */
+export interface UsageStats {
+	timeRange: '4h' | '1d' | 'today' | '7d' | '30d';
+	showApiRequests: boolean;
+	showToolCalls: boolean;
+	showTokensInput: boolean;
+	showTokensInputCached: boolean;
+	showTokensOutput: boolean;
+}
+
+/** 后端完整设置 */
+export interface ServiceSettings {
+	providers: ModelProvider[];
+	currentStandardModel: { providerId: string; modelId: string } | null;
+	currentEconomyModel: { providerId: string; modelId: string } | null;
+	currentAgentName: AgentName;
+	agentConfigs: AgentConfig[];
+	usage: UsageStats;
+	folders: Folder[];
+}
+
+/** 后端完整应用状态（Agent Service 持久化） */
+export interface ServiceAppState {
+	settings: ServiceSettings;
+	conversationMeta: ConversationMeta[];
+	activeConversationId: string | null;
+}

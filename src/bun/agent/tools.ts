@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync } from 'node:fs';
 import { resolve, dirname, join, isAbsolute } from 'node:path';
 import { execSync } from 'node:child_process';
-import type { AgentCtx, AgentMode, ToolResult } from '../../shared/agent';
+import type { AgentCtx, AgentName, ToolResult } from '../../shared/agent';
 import type { LlmTool } from './model';
 
 /** 工具执行上下文 */
@@ -16,7 +16,7 @@ export interface ToolContext {
 	ctx: AgentCtx;
 	workId: string;
 	runningDir: string;
-	spawnAgent: (targetMode: AgentMode, task: string) => Promise<string>;
+	spawnAgent: (targetAgentName: AgentName, task: string) => Promise<string>;
 }
 
 /** 工具定义 */
@@ -364,9 +364,9 @@ registerTool({
 	parameters: {
 		type: 'object',
 		properties: {
-			mode: {
+			agentName: {
 				type: 'string',
-				description: '目标 Agent 模式。必须是当前模式的可转接列表中的一个。',
+				description: '目标 Agent 名称。必须是当前 Agent 的可转接列表中的一个。',
 				enum: ['默认', '编码', '文件夹浏览总结'],
 			},
 			task: {
@@ -374,31 +374,29 @@ registerTool({
 				description: '给子 Agent 的详细任务描述。应包含足够上下文让子 Agent 独立工作。',
 			},
 		},
-		required: ['mode', 'task'],
+		required: ['agentName', 'task'],
 	},
 	async execute(args, ctx) {
-		const mode = args.mode as AgentMode;
+		const agentName = args.agentName as AgentName;
 		const task = args.task as string;
 
-		// 检查是否在可转接列表中
 		const currentWork = ctx.ctx.works[ctx.workId];
 		if (!currentWork) {
 			return { success: false, content: 'Current work not found in context' };
 		}
-		if (!currentWork.transferableAgents.includes(mode)) {
+		if (!currentWork.transferableAgents.includes(agentName)) {
 			return {
 				success: false,
-				content: `Mode "${mode}" is not transferable from "${currentWork.agentName}". Available: ${currentWork.transferableAgents.join(', ')}`,
+				content: `Agent "${agentName}" is not transferable from "${currentWork.agentName}". Available: ${currentWork.transferableAgents.join(', ')}`,
 			};
 		}
 
-		// 生成子 Agent
-		const childWorkId = await ctx.spawnAgent(mode, task);
+		const childWorkId = await ctx.spawnAgent(agentName, task);
 
 		return {
 			success: true,
-			content: `Transferred to "${mode}" (workId: ${childWorkId}). Task: ${task.slice(0, 200)}${task.length > 200 ? '...' : ''}`,
-			structured: { childWorkId, targetMode: mode },
+			content: `Transferred to "${agentName}" (workId: ${childWorkId}). Task: ${task.slice(0, 200)}${task.length > 200 ? '...' : ''}`,
+			structured: { childWorkId, targetAgentName: agentName },
 		};
 	},
 });

@@ -11,8 +11,9 @@
 import { createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { state as appState, actions, getActiveConversation, getProviderById } from '../store';
-import type { AppMode, Message, MessageBlock } from '../store';
-import { runAgent, cancelAgent, subscribeStream } from '../agentBridge';
+import type { Message, MessageBlock } from '../store';
+import type { AgentName, ModelConfig } from '../../shared/agent';
+import { runAgent, cancelAgent, subscribeStream, saveConversationData } from '../agentBridge';
 import type { AgentStreamEvent } from '../shared/agent';
 import { dialog } from '../localBridge';
 import DiagramView from './DiagramView';
@@ -109,7 +110,7 @@ function buildModelConfig(): ModelConfig | null {
 		apiFormat: provider.apiFormat,
 		baseUrl: provider.baseUrl,
 		apiKey: provider.apiKey,
-		customParams: provider.customParams,
+		customParams: { ...provider.customParams, ...model.customParams },
 	};
 }
 
@@ -218,7 +219,7 @@ export default function ChatView() {
 					type: 'agent',
 					key: event.toWorkId,
 					depth: childDepth,
-					name: event.targetAgent,
+					name: event.targetAgentName,
 					running: true,
 				});
 				break;
@@ -270,11 +271,21 @@ export default function ChatView() {
 
 	/** 结束流式状态 */
 	const finishStreaming = () => {
+		const convId = appState.activeConversationId;
 		setIsGenerating(false);
 		setStreamMsgId(null);
 		if (unsubscribeFn) {
 			unsubscribeFn();
 			unsubscribeFn = null;
+		}
+		if (convId) {
+			const conv = appState.conversations.find((c) => c.id === convId);
+			if (conv && conv.messages.length > 0) {
+				void saveConversationData(convId, {
+					messages: conv.messages,
+					agentCtx: conv.agentCtx,
+				});
+			}
 		}
 	};
 
@@ -305,7 +316,7 @@ export default function ChatView() {
 		const assistantMsg: Omit<Message, 'id' | 'createdAt'> = {
 			role: 'assistant',
 			content: '',
-			agentName: appState.currentAppMode,
+			agentName: appState.currentAgentName,
 		};
 		actions.addMessage(convId, assistantMsg);
 		// 拿到刚添加的消息 ID
@@ -332,7 +343,7 @@ export default function ChatView() {
 			const result = await runAgent({
 				conversationId: convId,
 				userMessage: text,
-				mode: appState.currentAppMode,
+				agentName: appState.currentAgentName,
 				model: modelConfig,
 			});
 
@@ -586,7 +597,7 @@ export default function ChatView() {
 									setShowModeMenu((v) => !v);
 								}}
 							>
-								🤖 <span class="chip-label">{appState.currentAppMode}</span>
+								🤖 <span class="chip-label">{appState.currentAgentName}</span>
 								<ChevronDown />
 							</button>
 							<Show when={showModeMenu()}>
@@ -596,14 +607,14 @@ export default function ChatView() {
 											<button
 												classList={{
 													'chip-dropdown-item': true,
-													selected: appState.currentAppMode === mode,
+													selected: appState.currentAgentName === mode,
 												}}
 												onclick={() => {
-													actions.setCurrentAppMode(mode);
+													actions.setCurrentAgentName(mode as AgentName);
 													closeAllMenus();
 												}}
 											>
-												{appState.currentAppMode === mode ? '✓ ' : ''}{mode}
+												{appState.currentAgentName === mode ? '✓ ' : ''}{mode}
 											</button>
 										)}
 									</For>
@@ -724,6 +735,3 @@ export default function ChatView() {
 		</div>
 	);
 }
-
-
-
