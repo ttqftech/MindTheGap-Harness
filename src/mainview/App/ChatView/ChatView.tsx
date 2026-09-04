@@ -9,13 +9,14 @@
    ========================================================================== */
 
 import { createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import styles from './ChatView.module.css';
 import { Portal } from 'solid-js/web';
-import { state as appState, actions, getActiveConversation, getProviderById } from '../store';
-import type { Message, MessageBlock } from '../store';
-import type { AgentName, ModelConfig } from '../../shared/agent';
-import { runAgent, cancelAgent, subscribeStream, saveConversationData } from '../agentBridge';
+import { state as appState, actions, getActiveConversation, getProviderById } from '../../store';
+import type { Message, MessageBlock } from '../../store';
+import type { AgentName, ModelConfig } from '../../../shared/agent';
+import { runAgent, cancelAgent, subscribeStream, saveConversationData } from '../../agentBridge';
 import type { AgentStreamEvent } from '../shared/agent';
-import { dialog } from '../localBridge';
+import { dialog } from '../../localBridge';
 import DiagramView from './DiagramView';
 
 /** 把 dropdown 挂到 body 并定位到触发按钮下方，超出视口则向上弹 */
@@ -40,7 +41,7 @@ function FixedDropdown(props: {
 		if (rect.bottom + h > viewportBottom) {
 			// 向上弹，距离按钮底部 4px gap
 			dropEl.style.top = `${Math.max(8, rect.top - h - 4)}px`;
-			dropEl.classList.add('chip-dropdown-flip-up');
+			dropEl.classList.add(styles['chip-dropdown-flip-up']);
 		}
 	});
 
@@ -413,45 +414,45 @@ export default function ChatView() {
 
 		switch (block.type) {
 			case 'text':
-				return <div class="agent-block-text" style={indent}>{block.content}</div>;
+				return <div class={styles['agent-block-text']} style={indent}>{block.content}</div>;
 
 			case 'tool':
 				return (
-					<div class="agent-block-tool" style={indent} classList={{ 'is-error': block.status === 'error' }}>
-						<span class="agent-tool-icon">
+					<div class={styles['agent-block-tool']} style={indent} classList={{ [styles['is-error']]: block.status === 'error' }}>
+						<span class={styles['agent-tool-icon']}>
 							{block.status === 'running' ? '⏳' : block.status === 'success' ? '✓' : '✗'}
 						</span>
-						<span class="agent-tool-name">{block.name}</span>
+						<span class={styles['agent-tool-name']}>{block.name}</span>
 						<Show when={block.status === 'error' && block.detail}>
-							<span class="agent-tool-detail">{block.detail}</span>
+							<span class={styles['agent-tool-detail']}>{block.detail}</span>
 						</Show>
 					</div>
 				);
 
 			case 'agent':
 				return (
-					<div class="agent-block-agent" style={indent} classList={{ 'is-running': block.running }}>
-						<div class="agent-block-agent-header">
-							<span class="agent-tool-icon">{block.running ? '⏳' : '🤖'}</span>
-							<span class="agent-tool-name">转接 → {block.name} Agent</span>
+					<div class={styles['agent-block-agent']} style={indent} classList={{ [styles['is-running']]: block.running }}>
+						<div class={styles['agent-block-agent-header']}>
+							<span class={styles['agent-tool-icon']}>{block.running ? '⏳' : '🤖'}</span>
+							<span class={styles['agent-tool-name']}>转接 → {block.name} Agent</span>
 						</div>
 						<Show when={block.summary}>
-							<div class="agent-block-agent-summary">{block.summary}</div>
+							<div class={styles['agent-block-agent-summary']}>{block.summary}</div>
 						</Show>
 					</div>
 				);
 
 			case 'error':
-				return <div class="agent-block-error" style={indent}>❌ {block.message}</div>;
+				return <div class={styles['agent-block-error']} style={indent}>❌ {block.message}</div>;
 		}
 	};
 
 	return (
-		<div class="main-content">
+		<div class={styles['main-content']}>
 			{/* 顶部栏 */}
-			<div class="main-header">
-				<div class="conversation-title">{conversationTitle()}</div>
-				<div class="mode-toggle">
+			<div class={styles['main-header']}>
+				<div class={styles['conversation-title']}>{conversationTitle()}</div>
+				<div class={styles['mode-toggle']}>
 					<button
 						classList={{ active: appState.ui.viewMode === 'chat' }}
 						onclick={() => actions.setViewMode('chat')}
@@ -468,11 +469,11 @@ export default function ChatView() {
 			</div>
 
 			{/* 聊天区域 */}
-			<div class="chat-area" ref={chatAreaRef}>
+			<div class={styles['chat-area']} ref={chatAreaRef}>
 				{/* 空状态 */}
 				<Show when={!getActiveConversation() || getActiveConversation()!.messages.length === 0}>
-					<div class="empty-state">
-						<div class="empty-state-logo">
+					<div class={styles['empty-state']}>
+						<div class={styles['empty-state-logo']}>
 							<SparkleIcon />
 						</div>
 						<h2>MindTheGap-Harness</h2>
@@ -482,26 +483,26 @@ export default function ChatView() {
 
 				{/* 消息列表（聊天模式） */}
 				<Show when={appState.ui.viewMode === 'chat' && getActiveConversation()}>
-					<div class="message-list">
+					<div class={styles['message-list']}>
 						<For each={getActiveConversation()!.messages}>
 							{(msg) => (
 								<Show
 									when={msg.role === 'assistant'}
 									fallback={
 										/* 用户消息：右侧气泡（保留头像+气泡样式） */
-										<div class={`message ${msg.role}`}>
-											<div class="message-avatar">
+										<div class={`${styles.message} ${styles[msg.role]}`}>
+											<div class={styles['message-avatar']}>
 												<UserIcon />
 											</div>
-											<div class="message-content">{msg.content}</div>
+											<div class={styles['message-content']}>{msg.content}</div>
 										</div>
 									}
 								>
 									{/* AI 回复：无头像、无气泡，结构化块全保留 + 层级缩进 */}
-									<div class="agent-reply">
+									<div class={styles['agent-reply']}>
 										<Show
 											when={msg.blocks?.length}
-											fallback={<div class="agent-block-text">{msg.content}</div>}
+											fallback={<div class={styles['agent-block-text']}>{msg.content}</div>}
 										>
 											<For each={msg.blocks}>
 												{(block) => renderBlock(block)}
@@ -512,11 +513,11 @@ export default function ChatView() {
 							)}
 						</For>
 						<Show when={isGenerating()}>
-							<div class="agent-reply">
+							<div class={styles['agent-reply']}>
 								<span style={{ display: 'inline-flex', gap: '4px', padding: '6px 0' }}>
-									<span class="typing-dot" style={{ animation: 'typing 1.4s infinite' }}>●</span>
-									<span class="typing-dot" style={{ animation: 'typing 1.4s infinite 0.2s' }}>●</span>
-									<span class="typing-dot" style={{ animation: 'typing 1.4s infinite 0.4s' }}>●</span>
+									<span class={styles['typing-dot']} style={{ animation: 'typing 1.4s infinite' }}>●</span>
+									<span class={styles['typing-dot']} style={{ animation: 'typing 1.4s infinite 0.2s' }}>●</span>
+									<span class={styles['typing-dot']} style={{ animation: 'typing 1.4s infinite 0.4s' }}>●</span>
 								</span>
 							</div>
 						</Show>
@@ -530,15 +531,15 @@ export default function ChatView() {
 			</div>
 
 			{/* 输入区域 */}
-			<div class="input-area">
-				<div class="input-wrapper">
+			<div class={styles['input-area']}>
+				<div class={styles['input-wrapper']}>
 					{/* 上方控件 */}
-					<div class="input-controls-top">
+					<div class={styles['input-controls-top']}>
 						{/* 运行文件夹 */}
-						<div class="chip-wrapper">
+						<div class={styles['chip-wrapper']}>
 							<button
 								ref={folderBtn}
-								classList={{ 'chip-btn': true, active: showFolderMenu() }}
+								classList={{ [styles['chip-btn']]: true, [styles.active]: showFolderMenu() }}
 								title='运行文件夹'
 								onclick={(e) => {
 									e.stopPropagation();
@@ -546,15 +547,15 @@ export default function ChatView() {
 									setShowFolderMenu((v) => !v);
 								}}
 							>
-								📁 <span class='chip-label'>{currentFolderDisplay()}</span>
+								📁 <span class={styles['chip-label']}>{currentFolderDisplay()}</span>
 								<ChevronDown />
 							</button>
 							<Show when={showFolderMenu()}>
-								<FixedDropdown btnEl={folderBtn} class="chip-dropdown">
+								<FixedDropdown btnEl={folderBtn} class={styles['chip-dropdown']}>
 									<For each={appState.folders}>
 										{(f) => (
 											<button
-												class="chip-dropdown-item"
+												class={styles['chip-dropdown-item']}
 												onclick={() => {
 													const conv = getActiveConversation();
 													if (conv) {
@@ -567,9 +568,9 @@ export default function ChatView() {
 											</button>
 										)}
 									</For>
-									<div class="chip-dropdown-divider" />
+									<div class={styles['chip-dropdown-divider']} />
 									<button
-										class="chip-dropdown-item chip-dropdown-secondary"
+										class={`${styles['chip-dropdown-item']} ${styles['chip-dropdown-secondary']}`}
 										onclick={async () => {
 											const folderPath = await dialog.pickFolder();
 											if (folderPath) {
@@ -586,10 +587,10 @@ export default function ChatView() {
 						</div>
 
 						{/* Agent 模式 */}
-						<div class="chip-wrapper">
+						<div class={styles['chip-wrapper']}>
 							<button
 								ref={modeBtn}
-								classList={{ 'chip-btn': true, active: showModeMenu() }}
+								classList={{ [styles['chip-btn']]: true, [styles.active]: showModeMenu() }}
 								title="运行模式"
 								onclick={(e) => {
 									e.stopPropagation();
@@ -597,17 +598,17 @@ export default function ChatView() {
 									setShowModeMenu((v) => !v);
 								}}
 							>
-								🤖 <span class="chip-label">{appState.currentAgentName}</span>
+								🤖 <span class={styles['chip-label']}>{appState.currentAgentName}</span>
 								<ChevronDown />
 							</button>
 							<Show when={showModeMenu()}>
-								<FixedDropdown btnEl={modeBtn} class="chip-dropdown">
+								<FixedDropdown btnEl={modeBtn} class={styles['chip-dropdown']}>
 									<For each={(['默认', '编码', '文件夹浏览总结'] as const)}>
 										{(mode) => (
 											<button
 												classList={{
-													'chip-dropdown-item': true,
-													selected: appState.currentAgentName === mode,
+													[styles['chip-dropdown-item']]: true,
+													[styles.selected]: appState.currentAgentName === mode,
 												}}
 												onclick={() => {
 													actions.setCurrentAgentName(mode as AgentName);
@@ -624,9 +625,9 @@ export default function ChatView() {
 					</div>
 
 					{/* 输入框 */}
-					<div class="input-textarea-wrapper">
+					<div class={styles['input-textarea-wrapper']}>
 						<textarea
-							class="input-textarea"
+							class={styles['input-textarea']}
 							placeholder="按 Enter 发送，Shift+Enter 换行..."
 							value={inputText()}
 							oninput={(e) => setInputText(e.currentTarget.value)}
@@ -636,8 +637,8 @@ export default function ChatView() {
 					</div>
 
 					{/* 下方控件 */}
-					<div class="input-controls-bottom">
-						<button class="input-add-btn" title="添加图片/文件">
+					<div class={styles['input-controls-bottom']}>
+						<button class={styles['input-add-btn']} title="添加图片/文件">
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<line x1="12" y1="5" x2="12" y2="19"/>
 								<line x1="5" y1="12" x2="19" y2="12"/>
@@ -645,10 +646,10 @@ export default function ChatView() {
 						</button>
 
 						{/* 模型选择（带下拉菜单） */}
-						<div class="chip-wrapper">
+						<div class={styles['chip-wrapper']}>
 							<button
 								ref={modelBtn}
-								classList={{ 'input-model-btn': true, active: showModelMenu() }}
+								classList={{ [styles['input-model-btn']]: true, [styles.active]: showModelMenu() }}
 								title="选择模型"
 								onclick={(e) => {
 									e.stopPropagation();
@@ -660,16 +661,16 @@ export default function ChatView() {
 								<ChevronDown />
 							</button>
 							<Show when={showModelMenu()}>
-								<FixedDropdown btnEl={modelBtn} class="chip-dropdown chip-dropdown-wide">
+								<FixedDropdown btnEl={modelBtn} class={`${styles['chip-dropdown']} ${styles['chip-dropdown-wide']}`}>
 									<Show when={appState.providers.length === 0}>
-										<div class="chip-dropdown-empty">
+										<div class={styles['chip-dropdown-empty']}>
 											还没有配置模型，去设置里添加吧
 										</div>
 									</Show>
 									<For each={appState.providers}>
 										{(provider) => (
-											<div class="chip-dropdown-group">
-												<div class="chip-dropdown-group-label">{provider.name}</div>
+											<div class={styles['chip-dropdown-group']}>
+												<div class={styles['chip-dropdown-group-label']}>{provider.name}</div>
 												<For each={provider.models}>
 													{(model) => {
 														const selected =
@@ -678,8 +679,8 @@ export default function ChatView() {
 														return (
 															<button
 																classList={{
-																	'chip-dropdown-item': true,
-																	selected,
+																	[styles['chip-dropdown-item']]: true,
+																	[styles.selected]: selected,
 																}}
 																onclick={() => {
 																	actions.setCurrentStandardModel({
@@ -691,7 +692,7 @@ export default function ChatView() {
 															>
 																{selected ? '✓ ' : ''}
 																{model.displayName}
-																<span class="chip-dropdown-item-id">{model.id}</span>
+																<span class={styles['chip-dropdown-item-id']}>{model.id}</span>
 															</button>
 														);
 													}}
@@ -705,7 +706,7 @@ export default function ChatView() {
 
 						<Show when={!isGenerating()}>
 							<button
-								class="input-send-btn"
+								class={styles['input-send-btn']}
 								title="发送"
 								onclick={() => void handleSend()}
 								disabled={!inputText().trim()}
@@ -715,7 +716,7 @@ export default function ChatView() {
 						</Show>
 						<Show when={isGenerating()}>
 							<button
-								class="input-stop-btn"
+								class={styles['input-stop-btn']}
 								title="停止生成"
 								onclick={() => void handleStop()}
 							>
@@ -726,12 +727,6 @@ export default function ChatView() {
 				</div>
 			</div>
 
-			<style>{`
-				@keyframes typing {
-					0%, 60%, 100% { opacity: 0.3; }
-					30% { opacity: 1; }
-				}
-			`}</style>
 		</div>
 	);
 }

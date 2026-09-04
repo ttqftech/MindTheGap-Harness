@@ -1,0 +1,296 @@
+/* ==========================================================================
+   侧边栏样式
+   ========================================================================== */
+
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background-color: hwb(var(--bg95) / 1);
+    border-right: 1px solid var(--borderLight);
+    transition: width 0.15s ease;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.sidebar.collapsed {
+    width: 48px !important;
+}
+
+.sidebar.collapsed .sidebar-header {
+    justify-content: center;
+    padding: 12px 8px;
+}
+
+.sidebar.collapsed .app-logo:not(.logo-collapsed) {
+    display: none;
+}
+
+.sidebar.collapsed .logo-collapsed {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+    color: var(--textLight);
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 700;
+    transition: background 0.15s;
+}
+
+.sidebar.collapsed .logo-collapsed:hover {
+    background: var(--hoverBg);
+    color: var(--primary);
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    border-bottom: 1px solid var(--borderLight);
+}
+
+.app-logo {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border-radius: 6px;
+    background: linear-gradient(135deg, hwb(220 50% 0%), hwb(280 40% 5%));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 14px;
+    color: #fff;
+}
+
+.app-title {
+    flex: 1;
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sidebar-toggle-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fontColorDim);
+    transition: background 0.1s;
+}
+.sidebar-toggle-btn:hover {
+    background-color: hwb(var(--bg90) / 1);
+    color: var(--fontColor);
+}
+
+.sidebar-new-task {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 12px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background-color: var(--primary);
+    color: #fff;
+    font-weight: 500;
+    font-size: 13px;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+.sidebar-new-task:hover {
+    background-color: var(--primaryHover);
+}
+.sidebar-new-task:active {
+    background-color: var(--primaryActive);
+}
+
+.sidebar-section-header {
+    display: flex;
+    align-items: center;
+    padding: 12px 12px 6px;
+    gap: 4px;
+}
+
+.section-title {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fontColorMuted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+}
+
+.section-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.sidebar-tree {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 6px;
+}
+
+.tree-folder {
+    margin-bottom: 2px;
+}
+
+.tree-folder-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.1s;
+    font-size: 13px;
+    color: var(--fontColorDim);
+    user-select: none;
+}
+.tree-folder-header:hover {
+    background-color: hwb(var(--bg90) / 1);
+    color: var(--fontColor);
+}
+
+.tree-expand-indicator {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.15s;
+    font-size: 10px;
+    color: var(--fontColorMuted);
+}
+.tree-folder.expanded .tree-expand-indicator {
+    transform: rotate(90deg);
+}
+
+.tree-folder-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tree-folder-delete {
+    display: none;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fontColorMuted);
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.tree-folder-header:hover .tree-folder-delete {
+    display: inline-flex;
+}
+.tree-folder-delete:hover {
+    background: hwb(var(--bg90) / 1);
+    color: var(--dangerColor, #e5484d);
+}
+
+.tree-items {
+    margin-left: 12px;
+    overflow: hidden;
+}
+.tree-folder:not(.expanded) .tree-items {
+    display: none;
+}
+
+.tree-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.1s;
+    font-size: 13px;
+    color: var(--fontColorDim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: none;
+    position: relative;
+}
+.tree-item:hover {
+    background-color: hwb(var(--bg90) / 1);
+    color: var(--fontColor);
+}
+.tree-item.active {
+    background-color: var(--selectedBg);
+    color: var(--fontColor);
+    font-weight: 500;
+}
+
+.tree-item-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tree-item-delete {
+    display: none;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fontColorMuted);
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin-left: 4px;
+}
+.tree-item:hover .tree-item-delete {
+    display: inline-flex;
+}
+.tree-item-delete:hover {
+    background: hwb(var(--bg90) / 1);
+    color: var(--dangerColor, #e5484d);
+}
+
+.sidebar-footer {
+    padding: 8px;
+    border-top: 1px solid var(--borderLight);
+    display: flex;
+    gap: 4px;
+}
+
+.sidebar-footer :global(.icon-btn) {
+    flex: 1;
+    height: 32px;
+}
+
+@media (max-width: 768px) {
+    .sidebar {
+        width: 64px !important;
+    }
+    .sidebar .app-title,
+    .sidebar .section-title,
+    .sidebar .sidebar-new-task-text,
+    .sidebar .tree-folder-name {
+        display: none;
+    }
+}

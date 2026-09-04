@@ -2,6 +2,7 @@ import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
 import { buildRpcHandlers } from './rpc-handlers';
 import { startHttpServer } from './http-server';
 import type { AppRPC } from '../shared/rpc';
+import { logMsg } from './utils';
 
 // === 开发模式：自动打开 WebView2 DevTools ===
 // WebView2 原生支持这个环境变量，启动时会自动弹出 devtools
@@ -15,18 +16,26 @@ if (isDev && typeof process !== 'undefined') {
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
 
-// Check if Vite dev server is running for HMR
 async function getMainViewUrl(): Promise<string> {
 	const channel = await Updater.getLocalInfo().then((info) => info?.channel ?? 'dev');
 	if (channel === 'dev') {
-		try {
-			await fetch(DEV_SERVER_URL, { method: 'HEAD' });
-			console.log(`HMR enabled: Using Vite dev server at ${DEV_SERVER_URL}`);
-			return DEV_SERVER_URL;
-		} catch {
-			console.log("Vite dev server not running. Run 'hutch run dev:hmr' for HMR support.",);
+		const maxRetries = 10;
+		const retryDelayMs = 500;
+		for (let i = 0; i < maxRetries; i++) {
+			try {
+				await fetch(DEV_SERVER_URL, { method: 'HEAD' });
+				logMsg(`检测到开发环境，使用 HMR 模式，连接到 Vite dev server: ${DEV_SERVER_URL}`);
+				return DEV_SERVER_URL;
+			} catch {
+				if (i < maxRetries - 1) {
+					logMsg(`等待 Vite dev server... (尝试 ${i + 1}/${maxRetries})`);
+					await new Promise((r) => setTimeout(r, retryDelayMs));
+				}
+			}
 		}
+		logMsg('Vite dev server 未启动，将使用生产环境 url 启动页面');
 	}
+	logMsg('检测到生产环境，将使用生产环境 url 启动页面');
 	return 'views://mainview/index.html';
 }
 

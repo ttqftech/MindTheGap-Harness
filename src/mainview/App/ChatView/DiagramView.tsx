@@ -9,7 +9,8 @@
    ========================================================================== */
 
 import { For, Show } from "solid-js";
-import { getActiveConversation } from "../store";
+import { getActiveConversation } from "../../store";
+import styles from './DiagramView.module.css';
 import type { AgentCtx, AgentEvent, AgentWorkInfo } from "../shared/agent";
 
 /** 事件类型 → 颜色映射 */
@@ -57,26 +58,26 @@ function WorkRow(props: {
 	};
 
 	return (
-		<div class="diagram-work-row">
+		<div class={styles['diagram-work-row']}>
 			{/* 当前 work */}
 			<div
-				class="diagram-work-header"
+				class={styles['diagram-work-header']}
 				style={{ "padding-left": `${level * 20}px` }}
 			>
-				<span class="diagram-work-icon">🤖</span>
-				<span class="diagram-work-name">{work.agentName}</span>
+				<span class={styles['diagram-work-icon']}>🤖</span>
+				<span class={styles['diagram-work-name']}>{work.agentName}</span>
 				<span
 					classList={{
-						"diagram-work-status": true,
-						status_running: work.status === "running",
-						status_completed: work.status === "completed",
-						status_failed: work.status === "failed",
+						[styles['diagram-work-status']]: true,
+						[styles.status_running]: work.status === "running",
+						[styles.status_completed]: work.status === "completed",
+						[styles.status_failed]: work.status === "failed",
 					}}
 				>
 					{work.status}
 				</span>
 				{work.tokens && (
-					<span class="diagram-work-tokens">
+					<span class={styles['diagram-work-tokens']}>
 						tokens: {work.tokens.input ?? 0}↑ {work.tokens.output ?? 0}↓
 					</span>
 				)}
@@ -84,23 +85,23 @@ function WorkRow(props: {
 
 			{/* 当前 work 的事件 */}
 			<div
-				class="diagram-events-row"
+				class={styles['diagram-events-row']}
 				style={{ "padding-left": `${level * 20 + 20}px` }}
 			>
 				<For each={events}>
 					{(evt) => (
 						<div
-							class="diagram-event"
+							class={styles['diagram-event']}
 							title={`${evt.type}${evt.duration ? ` · ${formatDuration(evt.duration)}` : ""}${evt.tokens ? ` · input:${evt.tokens.input ?? 0} output:${evt.tokens.output ?? 0}` : ""}`}
 							style={{
 								background: EVENT_COLORS[evt.type] ?? EVENT_COLORS.system,
 							}}
 						>
-							<span class="diagram-event-icon">
+							<span class={styles['diagram-event-icon']}>
 								{EVENT_ICONS[evt.type] ?? "?"}
 							</span>
 							<Show when={evt.duration && evt.duration > 500}>
-								<span class="diagram-event-duration">
+								<span class={styles['diagram-event-duration']}>
 									{formatDuration(evt.duration)}
 								</span>
 							</Show>
@@ -134,37 +135,37 @@ export default function DiagramView() {
 	const rootWork = rootWorkId ? ctx.works[rootWorkId] : null;
 
 	return (
-		<div class="diagram-container">
+		<div class={styles['diagram-container']}>
 			<Show when={!ctx}>
-				<div class="diagram-empty">
-					<div class="diagram-empty-icon">🔥</div>
+				<div class={styles['diagram-empty']}>
+					<div class={styles['diagram-empty-icon']}>🔥</div>
 					<h3>还没有 Agent 执行数据</h3>
 					<p>在聊天中发送消息让 Agent 工作后，这里会展示执行时间线。</p>
 				</div>
 			</Show>
 
 			<Show when={ctx && rootWork}>
-				<div class="diagram-header">
-					<div class="diagram-header-title">Agent 执行时间线</div>
-					<div class="diagram-header-stats">
+				<div class={styles['diagram-header']}>
+					<div class={styles['diagram-header-title']}>Agent 执行时间线</div>
+					<div class={styles['diagram-header-stats']}>
 						<span>📊 {ctx.events.length} 个事件</span>
 						<span>🤖 {Object.keys(ctx.works).length} 个 Agent</span>
 						<span>⏱️ 总时长 {((ctx.updatedAt - ctx.createdAt) / 1000).toFixed(1)}s</span>
 					</div>
 				</div>
 
-				<div class="diagram-legend">
+				<div class={styles['diagram-legend']}>
 					<For each={Object.entries(EVENT_COLORS)}>
 						{([type, color]) => (
-							<div class="diagram-legend-item">
-								<span class="diagram-legend-swatch" style={{ background: color }} />
+							<div class={styles['diagram-legend-item']}>
+								<span class={styles['diagram-legend-swatch']} style={{ background: color }} />
 								<span>{EVENT_ICONS[type]} {type}</span>
 							</div>
 						)}
 					</For>
 				</div>
 
-				<div class="diagram-timeline">
+				<div class={styles['diagram-timeline']}>
 					<WorkRow
 						workId={rootWorkId!}
 						work={rootWork!}

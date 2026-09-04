@@ -3,9 +3,10 @@
    ========================================================================== */
 
 import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
-import { state, setState, actions } from '../store';
-import { dialog } from '../localBridge';
-import { getTimeString } from '../../bun/utils';
+import styles from './Sidebar.module.css';
+import { state, setState, actions } from '../../store';
+import { dialog } from '../../localBridge';
+import { getTimeString } from '../../../bun/utils';
 
 function FolderIcon() {
 	return (
@@ -138,17 +139,17 @@ export default function Sidebar() {
 
 	return (
 		<div
-			class="sidebar"
-			classList={{ collapsed: state.ui.sidebarCollapsed }}
+			class={styles.sidebar}
+			classList={{ [styles.collapsed]: state.ui.sidebarCollapsed }}
 			style={{ width: `${state.ui.sidebarWidth}px` }}
 		>
 			{/* 顶部：Logo + 折叠按钮 */}
-			<div class="sidebar-header">
-				<div class="app-logo">M</div>
+			<div class={styles['sidebar-header']}>
+				<div class={styles['app-logo']}>M</div>
 				<Show when={!state.ui.sidebarCollapsed}>
-					<span class="app-title">MindTheGap</span>
+					<span class={styles['app-title']}>MindTheGap</span>
 					<button
-						class="sidebar-toggle-btn"
+						class={styles['sidebar-toggle-btn']}
 						title="折叠侧边栏"
 						onclick={() => actions.toggleSidebar()}
 					>
@@ -157,7 +158,7 @@ export default function Sidebar() {
 				</Show>
 				<Show when={state.ui.sidebarCollapsed}>
 					<button
-						class="app-logo logo-collapsed"
+						class={`${styles['app-logo']} ${styles['logo-collapsed']}`}
 						title="展开侧边栏"
 						onclick={() => actions.toggleSidebar()}
 					>
@@ -168,17 +169,17 @@ export default function Sidebar() {
 
 			{/* 新建任务按钮 */}
 			<Show when={!state.ui.sidebarCollapsed}>
-				<button class="sidebar-new-task" onclick={handleNewTask}>
+				<button class={styles['sidebar-new-task']} onclick={handleNewTask}>
 					<NewIcon />
-					<span class="sidebar-new-task-text">新建任务</span>
+					<span class={styles['sidebar-new-task-text']}>新建任务</span>
 				</button>
 			</Show>
 
 			{/* 任务列表标题栏 */}
 			<Show when={!state.ui.sidebarCollapsed}>
-				<div class="sidebar-section-header">
-					<span class="section-title">任务列表</span>
-					<div class="section-actions">
+				<div class={styles['sidebar-section-header']}>
+					<span class={styles['section-title']}>任务列表</span>
+					<div class={styles['section-actions']}>
 						<button
 							class="icon-btn"
 							title="搜索"
@@ -211,7 +212,7 @@ export default function Sidebar() {
 			</Show>
 
 			{/* 树形目录 */}
-			<div class="sidebar-tree">
+			<div class={styles['sidebar-tree']}>
 				<For each={state.folders}>
 					{(folder) => {
 						const convs = conversationsInFolder(folder.id);
@@ -219,25 +220,25 @@ export default function Sidebar() {
 						// 放在回调体顶部（const isOpen = ...）会导致折叠点击不刷新
 						return (
 							<div
-								class="tree-folder"
-								classList={{ expanded: expandedFolders().has(folder.id) }}
+								class={styles['tree-folder']}
+								classList={{ [styles.expanded]: expandedFolders().has(folder.id) }}
 							>
 								<div
-									class="tree-folder-header"
+									class={styles['tree-folder-header']}
 									onclick={() => toggleFolder(folder.id)}
 								>
-									<span class="tree-expand-indicator">
+									<span class={styles['tree-expand-indicator']}>
 										<ChevronIcon open={expandedFolders().has(folder.id)} />
 									</span>
 									<span style={{ color: "var(--fontColorMuted)" }}>
 										<FolderIcon />
 									</span>
-									<span class="tree-folder-name">
+									<span class={styles['tree-folder-name']}>
 										{folder.name}
 									</span>
 									<Show when={!folder.isLocal}>
 										<button
-											class="tree-folder-delete"
+											class={styles['tree-folder-delete']}
 											title="删除文件夹"
 											onclick={(e) => {
 												e.stopPropagation();
@@ -249,7 +250,7 @@ export default function Sidebar() {
 									</Show>
 								</div>
 
-								<div class="tree-items">
+								<div class={styles['tree-items']}>
 									<For each={convs()}>
 										{(conv) => {
 											const tooltipText = () => {
@@ -259,9 +260,9 @@ export default function Sidebar() {
 											};
 											return (
 												<div
-													class="tree-item"
+													class={styles['tree-item']}
 													classList={{
-														active:
+														[styles.active]:
 															state.activeConversationId ===
 															conv.id,
 													}}
@@ -275,9 +276,9 @@ export default function Sidebar() {
 													<span style={{ marginRight: 6 }}>
 														<ChatIcon />
 													</span>
-													<span class="tree-item-title">{conv.title}</span>
+													<span class={styles['tree-item-title']}>{conv.title}</span>
 													<button
-														class="tree-item-delete"
+														class={styles['tree-item-delete']}
 														title="删除任务"
 														onclick={(e) => {
 															e.stopPropagation();
@@ -309,7 +310,7 @@ export default function Sidebar() {
 			</div>
 
 			{/* 底部：设置 */}
-			<div class="sidebar-footer">
+			<div class={styles['sidebar-footer']}>
 				<button
 					class="icon-btn"
 					title="设置"

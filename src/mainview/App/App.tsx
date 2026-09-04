@@ -1,11 +1,12 @@
 import { createSignal, onMount, onCleanup } from 'solid-js';
-import { initTheme } from './theme/theme';
-import Sidebar from './components/Sidebar';
-import ChatView from './components/ChatView';
-import Settings from './components/Settings';
-import { PathInputModal } from './components/PathInputModal';
-import { registerManualPathHandler, unregisterManualPathHandler } from './localBridge';
-import { state, setState, actions, initApp } from './store';
+import { initTheme } from '../theme/theme';
+import Sidebar from './SideBar/Sidebar';
+import ChatView from './ChatView/ChatView';
+import Settings from './Settings/Settings';
+import { PathInputModal } from '../components/PathInputModal';
+import { registerManualPathHandler, unregisterManualPathHandler } from '../localBridge';
+import { state, setState, actions, initApp } from '../store';
+import styles from './components/App.module.css';
 
 export default function App() {
     let resizerRef: HTMLDivElement | undefined;
@@ -48,7 +49,7 @@ export default function App() {
         dragging = true;
         startX = e.clientX;
         startWidth = state.ui.sidebarWidth;
-        resizerRef?.classList.add("dragging");
+        resizerRef?.classList.add(styles.dragging);
 
         const onMove = (ev: MouseEvent) => {
             if (!dragging) return;
@@ -58,7 +59,7 @@ export default function App() {
 
         const onUp = () => {
             dragging = false;
-            resizerRef?.classList.remove("dragging");
+            resizerRef?.classList.remove(styles.dragging);
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
         };
@@ -69,11 +70,11 @@ export default function App() {
 
     return (
         <>
-            <div class="app-root">
+            <div class={styles['app-root']}>
                 <Sidebar />
                 <div
                     ref={resizerRef!}
-                    class="sidebar-resizer"
+                    class={styles['sidebar-resizer']}
                     onmousedown={onMouseDown}
                 />
                 <ChatView />

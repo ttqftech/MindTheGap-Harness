@@ -1,0 +1,86 @@
+/* ==========================================================================
+   手动输入路径模态框样式
+   ========================================================================== */
+
+.path-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    background: hwb(0 0% 0% / 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.path-modal {
+    width: 420px;
+    max-width: calc(100vw - 48px);
+    background: hwb(var(--bg95) / 1);
+    border: 1px solid hwb(var(--fg90) / 0.15);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 16px 48px hwb(0 0% 0% / 0.25);
+}
+
+.path-modal-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fontColor);
+    margin-bottom: 14px;
+}
+
+.path-modal-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid hwb(var(--fg90) / 0.2);
+    border-radius: 8px;
+    background: hwb(var(--ff) / 1);
+    color: var(--fontColor);
+    font-size: 13px;
+    outline: none;
+    margin-bottom: 16px;
+}
+
+.path-modal-input:focus {
+    border-color: hsl(210 80% 55%);
+}
+
+.path-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.path-modal-cancel,
+.path-modal-ok {
+    padding: 7px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: background 0.1s;
+}
+
+.path-modal-cancel {
+    background: hwb(var(--fg90) / 0.08);
+    color: var(--fontColor);
+}
+
+.path-modal-cancel:hover {
+    background: hwb(var(--fg90) / 0.14);
+}
+
+.path-modal-ok {
+    background: hsl(210 80% 55%);
+    color: white;
+}
+
+.path-modal-ok:hover {
+    background: hsl(210 80% 48%);
+}
+
+.path-modal-ok:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

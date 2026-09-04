@@ -3,12 +3,13 @@
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
+import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
-import { state, actions } from '../store';
-import { setTheme, getCurrentThemeMode } from '../theme/theme';
+import { state, actions } from '../../store';
+import { setTheme, getCurrentThemeMode } from '../../theme/theme';
 import { z } from 'zod';
-import type { ModelProvider } from '../store';
-import type { AgentName, ModelProviderModel } from '../../shared/agent';
+import type { ModelProvider } from '../../store';
+import type { AgentName, ModelProviderModel } from '../../../shared/agent';
 
 function XIcon() {
 	return (
@@ -23,11 +24,11 @@ function XIcon() {
 function GeneralTab() {
 	return (
 		<div>
-			<div class="setting-group">
-				<div class="setting-group-label">主题</div>
-				<div class="setting-group-desc">选择应用的外观模式</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>主题</div>
+				<div class={styles['setting-group-desc']}>选择应用的外观模式</div>
 				<select
-					class="select-input"
+					class={styles['select-input']}
 					value={state.themeMode}
 					onchange={(e) => {
 						const mode = e.currentTarget.value as "light" | "dark" | "system";
@@ -41,10 +42,10 @@ function GeneralTab() {
 				</select>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label">语言</div>
-				<div class="setting-group-desc">应用界面语言（暂只支持中文）</div>
-				<select class="select-input" disabled>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>语言</div>
+				<div class={styles['setting-group-desc']}>应用界面语言（暂只支持中文）</div>
+				<select class={styles['select-input']} disabled>
 					<option value="zh">简体中文</option>
 				</select>
 			</div>
@@ -107,13 +108,13 @@ function ModelsTab() {
 		<div>
 			<Show when={!editingProvider()}>
 				<div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-					<div class="setting-group-label">已配置的模型提供商</div>
-					<button class="btn-secondary" onclick={startAdd}>
+					<div class={styles['setting-group-label']}>已配置的模型提供商</div>
+					<button class={styles['btn-secondary']} onclick={startAdd}>
 						+ 添加提供商
 					</button>
 				</div>
 
-				<div class="provider-list">
+				<div class={styles['provider-list']}>
 					<Show when={state.providers.length === 0}>
 						<div style={{
 							padding: "24px",
@@ -128,21 +129,21 @@ function ModelsTab() {
 
 					<For each={state.providers}>
 						{(p) => (
-							<div class="provider-item">
+							<div class={styles['provider-item']}>
 								<div>
-									<div class="provider-item-name">{p.name}</div>
+									<div class={styles['provider-item-name']}>{p.name}</div>
 									<div style={{ fontSize: 12, color: "var(--fontColorMuted)", marginTop: 2 }}>
 										{p.models.length} 个模型 · {p.baseUrl}
 									</div>
 								</div>
-								<span class="provider-item-type">
+								<span class={styles['provider-item-type']}>
 									{p.apiFormat === "openai-chat" && "OpenAI Chat"}
 									{p.apiFormat === "openai-responses" && "OpenAI Responses"}
 									{p.apiFormat === "anthropic" && "Anthropic"}
 								</span>
-								<div class="provider-item-actions">
-									<button class="btn-secondary" onclick={() => startEdit(p)}>编辑</button>
-									<button class="btn-danger" onclick={() => handleDelete(p.id)}>删除</button>
+								<div class={styles['provider-item-actions']}>
+									<button class={styles['btn-secondary']} onclick={() => startEdit(p)}>编辑</button>
+									<button class={styles['btn-danger']} onclick={() => handleDelete(p.id)}>删除</button>
 								</div>
 							</div>
 						)}
@@ -266,8 +267,8 @@ function ProviderEditor(props: {
 				{local.provider.id ? "编辑提供商" : "添加提供商"}
 			</h3>
 
-			<div class="setting-group">
-				<div class="setting-group-label">名称</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>名称</div>
 				<input
 					class="text-input"
 					value={local.provider.name}
@@ -276,10 +277,10 @@ function ProviderEditor(props: {
 				/>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label">API 格式</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>API 格式</div>
 				<select
-					class="select-input"
+					class={styles['select-input']}
 					value={local.provider.apiFormat}
 					onchange={(e) => setLocal("provider", "apiFormat", e.currentTarget.value as any)}
 				>
@@ -289,8 +290,8 @@ function ProviderEditor(props: {
 				</select>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label">请求地址</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>请求地址</div>
 				<input
 					class="text-input"
 					value={local.provider.baseUrl}
@@ -299,8 +300,8 @@ function ProviderEditor(props: {
 				/>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label">API Key</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>API Key</div>
 				<input
 					class="text-input"
 					type="password"
@@ -310,13 +311,13 @@ function ProviderEditor(props: {
 				/>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label" style={{ display: "flex", justifyContent: "space-between" }}>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']} style={{ display: "flex", justifyContent: "space-between" }}>
 					模型目录
-					<button class="btn-secondary" onclick={addModel}>+ 添加模型</button>
+					<button class={styles['btn-secondary']} onclick={addModel}>+ 添加模型</button>
 				</div>
 
-				<div class="setting-group-desc" style={{ marginBottom: 8 }}>
+				<div class={styles['setting-group-desc']} style={{ marginBottom: 8 }}>
 					每个模型可独立配置 ID、名称、角色和自定义参数。新添加的模型请填写 ID 和显示名称后保存。
 				</div>
 
@@ -351,7 +352,7 @@ function ProviderEditor(props: {
 											/>
 										</div>
 										<select
-											class="select-input"
+											class={styles['select-input']}
 											style={{ width: "auto" }}
 											value={model.role}
 											onchange={(e) => setLocal("provider", "models", mIdx, "role", e.currentTarget.value as any)}
@@ -373,7 +374,7 @@ function ProviderEditor(props: {
 											自定义参数（JSON，合并到该模型的每次请求）
 										</div>
 										<textarea
-											class={`json-textarea${jsonErr() ? " error" : ""}`}
+											class={`${styles['json-textarea']}${jsonErr() ? ` ${styles.error}` : ""}`}
 											value={getModelJsonText(mIdx)}
 											oninput={(e) => {
 												setModelJsonTexts((prev) => ({ ...prev, [jsonKey]: e.currentTarget.value }));
@@ -397,13 +398,13 @@ function ProviderEditor(props: {
 				</div>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label">提供商级自定义参数</div>
-				<div class="setting-group-desc">
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>提供商级自定义参数</div>
+				<div class={styles['setting-group-desc']}>
 					JSON 对象，会被合并到该提供商下所有模型的每次请求中（模型级参数优先）。
 				</div>
 				<textarea
-					class={`json-textarea${props.jsonError ? " error" : ""}`}
+					class={`${styles['json-textarea']}${props.jsonError ? ` ${styles.error}` : ""}`}
 					value={providerJsonText()}
 					oninput={(e) => {
 						setProviderJsonText(e.currentTarget.value);
@@ -420,8 +421,8 @@ function ProviderEditor(props: {
 			</div>
 
 			<div style={{ display: "flex", gap: "10px", marginTop: 24 }}>
-				<button class="btn-secondary" onclick={doSave}>保存</button>
-				<button class="btn-danger" onclick={props.onCancel}>取消</button>
+				<button class={styles['btn-secondary']} onclick={doSave}>保存</button>
+				<button class={styles['btn-danger']} onclick={props.onCancel}>取消</button>
 			</div>
 		</div>
 	);
@@ -508,13 +509,13 @@ function UsageTab() {
 	return (
 		<div>
 			{/* 时间选择 */}
-			<div class="setting-group">
-				<div class="setting-group-label">时间范围</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>时间范围</div>
 				<div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
 					<For each={timeRanges}>
 						{(r) => (
 							<button
-								class="btn-secondary"
+								class={styles['btn-secondary']}
 								style={{
 									backgroundColor: state.usage.timeRange === r.value
 										? "var(--primary)"
@@ -531,8 +532,8 @@ function UsageTab() {
 			</div>
 
 			{/* Dashboard 项（可开关） */}
-			<div class="setting-group">
-				<div class="setting-group-label">指标显示</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>指标显示</div>
 				<div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
 					<DashboardItem
 						label="API 请求次数"
@@ -573,8 +574,8 @@ function UsageTab() {
 			</div>
 
 			{/* 折线图 */}
-			<div class="setting-group">
-				<div class="setting-group-label">趋势</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>趋势</div>
 				<div style={{
 					padding: "12px",
 					backgroundColor: "hwb(var(--bg95) / 1)",
@@ -671,10 +672,10 @@ function ModeConfigTab() {
 
 	return (
 		<div>
-			<div class="setting-group">
-				<div class="setting-group-label">选择 Agent</div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>选择 Agent</div>
 				<select
-					class="select-input"
+					class={styles['select-input']}
 					value={selectedAgentName()}
 					onchange={(e) => setSelectedAgentName(e.currentTarget.value as AgentName)}
 				>
@@ -684,9 +685,9 @@ function ModeConfigTab() {
 				</select>
 			</div>
 
-			<div class="setting-group">
-				<div class="setting-group-label">可转接的 Agent（JSON）</div>
-				<div class="setting-group-desc">
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>可转接的 Agent（JSON）</div>
+				<div class={styles['setting-group-desc']}>
 					这个 Agent 运行时，允许通过 "转接" 工具将工作转交给这些 Agent。
 					<br />
 					提示：直接编辑下面的 JSON，或勾选下方的复选框快速配置。
@@ -729,12 +730,12 @@ function ModeConfigTab() {
 
 				{/* JSON 编辑器 */}
 				<textarea
-					class="json-textarea"
+					class={styles['json-textarea']}
 					value={jsonText()}
 					oninput={(e) => setJsonText(e.currentTarget.value)}
 					rows={10}
 				/>
-				<button class="btn-secondary" style={{ marginTop: 8 }} onclick={handleSave}>
+				<button class={styles['btn-secondary']} style={{ marginTop: 8 }} onclick={handleSave}>
 					保存
 				</button>
 			</div>
@@ -758,16 +759,16 @@ export default function Settings() {
 
 	return (
 		<Show when={open()}>
-			<div class="settings-overlay" onclick={() => actions.closeSettings()}>
-				<div class="settings-panel" onclick={(e) => e.stopPropagation()}>
+			<div class={styles['settings-overlay']} onclick={() => actions.closeSettings()}>
+				<div class={styles['settings-panel']} onclick={(e) => e.stopPropagation()}>
 					{/* 左侧 Tab */}
-					<div class="settings-sidebar">
+					<div class={styles['settings-sidebar']}>
 						<h3>设置</h3>
 						<For each={TABS}>
 							{(tab) => (
 								<button
-									class="settings-tab"
-									classList={{ active: state.ui.activeSettingsTab === tab.id }}
+									class={styles['settings-tab']}
+									classList={{ [styles.active]: state.ui.activeSettingsTab === tab.id }}
 									onclick={() => actions.setSettingsTab(tab.id)}
 								>
 									<span>{tab.icon}</span>
@@ -778,10 +779,10 @@ export default function Settings() {
 					</div>
 
 					{/* 右侧内容 */}
-					<div class="settings-content">
-						<div class="settings-header">
+					<div class={styles['settings-content']}>
+						<div class={styles['settings-header']}>
 							<h2>{state.ui.activeSettingsTab}</h2>
-							<button class="settings-close-btn" onclick={() => actions.closeSettings()}>
+							<button class={styles['settings-close-btn']} onclick={() => actions.closeSettings()}>
 								<XIcon />
 							</button>
 						</div>

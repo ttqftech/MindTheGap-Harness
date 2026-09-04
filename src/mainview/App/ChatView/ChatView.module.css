@@ -1,0 +1,511 @@
+/* ==========================================================================
+   主聊天视图样式
+   ========================================================================== */
+
+.main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: visible;
+    min-width: 0;
+}
+
+.main-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--borderLight);
+    background-color: var(--ff);
+    flex-shrink: 0;
+}
+
+.conversation-title {
+    flex: 1;
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mode-toggle {
+    display: flex;
+    background-color: hwb(var(--bg95) / 1);
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+}
+
+.mode-toggle button {
+    padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 6px;
+    color: var(--fontColorDim);
+    transition: all 0.15s;
+}
+.mode-toggle button.active {
+    background-color: var(--ff);
+    color: var(--fontColor);
+    box-shadow: var(--shadowSm);
+}
+.mode-toggle button:hover:not(.active) {
+    color: var(--fontColor);
+}
+
+.chat-area {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 32px;
+}
+
+.empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 40px;
+}
+
+.empty-state-logo {
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, hwb(220 50% 0%), hwb(280 40% 5%));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    color: #fff;
+    margin-bottom: 20px;
+}
+
+.empty-state h2 {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--fontColor);
+}
+
+.empty-state p {
+    margin: 0;
+    font-size: 14px;
+    color: var(--fontColorDim);
+}
+
+.message-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 860px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.message {
+    display: flex;
+    gap: 12px;
+}
+
+.message.user {
+    flex-direction: row-reverse;
+}
+
+.message-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.message.user .message-avatar {
+    background-color: var(--primary);
+    color: #fff;
+}
+
+.message.assistant .message-avatar {
+    background: linear-gradient(135deg, hwb(220 50% 0%), hwb(280 40% 5%));
+    color: #fff;
+}
+
+.message-content {
+    max-width: 720px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.message.user .message-content {
+    background-color: var(--primary);
+    color: #fff;
+}
+
+.message.assistant .message-content {
+    background-color: hwb(var(--bg95) / 1);
+    color: var(--fontColor);
+}
+
+/* ==========================================================================
+   Agent 回复（无头像、无气泡、结构化块 + 层级缩进）
+   ========================================================================== */
+
+.agent-reply {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+    max-width: 100%;
+}
+
+.agent-block-text {
+    font-size: 14px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--fontColor);
+    border-left: 2px solid transparent;
+    padding-left: 8px;
+}
+
+.agent-block-tool {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 8px;
+    font-size: 12.5px;
+    font-family: Consolas, monospace;
+    color: var(--fontColorMuted);
+    background-color: hwb(var(--bg95) / 0.6);
+    border-radius: 6px;
+    max-width: fit-content;
+}
+
+.agent-block-tool.is-error {
+    color: var(--dangerColor, #e5484d);
+}
+
+.agent-tool-icon {
+    flex-shrink: 0;
+}
+
+.agent-tool-name {
+    font-weight: 600;
+}
+
+.agent-tool-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 480px;
+    opacity: 0.8;
+}
+
+.agent-block-agent {
+    padding: 6px 10px;
+    border-left: 2px solid var(--primary);
+    background-color: hwb(var(--bg95) / 0.5);
+    border-radius: 0 8px 8px 0;
+}
+
+.agent-block-agent.is-running {
+    border-left-color: var(--warning, #f5a623);
+}
+
+.agent-block-agent-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--fontColorMuted);
+}
+
+.agent-block-agent-summary {
+    margin-top: 4px;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    color: var(--fontColor);
+}
+
+.agent-block-error {
+    font-size: 13px;
+    color: var(--dangerColor, #e5484d);
+    padding: 4px 8px;
+}
+
+/* ==========================================================================
+   输入区域
+   ========================================================================== */
+
+.input-area {
+    flex-shrink: 0;
+    padding: 16px 32px 20px;
+    background-color: var(--ff);
+}
+
+.input-wrapper {
+    max-width: 860px;
+    margin: 0 auto;
+    background-color: hwb(var(--bg95) / 1);
+    border-radius: 16px;
+    border: 1px solid var(--borderLight);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input-wrapper:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(60, 130, 255, 0.15);
+}
+
+.input-controls-top {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px 0;
+    flex-wrap: wrap;
+}
+
+.chip-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 14px;
+    background-color: hwb(var(--bg90) / 1);
+    font-size: 12px;
+    color: var(--fontColorDim);
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.chip-btn:hover {
+    background-color: hwb(var(--bg88) / 1);
+    color: var(--fontColor);
+}
+.chip-btn .chip-label {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.input-textarea-wrapper {
+    padding: 8px 12px;
+}
+
+.input-textarea {
+    width: 100%;
+    min-height: 44px;
+    max-height: 240px;
+    border: none;
+    background: transparent;
+    resize: none;
+    outline: none;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--fontColor);
+}
+
+.input-textarea::placeholder {
+    color: var(--fontColorMuted);
+}
+
+.input-controls-bottom {
+    display: flex;
+    align-items: center;
+    padding: 0 12px 10px;
+    gap: 8px;
+}
+
+.input-add-btn,
+.input-model-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fontColorDim);
+    transition: all 0.15s;
+}
+.input-add-btn:hover,
+.input-model-btn:hover {
+    background-color: hwb(var(--bg90) / 1);
+    color: var(--fontColor);
+}
+
+.input-model-btn {
+    width: auto;
+    padding: 0 10px;
+    gap: 6px;
+    font-size: 12px;
+}
+
+.input-send-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background-color: var(--primary);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    transition: all 0.15s;
+}
+.input-send-btn:hover {
+    background-color: var(--primaryHover);
+}
+.input-send-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.input-stop-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background-color: var(--error);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+}
+
+/* ==========================================================================
+   Chip 下拉菜单
+   ========================================================================== */
+
+.chip-wrapper {
+    position: relative;
+    display: inline-block;
+    overflow: visible !important;
+    z-index: 100;
+}
+
+.chip-btn.active,
+.input-model-btn.active {
+    background: hwb(var(--bg90) / 1);
+    border-color: hwb(var(--fg90) / 0.15);
+}
+
+.chip-dropdown {
+    position: absolute !important;
+    z-index: 10000 !important;
+    overflow: visible !important;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 180px;
+    background: hwb(var(--bg95) / 1);
+    border: 1px solid hwb(var(--fg90) / 0.12);
+    border-radius: 8px;
+    padding: 6px;
+    box-shadow: 0 8px 24px hwb(0 0% 0% / 0.12);
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.chip-dropdown-wide {
+    min-width: 280px;
+}
+
+.chip-dropdown-empty {
+    padding: 12px;
+    text-align: center;
+    color: var(--fontColorMuted);
+    font-size: 12px;
+}
+
+.chip-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--fontColor);
+    cursor: pointer;
+    text-align: left;
+    white-space: nowrap;
+    transition: background 0.1s;
+}
+
+.chip-dropdown-item:hover {
+    background: hwb(var(--fg90) / 0.06);
+}
+
+.chip-dropdown-item.selected {
+    background: hwb(var(--fg90) / 0.08);
+    color: var(--fontColorDim);
+}
+
+.chip-dropdown-item-id {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--fontColorMuted);
+    font-family: ui-monospace, monospace;
+}
+
+.chip-dropdown-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.chip-dropdown-group-label {
+    padding: 8px 12px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fontColorMuted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.chip-dropdown-divider {
+    height: 1px;
+    background: hwb(var(--fg90) / 0.1);
+    margin: 4px 8px;
+}
+
+.chip-dropdown-secondary {
+    color: var(--fontColorMuted);
+    font-size: 12px;
+}
+
+.chip-dropdown-secondary:hover {
+    background: hwb(var(--fg90) / 0.06);
+    color: var(--fontColor);
+}
+
+/* ==========================================================================
+   打字动画
+   ========================================================================== */
+
+@keyframes typing {
+    0%, 60%, 100% { opacity: 0.3; }
+    30% { opacity: 1; }
+}
+
+.typing-dot {
+    display: inline-block;
+}
+
+.chip-dropdown-flip-up {
+    /* placeholder for flip-up class used by JS */
+}

@@ -8,6 +8,7 @@
 
 import { createSignal, Show } from 'solid-js';
 import { Portal } from 'solid-js/web';
+import styles from './PathInputModal.module.css';
 
 export function PathInputModal(props: {
 	open: boolean;
@@ -30,17 +31,17 @@ export function PathInputModal(props: {
 		<Portal>
 			<Show when={props.open}>
 				<div
-					class="path-modal-overlay"
+					class={styles['path-modal-overlay']}
 					onclick={(e) => {
 						// 点遮罩空白处关闭
 						if (e.target === e.currentTarget) cancel();
 					}}
 				>
-					<div class="path-modal" role="dialog" aria-label={props.title ?? '输入路径'}>
-						<div class="path-modal-title">{props.title ?? '输入路径'}</div>
+					<div class={styles['path-modal']} role="dialog" aria-label={props.title ?? '输入路径'}>
+						<div class={styles['path-modal-title']}>{props.title ?? '输入路径'}</div>
 						<input
 							ref={inputEl}
-							class="path-modal-input"
+							class={styles['path-modal-input']}
 							type="text"
 							autofocus
 							placeholder={props.placeholder ?? '请输入文件夹路径，例如 C:\\Users'}
@@ -51,10 +52,10 @@ export function PathInputModal(props: {
 								if (e.key === 'Escape') cancel();
 							}}
 						/>
-						<div class="path-modal-actions">
-							<button class="path-modal-cancel" onclick={cancel}>取消</button>
+						<div class={styles['path-modal-actions']}>
+							<button class={styles['path-modal-cancel']} onclick={cancel}>取消</button>
 							<button
-								class="path-modal-ok"
+								class={styles['path-modal-ok']}
 								onclick={confirm}
 								disabled={!value().trim()}
 							>

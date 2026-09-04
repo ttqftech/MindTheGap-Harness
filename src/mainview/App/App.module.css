@@ -1,0 +1,23 @@
+/* ==========================================================================
+   App 布局样式
+   ========================================================================== */
+
+.app-root {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+    background-color: var(--ff);
+}
+
+.sidebar-resizer {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s;
+    flex-shrink: 0;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+    background-color: var(--primary);
+}
