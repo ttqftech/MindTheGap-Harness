@@ -2,6 +2,27 @@
    设置面板样式
    ========================================================================== */
 
+/* ---------- FFBox-UI 组件在设置面板里的布局适配 ----------
+   ffbox-dropdown-input / ffbox-normal-input 默认 display:inline-block，
+   这里统一撑满设置项的宽度。
+   ffbox-normal-input 内部 .inputbox-selector 自带 margin: 15px 0，
+   用负 margin 抵消，否则每个输入框上下会多出 15px 空白。 */
+.ffbox-dropdown,
+.ffbox-input {
+    display: block;
+    width: 100%;
+}
+.ffbox-input {
+    margin: -15px 0;
+}
+
+/* 模型角色下拉：与输入框同排，宽度自适应内容 */
+.ffbox-dropdown-auto {
+    display: inline-block;
+    width: 110px;
+    flex-shrink: 0;
+}
+
 .settings-overlay {
     position: fixed;
     inset: 0;
@@ -9,7 +30,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: 2;
 }
 
 .settings-panel {
@@ -113,21 +134,6 @@
     font-size: 12px;
     color: var(--fontColorMuted);
     margin-bottom: 8px;
-}
-
-.select-input {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background-color: var(--ff);
-    color: var(--fontColor);
-    font-size: 13px;
-    outline: none;
-    transition: border-color 0.15s;
-}
-.select-input:focus {
-    border-color: var(--primary);
 }
 
 .json-textarea {

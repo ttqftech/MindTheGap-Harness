@@ -8,22 +8,17 @@
 
 import { rpc, isElectrobunEnv } from './rpc';
 
-/* ---------- 浏览器模式：手动输入路径 ---------- */
+/* ---------- 文件夹选择 ---------- */
 
-let resolveManualPath: ((path: string | null) => void) | null = null;
-
-export function registerManualPathHandler(handler: () => Promise<string | null>) {
-	resolveManualPath = handler;
-}
-
-export function unregisterManualPathHandler() {
-	resolveManualPath = null;
-}
-
-export function requestFolderPath(): Promise<string | null> {
+/**
+ * 选择运行文件夹。
+ * electron/electrobun 环境走原生对话框；浏览器（vite dev / playwright）没有
+ * 文件系统对话框，用 prompt 兜底即可 —— 不值得为此维护一整个路径输入弹窗。
+ */
+export async function requestFolderPath(): Promise<string | null> {
 	if (isElectrobunEnv()) return dialogPickFolder();
-	if (resolveManualPath) return resolveManualPath();
-	return Promise.resolve(null);
+	const input = window.prompt('浏览器模式：请输入文件夹绝对路径');
+	return input?.trim() || null;
 }
 
 /* ---------- 对话框 ---------- */
@@ -57,6 +52,29 @@ export const shell = {
 
 	async openExternal(url: string): Promise<void> {
 		await rpc.request.shellOpenExternal({ url });
+	},
+};
+
+/* ---------- 窗口控制（无边框窗口自绘标题栏用） ---------- */
+
+export const windowControls = {
+	async minimize(): Promise<void> {
+		await rpc.request.windowMinimize();
+	},
+
+	/** 最大化 / 还原切换，返回切换后是否处于最大化 */
+	async toggleMaximize(): Promise<boolean> {
+		const result = await rpc.request.windowToggleMaximize();
+		return result.ok ? result.data : false;
+	},
+
+	async close(): Promise<void> {
+		await rpc.request.windowClose();
+	},
+
+	async isMaximized(): Promise<boolean> {
+		const result = await rpc.request.windowIsMaximized();
+		return result.ok ? result.data : false;
 	},
 };
 

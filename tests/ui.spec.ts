@@ -5,15 +5,15 @@ test("model dropdown 不超出窗口", async ({ page }) => {
 	await page.goto("http://localhost:5173");
 	await page.waitForLoadState("networkidle");
 
-	// 等模型按钮出现
-	const modelBtn = page.locator(".input-model-btn");
-	await expect(modelBtn).toBeVisible({ timeout: 5000 });
+	// 等模型下拉框出现（ffbox-dropdown-input）
+	const modelInput = page.locator("ffbox-dropdown-input");
+	await expect(modelInput).toBeVisible({ timeout: 5000 });
 
-	// 点击模型按钮打开 dropdown
-	await modelBtn.click();
+	// 点击打开下拉菜单
+	await modelInput.click();
 
-	// 等 dropdown 出现
-	const dropdown = page.locator(".chip-dropdown-wide");
+	// 等 menu 出现（FFBoxMenu 渲染成 ffbox-menu）
+	const dropdown = page.locator("ffbox-menu");
 	await expect(dropdown).toBeVisible();
 
 	// 检查 dropdown 是否超出视口底部

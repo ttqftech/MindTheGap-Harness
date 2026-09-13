@@ -1,22 +1,21 @@
-import { createSignal, onMount, onCleanup } from 'solid-js';
-import { initTheme } from '../theme/theme';
+import { onMount, onCleanup } from 'solid-js';
+import type { FFBoxThemeProvider } from 'ffbox-ui';
+import { initTheme, resolvedTheme } from '../theme/theme';
+import TitleBar from './TitleBar/TitleBar';
 import Sidebar from './SideBar/Sidebar';
 import ChatView from './ChatView/ChatView';
 import Settings from './Settings/Settings';
-import { PathInputModal } from '../components/PathInputModal';
-import { registerManualPathHandler, unregisterManualPathHandler } from '../localBridge';
+import { setFFBoxContainer } from '../ffboxBridge';
 import { state, setState, actions, initApp } from '../store';
-import styles from './components/App.module.css';
+import styles from './App.module.css';
 
 export default function App() {
     let resizerRef: HTMLDivElement | undefined;
+    /** FFBox-UI 主题提供者：所有 ffbox 组件都必须在它的子树内才能继承主题 */
+    let themeProviderEl: FFBoxThemeProvider | undefined;
     let startX = 0;
     let startWidth = 0;
     let dragging = false;
-
-    // 浏览器模式：手动输入文件夹路径的模态框
-    const [manualPathOpen, setManualPathOpen] = createSignal(false);
-    let manualPathResolve: ((path: string | null) => void) | null = null;
 
     onMount(() => {
         // 初始化应用（加载持久化状态）
@@ -26,24 +25,13 @@ export default function App() {
         const mode = initTheme();
         actions.setThemeMode(mode);
 
-        // 注册浏览器模式手动输入路径的处理器
-        registerManualPathHandler(() => {
-            return new Promise<string | null>((resolve) => {
-                manualPathResolve = resolve;
-                setManualPathOpen(true);
-            });
-        });
+        // 命令式 ffbox 组件（菜单 / 对话框）挂到主题提供者上，保证能继承主题
+        setFFBoxContainer(themeProviderEl);
     });
 
-    onCleanup(() => unregisterManualPathHandler());
-
-    const closeManualPath = (value: string | null) => {
-        setManualPathOpen(false);
-        if (manualPathResolve) {
-            manualPathResolve(value);
-            manualPathResolve = null;
-        }
-    };
+    onCleanup(() => {
+        setFFBoxContainer(undefined);
+    });
 
     const onMouseDown = (e: MouseEvent) => {
         dragging = true;
@@ -69,26 +57,27 @@ export default function App() {
     };
 
     return (
-        <>
-            <div class={styles['app-root']}>
-                <Sidebar />
-                <div
-                    ref={resizerRef!}
-                    class={styles['sidebar-resizer']}
-                    onmousedown={onMouseDown}
-                />
-                <ChatView />
+        <ffbox-theme-provider
+            ref={themeProviderEl}
+            class={styles['ffbox-theme-provider']}
+            prop:theme={resolvedTheme()}
+        >
+            <div class={styles['app-shell']}>
+                {/* 无边框窗口的自绘标题栏（浏览器模式下自行隐藏） */}
+                <TitleBar />
+
+                <div class={styles['app-root']}>
+                    <Sidebar />
+                    <div
+                        ref={resizerRef!}
+                        class={styles['sidebar-resizer']}
+                        onmousedown={onMouseDown}
+                    />
+                    <ChatView />
+                </div>
             </div>
 
             <Settings />
-
-            {/* 浏览器模式：手动输入文件夹路径 */}
-            <PathInputModal
-                open={manualPathOpen()}
-                title="输入文件夹路径"
-                onConfirm={(v) => closeManualPath(v)}
-                onCancel={() => closeManualPath(null)}
-            />
-        </>
+        </ffbox-theme-provider>
     );
 }

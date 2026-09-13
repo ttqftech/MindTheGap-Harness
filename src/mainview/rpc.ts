@@ -36,11 +36,19 @@ const mockHandlers = {
 			appVersion: '0.1.0',
 		},
 	}),
+	// 浏览器里没有原生窗口，标题栏也不会渲染，这里只需不报错即可
+	windowMinimize: (): RpcResult<void> => ({ ok: true, data: undefined }),
+	windowToggleMaximize: (): RpcResult<boolean> => ({ ok: true, data: false }),
+	windowClose: (): RpcResult<void> => ({ ok: true, data: undefined }),
+	windowIsMaximized: (): RpcResult<boolean> => ({ ok: true, data: false }),
 };
 
 /* ---------- 类型化的 RPC 接口 ---------- */
 
-type RequestFn<P, R> = (params: P) => Promise<R>;
+/** params 允许为 undefined 时（如 envInfo / windowMinimize），调用方可以整体省略实参 */
+type RequestFn<P, R> = undefined extends P
+	? (params?: P) => Promise<R>
+	: (params: P) => Promise<R>;
 
 interface RpcApi {
 	request: {
@@ -49,6 +57,10 @@ interface RpcApi {
 		shellOpenPath: RequestFn<{ path: string }, RpcResult<void>>;
 		shellOpenExternal: RequestFn<{ url: string }, RpcResult<void>>;
 		envInfo: RequestFn<undefined, RpcResult<any>>;
+		windowMinimize: RequestFn<undefined, RpcResult<void>>;
+		windowToggleMaximize: RequestFn<undefined, RpcResult<boolean>>;
+		windowClose: RequestFn<undefined, RpcResult<void>>;
+		windowIsMaximized: RequestFn<undefined, RpcResult<boolean>>;
 	};
 	send: {
 		log: (payload: { level: 'info' | 'warn' | 'error'; msg: string }) => void;

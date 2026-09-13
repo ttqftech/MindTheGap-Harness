@@ -61,6 +61,22 @@
     /* 代码高亮 */
     --codeBg: hwb(220 96% 2%);
     --codeBorder: hwb(220 88% 10%);
+
+    /* ---------- FFBox-UI 组件所需（本项目主题未覆盖的部分） ----------
+       变量取值来自 vendor/ffbox-ui/dist/themes/light.css。
+       FFBox-UI 组件在 shadow DOM 中通过继承拿到这些变量，所以必须定义在
+       主题类上（组件库自带的 themes/*.css 会连带覆盖 :root，
+       且同时引入 light/dark 两份会互相打架，因此这里只补齐缺失的变量）。 */
+    --bg94: 0 94% 6%;
+    --66: #666;
+    --errorBorder: #E77;
+    --errorBg: #F7E7E7;
+    --errorBgActive: #FEE;
+    --highlight: 0 100% 0%;
+    --hoverLightBg: 0 100% 0%;
+    --hoverShadow: 0 0% 100%;
+    --menuItemHovered: 210 80% 0%;
+    --menuItemSelected: 210 60% 0%;
 }
 
 /* ---------- 深色主题 ---------- */
@@ -118,6 +134,19 @@
     /* 代码高亮 */
     --codeBg: hwb(220 8% 88%);
     --codeBorder: hwb(220 12% 82%);
+
+    /* ---------- FFBox-UI 组件所需（本项目主题未覆盖的部分） ----------
+       变量取值来自 vendor/ffbox-ui/dist/themes/dark.css，说明见上方浅色主题。 */
+    --bg94: 0 11% 89%;
+    --66: #B7B7B7;
+    --errorBorder: #D66;
+    --errorBg: #472727;
+    --errorBgActive: #522;
+    --highlight: 0 25% 75%;
+    --hoverLightBg: 0 20% 80%;
+    --hoverShadow: 0 0% 100%;
+    --menuItemHovered: 210 20% 60%;
+    --menuItemSelected: 210 10% 30%;
 }
 
 /* 默认深色主题（如果没有设置类名） */

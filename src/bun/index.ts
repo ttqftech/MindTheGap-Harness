@@ -1,5 +1,5 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
-import { buildRpcHandlers } from './rpc-handlers';
+import { buildRpcHandlers, setMainWindow } from './rpc-handlers';
 import { startHttpServer } from './http-server';
 import type { AppRPC } from '../shared/rpc';
 import { logMsg } from './utils';
@@ -58,8 +58,13 @@ const mainWindow = new BrowserWindow({
 		// x: 200,
 		// y: 200,
 	},
+	titleBarStyle: 'hidden',	// 无边框：去掉原生标题栏与三大金刚键，改由前端 TitleBar 组件自绘（见 mainview/App/TitleBar）
+	styleMask: { Resizable: true, Closable: true, Miniaturizable: true },	// 保留原生缩放边框，否则无边框窗口在 Windows 上无法拖动边缘调整大小
 	rpc,
 });
+
+// 窗口控制类 RPC 需要实例，创建后再注入（详见 rpc-handlers.ts 文件头）
+setMainWindow(mainWindow);
 
 console.log('MindTheGap-Harness started!');
 console.log(`[Main] Window ID: ${mainWindow.id}`);

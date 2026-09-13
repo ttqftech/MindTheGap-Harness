@@ -1,0 +1,64 @@
+/* ==========================================================================
+   自绘标题栏样式
+
+   app-region 说明：electrobun 的 preload 会把 -webkit-app-region / app-region
+   声明转译成本地拖拽区。写两条是为了兼顾 WebView2 与将来可能的 CEF 渲染器。
+   ========================================================================== */
+
+.title-bar {
+    display: flex;
+    align-items: stretch;
+    height: 32px;
+    flex-shrink: 0;
+    background-color: hwb(var(--bg95) / 1);
+    border-bottom: 1px solid var(--borderLight);
+    user-select: none;
+}
+
+/* 拖拽区：占满剩余宽度，双击可最大化 */
+.title-bar-drag {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    -webkit-app-region: drag;
+    app-region: drag;
+}
+
+.title-bar-text {
+    font-size: 12px;
+    color: var(--fontColorDim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 按钮区必须显式声明 no-drag，否则会被拖拽区吞掉点击 */
+.title-bar-buttons {
+    display: flex;
+    align-items: stretch;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+}
+
+.title-bar-btn {
+    width: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fontColorDim);
+    transition: background-color 0.12s;
+}
+.title-bar-btn:hover {
+    background-color: hwb(var(--fg90) / 0.1);
+    color: var(--fontColor);
+}
+.title-bar-btn:active {
+    transform: translateY(0.5px);
+}
+
+.title-bar-close:hover {
+    background-color: hwb(0 15% 0% / 0.85);
+    color: #fff;
+}

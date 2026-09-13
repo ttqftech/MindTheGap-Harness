@@ -1,0 +1,35 @@
+:root,
+:host,
+html,
+.themeLight {
+	color: #333333;
+	--fontColor: #333333;
+	--bg100: 0 100% 0%;
+	--bg99: 0 99% 1%;
+	--bg98: 0 98% 2%;
+	--bg97: 0 97% 3%;
+	--bg96: 0 96% 4%;
+	--bg95: 0 95% 5%;
+	--bg94: 0 94% 6%;
+	--bg93: 0 93% 7%;
+	--bg92: 0 92% 8%;
+	--bg91: 0 91% 9%;
+	--bg90: 0 90% 10%;
+	--ff: #FFFFFF;
+	--f7: #F7F7F7;
+	--e7: #E7E7E7;
+	--66: #666;
+	--33: #333;
+	--highlight: 0 100% 0%;
+	--hoverLightBg: 0 100% 0%;
+	--hoverShadow: 0 0% 100%;
+	--opposite: 0 0% 100%;
+	--opposite80: 0 20% 80%;
+	--menuItemHovered: 210 80% 0%;
+	--menuItemSelected: 210 60% 0%;
+	--errorBorder: #E77;
+	--errorBgHover: #F7E7E7;
+	--errorBgActive: #FEE;
+	--primaryColor: 220 25% 10%;
+	--titleText: #25e;
+}

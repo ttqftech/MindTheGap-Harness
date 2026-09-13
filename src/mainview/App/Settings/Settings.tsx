@@ -3,6 +3,7 @@
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
+import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
 import { state, actions } from '../../store';
@@ -10,6 +11,17 @@ import { setTheme, getCurrentThemeMode } from '../../theme/theme';
 import { z } from 'zod';
 import type { ModelProvider } from '../../store';
 import type { AgentName, ModelProviderModel } from '../../../shared/agent';
+import { confirmMsgbox, alertMsgbox } from '../../ffboxBridge';
+
+/** 把 [{value,label}] 转成 FFBox-UI 的菜单项数组 */
+function toMenuItems(options: readonly { value: string; label: string }[]): MenuItem[] {
+	return options.map((o) => ({ type: 'normal', value: o.value, label: o.label }));
+}
+
+/** 按 value 取显示文本 */
+function labelOf(options: readonly { value: string; label: string }[], value: string): string {
+	return options.find((o) => o.value === value)?.label ?? '';
+}
 
 function XIcon() {
 	return (
@@ -21,33 +33,45 @@ function XIcon() {
 }
 
 /* ---------- 通用 Tab ---------- */
+
+const THEME_OPTIONS = [
+	{ value: 'system', label: '跟随系统' },
+	{ value: 'light', label: '浅色' },
+	{ value: 'dark', label: '深色' },
+] as const;
+
+const LANG_OPTIONS = [{ value: 'zh', label: '简体中文' }] as const;
+
 function GeneralTab() {
 	return (
 		<div>
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>主题</div>
 				<div class={styles['setting-group-desc']}>选择应用的外观模式</div>
-				<select
-					class={styles['select-input']}
-					value={state.themeMode}
+				{/* readonly 模式下只能下拉选择，不能手动输入 */}
+				<ffbox-dropdown-input
+					class={styles['ffbox-dropdown']}
+					prop:list={toMenuItems(THEME_OPTIONS)}
+					prop:text={labelOf(THEME_OPTIONS, state.themeMode)}
+					prop:readonly={true}
 					onchange={(e) => {
-						const mode = e.currentTarget.value as "light" | "dark" | "system";
+						const mode = e.detail as "light" | "dark" | "system";
 						actions.setThemeMode(mode);
 						setTheme(mode);
 					}}
-				>
-					<option value="system">跟随系统</option>
-					<option value="light">浅色</option>
-					<option value="dark">深色</option>
-				</select>
+				/>
 			</div>
 
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>语言</div>
 				<div class={styles['setting-group-desc']}>应用界面语言（暂只支持中文）</div>
-				<select class={styles['select-input']} disabled>
-					<option value="zh">简体中文</option>
-				</select>
+				<ffbox-dropdown-input
+					class={styles['ffbox-dropdown']}
+					prop:list={toMenuItems(LANG_OPTIONS)}
+					prop:text={LANG_OPTIONS[0].label}
+					prop:readonly={true}
+					prop:disabled={true}
+				/>
 			</div>
 		</div>
 	);
@@ -93,9 +117,14 @@ function ModelsTab() {
 		setEditingProvider(null);
 	};
 
-	const handleDelete = (id: string) => {
-		if (confirm("确定要删除此模型提供商吗？")) {
-			actions.removeProvider(id);
+	const handleDelete = async (p: ModelProvider) => {
+		const ok = await confirmMsgbox(
+			"删除模型提供商",
+			`确定要删除「${p.name}」吗？其下的 ${p.models.length} 个模型将一并移除。`,
+			"删除",
+		);
+		if (ok) {
+			actions.removeProvider(p.id);
 		}
 	};
 
@@ -109,9 +138,9 @@ function ModelsTab() {
 			<Show when={!editingProvider()}>
 				<div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
 					<div class={styles['setting-group-label']}>已配置的模型提供商</div>
-					<button class={styles['btn-secondary']} onclick={startAdd}>
+					<ffbox-button type="primary" onclick={startAdd}>
 						+ 添加提供商
-					</button>
+					</ffbox-button>
 				</div>
 
 				<div class={styles['provider-list']}>
@@ -142,8 +171,8 @@ function ModelsTab() {
 									{p.apiFormat === "anthropic" && "Anthropic"}
 								</span>
 								<div class={styles['provider-item-actions']}>
-									<button class={styles['btn-secondary']} onclick={() => startEdit(p)}>编辑</button>
-									<button class={styles['btn-danger']} onclick={() => handleDelete(p.id)}>删除</button>
+									<ffbox-button onclick={() => startEdit(p)}>编辑</ffbox-button>
+									<ffbox-button type="danger" onclick={() => void handleDelete(p)}>删除</ffbox-button>
 								</div>
 							</div>
 						)}
@@ -164,6 +193,17 @@ function ModelsTab() {
 		</div>
 	);
 }
+
+const API_FORMAT_OPTIONS = [
+	{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+	{ value: 'openai-responses', label: 'OpenAI Responses' },
+	{ value: 'anthropic', label: 'Anthropic Messages' },
+] as const;
+
+const MODEL_ROLE_OPTIONS = [
+	{ value: 'standard', label: '标准' },
+	{ value: 'economy', label: '节省' },
+] as const;
 
 function ProviderEditor(props: {
 	provider: ModelProvider;
@@ -248,11 +288,11 @@ function ProviderEditor(props: {
 
 		for (const model of local.provider.models) {
 			if (!model.id.trim()) {
-				alert("模型 ID 不能为空，请填写后再保存。");
+				void alertMsgbox("无法保存", "模型 ID 不能为空，请填写后再保存。");
 				return;
 			}
 			if (!model.displayName.trim()) {
-				alert(`模型 "${model.id}" 的显示名称不能为空，请填写后再保存。`);
+				void alertMsgbox("无法保存", `模型 "${model.id}" 的显示名称不能为空，请填写后再保存。`);
 				return;
 			}
 		}
@@ -269,52 +309,50 @@ function ProviderEditor(props: {
 
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>名称</div>
-				<input
-					class="text-input"
-					value={local.provider.name}
-					oninput={(e) => setLocal("provider", "name", e.currentTarget.value)}
+				<ffbox-normal-input
+					class={styles['ffbox-input']}
+					prop:value={local.provider.name}
 					placeholder="我的提供商"
+					onchange={(e) => setLocal("provider", "name", e.detail)}
 				/>
 			</div>
 
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>API 格式</div>
-				<select
-					class={styles['select-input']}
-					value={local.provider.apiFormat}
-					onchange={(e) => setLocal("provider", "apiFormat", e.currentTarget.value as any)}
-				>
-					<option value="openai-chat">OpenAI Chat Completions</option>
-					<option value="openai-responses">OpenAI Responses</option>
-					<option value="anthropic">Anthropic Messages</option>
-				</select>
+				<ffbox-dropdown-input
+					class={styles['ffbox-dropdown']}
+					prop:list={toMenuItems(API_FORMAT_OPTIONS)}
+					prop:text={labelOf(API_FORMAT_OPTIONS, local.provider.apiFormat)}
+					prop:readonly={true}
+					onchange={(e) => setLocal("provider", "apiFormat", e.detail as ModelProvider['apiFormat'])}
+				/>
 			</div>
 
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>请求地址</div>
-				<input
-					class="text-input"
-					value={local.provider.baseUrl}
-					oninput={(e) => setLocal("provider", "baseUrl", e.currentTarget.value)}
+				<ffbox-normal-input
+					class={styles['ffbox-input']}
+					prop:value={local.provider.baseUrl}
 					placeholder="https://api.openai.com/v1"
+					onchange={(e) => setLocal("provider", "baseUrl", e.detail)}
 				/>
 			</div>
 
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>API Key</div>
-				<input
-					class="text-input"
-					type="password"
-					value={local.provider.apiKey}
-					oninput={(e) => setLocal("provider", "apiKey", e.currentTarget.value)}
+				<ffbox-normal-input
+					class={styles['ffbox-input']}
+					// type="password"
+					prop:value={local.provider.apiKey}
 					placeholder="sk-..."
+					onchange={(e) => setLocal("provider", "apiKey", e.detail)}
 				/>
 			</div>
 
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']} style={{ display: "flex", justifyContent: "space-between" }}>
 					模型目录
-					<button class={styles['btn-secondary']} onclick={addModel}>+ 添加模型</button>
+					<ffbox-button onclick={addModel}>+ 添加模型</ffbox-button>
 				</div>
 
 				<div class={styles['setting-group-desc']} style={{ marginBottom: 8 }}>
@@ -336,38 +374,36 @@ function ProviderEditor(props: {
 								}}>
 									<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: 8 }}>
 										<div style={{ flex: 1, display: "flex", gap: "8px" }}>
-											<input
-												class="text-input"
+											<ffbox-normal-input
+												class={styles['ffbox-input']}
 												style={{ flex: 1 }}
-												value={model.id}
-												oninput={(e) => setLocal("provider", "models", mIdx, "id", e.currentTarget.value)}
+												prop:value={model.id}
 												placeholder="模型 ID（如 deepseek-v4-pro）"
+												onchange={(e) => setLocal("provider", "models", mIdx, "id", e.detail)}
 											/>
-											<input
-												class="text-input"
+											<ffbox-normal-input
+												class={styles['ffbox-input']}
 												style={{ flex: 1 }}
-												value={model.displayName}
-												oninput={(e) => setLocal("provider", "models", mIdx, "displayName", e.currentTarget.value)}
+												prop:value={model.displayName}
 												placeholder="显示名称"
+												onchange={(e) => setLocal("provider", "models", mIdx, "displayName", e.detail)}
 											/>
 										</div>
-										<select
-											class={styles['select-input']}
-											style={{ width: "auto" }}
-											value={model.role}
-											onchange={(e) => setLocal("provider", "models", mIdx, "role", e.currentTarget.value as any)}
-										>
-											<option value="standard">标准</option>
-											<option value="economy">节省</option>
-										</select>
-										<button
-											class="icon-btn"
+										<ffbox-dropdown-input
+											class={styles['ffbox-dropdown-auto']}
+											prop:list={toMenuItems(MODEL_ROLE_OPTIONS)}
+											prop:text={labelOf(MODEL_ROLE_OPTIONS, model.role)}
+											prop:readonly={true}
+											onchange={(e) => setLocal("provider", "models", mIdx, "role", e.detail as ModelProviderModel['role'])}
+										/>
+										<ffbox-button
+											type="danger"
+											size="small"
 											title="删除此模型"
 											onclick={() => removeModel(mIdx)}
-											style={{ color: "var(--error)" }}
 										>
 											<XIcon />
-										</button>
+										</ffbox-button>
 									</div>
 									<div>
 										<div style={{ fontSize: 11, color: "var(--fontColorMuted)", marginBottom: 4 }}>
@@ -421,8 +457,8 @@ function ProviderEditor(props: {
 			</div>
 
 			<div style={{ display: "flex", gap: "10px", marginTop: 24 }}>
-				<button class={styles['btn-secondary']} onclick={doSave}>保存</button>
-				<button class={styles['btn-danger']} onclick={props.onCancel}>取消</button>
+				<ffbox-button type="primary" onclick={doSave}>保存</ffbox-button>
+				<ffbox-button type="danger" onclick={props.onCancel}>取消</ffbox-button>
 			</div>
 		</div>
 	);
@@ -613,29 +649,11 @@ function DashboardItem(props: {
 				<div style={{ fontSize: 12, color: "var(--fontColorMuted)" }}>{props.label}</div>
 				<div style={{ fontSize: 18, fontWeight: 600, color: "var(--fontColor)" }}>{props.value}</div>
 			</div>
-			<button
-				onclick={() => props.onToggle(!props.enabled)}
-				title={props.enabled ? "隐藏此指标" : "显示此指标"}
-				style={{
-					width: 40,
-					height: 22,
-					borderRadius: 11,
-					backgroundColor: props.enabled ? "var(--primary)" : "hwb(var(--bg90) / 1)",
-					position: "relative",
-					transition: "background-color 0.15s",
-				}}
-			>
-				<span style={{
-					position: "absolute",
-					top: 2,
-					left: props.enabled ? 20 : 2,
-					width: 18,
-					height: 18,
-					borderRadius: 9,
-					backgroundColor: "#fff",
-					transition: "left 0.15s",
-				}}></span>
-			</button>
+			{/* 原来这里手搓了一个 toggle，改用 FFBox-UI 的 ffbox-switch */}
+			<ffbox-switch
+				prop:checked={props.enabled}
+				onchange={(e) => props.onToggle(e.detail)}
+			/>
 		</div>
 	);
 }
@@ -643,6 +661,8 @@ function DashboardItem(props: {
 /* ---------- 模式配置 Tab ---------- */
 
 const ALL_AGENT_NAMES: AgentName[] = ["默认", "编码", "文件夹浏览总结"];
+
+const AGENT_OPTIONS = ALL_AGENT_NAMES.map((name) => ({ value: name, label: name }));
 
 function ModeConfigTab() {
 	const [selectedAgentName, setSelectedAgentName] = createSignal<AgentName>(state.currentAgentName);
@@ -663,10 +683,10 @@ function ModeConfigTab() {
 			const parsed = JSON.parse(jsonText());
 			if (parsed.transferableAgents && Array.isArray(parsed.transferableAgents)) {
 				actions.updateAgentConfig(selectedAgentName(), parsed.transferableAgents);
-				alert("已保存！");
+				void alertMsgbox("已保存", "可转接的 Agent 配置已更新。", "好的");
 			}
 		} catch (e) {
-			alert("JSON 格式错误");
+			void alertMsgbox("保存失败", "JSON 格式错误，请检查后重试。");
 		}
 	};
 
@@ -674,15 +694,13 @@ function ModeConfigTab() {
 		<div>
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>选择 Agent</div>
-				<select
-					class={styles['select-input']}
-					value={selectedAgentName()}
-					onchange={(e) => setSelectedAgentName(e.currentTarget.value as AgentName)}
-				>
-					<For each={ALL_AGENT_NAMES}>
-						{(name) => <option value={name}>{name}</option>}
-					</For>
-				</select>
+				<ffbox-dropdown-input
+					class={styles['ffbox-dropdown']}
+					prop:list={toMenuItems(AGENT_OPTIONS)}
+					prop:text={selectedAgentName()}
+					prop:readonly={true}
+					onchange={(e) => setSelectedAgentName(e.detail as AgentName)}
+				/>
 			</div>
 
 			<div class={styles['setting-group']}>
@@ -707,12 +725,11 @@ function ModeConfigTab() {
 							const checked = currentConfig()?.transferableAgents.includes(name) ?? false;
 							return (
 								<label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-									<input
-										type="checkbox"
-										checked={checked}
+									<ffbox-checkbox
+										prop:checked={checked}
 										onchange={(e) => {
 											const list = currentConfig()?.transferableAgents.slice() || [];
-											if (e.currentTarget.checked) {
+											if (e.detail) {
 												if (!list.includes(name)) list.push(name);
 											} else {
 												const idx = list.indexOf(name);
@@ -735,9 +752,9 @@ function ModeConfigTab() {
 					oninput={(e) => setJsonText(e.currentTarget.value)}
 					rows={10}
 				/>
-				<button class={styles['btn-secondary']} style={{ marginTop: 8 }} onclick={handleSave}>
+				<ffbox-button type="primary" style={{ marginTop: 8 }} onclick={handleSave}>
 					保存
-				</button>
+				</ffbox-button>
 			</div>
 		</div>
 	);

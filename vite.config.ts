@@ -6,7 +6,19 @@ import { electrobunViteAliases } from "./.hutch/devkit/api/config/electrobun-vit
 export default defineConfig({
 	plugins: [solid()],
 	resolve: {
-		alias: electrobunViteAliases(resolve(__dirname, ".hutch/devkit")),
+		alias: [
+			// FFBox-UI 未发布到 npm，直接指向 vendor 目录下的构建产物（自动注册版）
+			{
+				find: /^ffbox-ui$/,
+				replacement: resolve(__dirname, "vendor/ffbox-ui/dist/esm/ffbox-ui-autoregister.js"),
+			},
+			// 主题样式：ffbox-ui/themes/light.css、ffbox-ui/themes/dark.css
+			{
+				find: /^ffbox-ui\/themes\/(.*)$/,
+				replacement: resolve(__dirname, "vendor/ffbox-ui/dist/themes/$1"),
+			},
+			...electrobunViteAliases(resolve(__dirname, ".hutch/devkit")),
+		],
 	},
 	root: "src/mainview",
 	build: {

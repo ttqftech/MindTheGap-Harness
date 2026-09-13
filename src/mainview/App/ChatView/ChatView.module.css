@@ -328,8 +328,7 @@
     gap: 8px;
 }
 
-.input-add-btn,
-.input-model-btn {
+.input-add-btn {
     width: 32px;
     height: 32px;
     border-radius: 8px;
@@ -339,17 +338,17 @@
     color: var(--fontColorDim);
     transition: all 0.15s;
 }
-.input-add-btn:hover,
-.input-model-btn:hover {
+.input-add-btn:hover {
     background-color: hwb(var(--bg90) / 1);
     color: var(--fontColor);
 }
 
-.input-model-btn {
-    width: auto;
-    padding: 0 10px;
-    gap: 6px;
-    font-size: 12px;
+/* 模型选择：ffbox-dropdown-input（只读）。组件内部高度固定 24px，
+   这里只需在宿主上给宽度 —— 它是 inline-block，内部 .combobox-selector 会撑满。 */
+.model-dropdown {
+    width: 180px;
+    flex-shrink: 0;
+    font-size: 13px;
 }
 
 .input-send-btn {
@@ -384,113 +383,10 @@
     margin-left: auto;
 }
 
-/* ==========================================================================
-   Chip 下拉菜单
-   ========================================================================== */
-
-.chip-wrapper {
-    position: relative;
-    display: inline-block;
-    overflow: visible !important;
-    z-index: 100;
-}
-
-.chip-btn.active,
-.input-model-btn.active {
+/* 下拉菜单由 FFBox-UI 的 FFBoxMenu 统一渲染，这里只保留触发按钮的选中态 */
+.chip-btn.active {
     background: hwb(var(--bg90) / 1);
     border-color: hwb(var(--fg90) / 0.15);
-}
-
-.chip-dropdown {
-    position: absolute !important;
-    z-index: 10000 !important;
-    overflow: visible !important;
-    top: 100%;
-    left: 0;
-    margin-top: 4px;
-    min-width: 180px;
-    background: hwb(var(--bg95) / 1);
-    border: 1px solid hwb(var(--fg90) / 0.12);
-    border-radius: 8px;
-    padding: 6px;
-    box-shadow: 0 8px 24px hwb(0 0% 0% / 0.12);
-    max-height: 320px;
-    overflow-y: auto;
-}
-
-.chip-dropdown-wide {
-    min-width: 280px;
-}
-
-.chip-dropdown-empty {
-    padding: 12px;
-    text-align: center;
-    color: var(--fontColorMuted);
-    font-size: 12px;
-}
-
-.chip-dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 8px 12px;
-    border: none;
-    background: transparent;
-    border-radius: 6px;
-    font-size: 13px;
-    color: var(--fontColor);
-    cursor: pointer;
-    text-align: left;
-    white-space: nowrap;
-    transition: background 0.1s;
-}
-
-.chip-dropdown-item:hover {
-    background: hwb(var(--fg90) / 0.06);
-}
-
-.chip-dropdown-item.selected {
-    background: hwb(var(--fg90) / 0.08);
-    color: var(--fontColorDim);
-}
-
-.chip-dropdown-item-id {
-    margin-left: auto;
-    font-size: 10px;
-    color: var(--fontColorMuted);
-    font-family: ui-monospace, monospace;
-}
-
-.chip-dropdown-group {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.chip-dropdown-group-label {
-    padding: 8px 12px 4px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--fontColorMuted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-
-.chip-dropdown-divider {
-    height: 1px;
-    background: hwb(var(--fg90) / 0.1);
-    margin: 4px 8px;
-}
-
-.chip-dropdown-secondary {
-    color: var(--fontColorMuted);
-    font-size: 12px;
-}
-
-.chip-dropdown-secondary:hover {
-    background: hwb(var(--fg90) / 0.06);
-    color: var(--fontColor);
 }
 
 /* ==========================================================================
@@ -504,8 +400,4 @@
 
 .typing-dot {
     display: inline-block;
-}
-
-.chip-dropdown-flip-up {
-    /* placeholder for flip-up class used by JS */
 }

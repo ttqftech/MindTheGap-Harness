@@ -2,10 +2,28 @@
    App 布局样式
    ========================================================================== */
 
-.app-root {
+/* FFBox-UI 主题提供者：自定义元素默认 display:inline，需显式撑满，
+   否则它内部的 app-root（100vh / 100vw）会失去布局上下文 */
+.ffbox-theme-provider {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* 外层改为纵向 flex：上面是自绘标题栏，下面是主体（sidebar + chat） */
+.app-shell {
     display: flex;
+    flex-direction: column;
     height: 100vh;
     width: 100vw;
+    overflow: hidden;
+}
+
+.app-root {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     overflow: hidden;
     background-color: var(--ff);
 }

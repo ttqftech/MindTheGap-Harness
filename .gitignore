@@ -2,10 +2,11 @@
 .cottontail*
 node_modules/
 build/
-dist/
+/dist
 artifacts/
 docs/*
 !docs/日志.md
 test-results/
 *.tsbuildinfo
 AGENTS*
+.workbuddy

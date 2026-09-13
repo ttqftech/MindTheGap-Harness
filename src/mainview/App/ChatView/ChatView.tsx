@@ -8,56 +8,17 @@
    - done / error → 结束 generating 状态
    ========================================================================== */
 
-import { createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
+import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
 import styles from './ChatView.module.css';
-import { Portal } from 'solid-js/web';
 import { state as appState, actions, getActiveConversation, getProviderById } from '../../store';
 import type { Message, MessageBlock } from '../../store';
 import type { AgentName, ModelConfig } from '../../../shared/agent';
 import { runAgent, cancelAgent, subscribeStream, saveConversationData } from '../../agentBridge';
 import type { AgentStreamEvent } from '../shared/agent';
-import { dialog } from '../../localBridge';
+import { requestFolderPath } from '../../localBridge';
+import { showMenu, alertMsgbox } from '../../ffboxBridge';
 import DiagramView from './DiagramView';
-
-/** 把 dropdown 挂到 body 并定位到触发按钮下方，超出视口则向上弹 */
-function FixedDropdown(props: {
-	btnEl: HTMLElement | undefined;
-	class?: string;
-	children: any;
-}) {
-	let dropEl: HTMLDivElement | undefined;
-
-	onMount(() => {
-		if (!props.btnEl || !dropEl) return;
-		const rect = props.btnEl.getBoundingClientRect();
-		dropEl.style.position = 'fixed';
-		dropEl.style.left = `${rect.left}px`;
-
-		// 先放到按钮下方，测量高度后检测是否超出视口
-		dropEl.style.top = `${rect.bottom}px`;
-		const h = dropEl.offsetHeight;
-		const viewportBottom = window.innerHeight;
-
-		if (rect.bottom + h > viewportBottom) {
-			// 向上弹，距离按钮底部 4px gap
-			dropEl.style.top = `${Math.max(8, rect.top - h - 4)}px`;
-			dropEl.classList.add(styles['chip-dropdown-flip-up']);
-		}
-	});
-
-	return (
-		<Portal>
-			<div
-				ref={dropEl}
-				class={props.class}
-				style={{ zIndex: 9999, overflow: 'visible' }}
-				onclick={(e) => e.stopPropagation()}
-			>
-				{props.children}
-			</div>
-		</Portal>
-	);
-}
 
 function UserIcon() {
 	return <span>U</span>;
@@ -95,6 +56,9 @@ function SparkleIcon() {
 		</svg>
 	);
 }
+
+/** 可选的 Agent 列表 */
+const AGENT_NAMES: AgentName[] = ['默认', '编码', '文件夹浏览总结'];
 
 /** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
 function buildModelConfig(): ModelConfig | null {
@@ -134,29 +98,114 @@ export default function ChatView() {
 		currentDepth = 0;
 	};
 
-	/* === 下拉菜单状态 === */
-	const [showFolderMenu, setShowFolderMenu] = createSignal(false);
-	const [showModeMenu, setShowModeMenu] = createSignal(false);
-	const [showModelMenu, setShowModelMenu] = createSignal(false);
+	/* === 下拉菜单 ===
+	   文件夹 / Agent 两个 chip 用 FFBox-UI 的 FFBoxMenu（命令式弹出，自带定位 / 键盘导航 / 遮罩关闭），
+	   这里只记录当前打开的是哪一个，用于按钮高亮。
+	   模型选择用的是 ffbox-dropdown-input（见下方 modelMenu），不需要这套状态。 */
+	const [openMenu, setOpenMenu] = createSignal<'folder' | 'mode' | null>(null);
 
-	// 三个触发按钮的 ref（给 FixedDropdown 定位用）
-	let folderBtn: HTMLElement | undefined;
-	let modeBtn: HTMLElement | undefined;
-	let modelBtn: HTMLElement | undefined;
-	const closeAllMenus = () => {
-		setShowFolderMenu(false);
-		setShowModeMenu(false);
-		setShowModelMenu(false);
+	// 两个 chip 触发按钮的 ref（给 FFBoxMenu 当弹出锚点）
+	let folderBtn: HTMLButtonElement | undefined;
+	let modeBtn: HTMLButtonElement | undefined;
+	/** 模型下拉框的 ref：选中后需要把显示文本写回组件（原因见 onModelChange） */
+	let modelInput: FFBoxDropdownInput | undefined;
+
+	/** 统一入口：弹出菜单并在关闭时清掉按钮高亮 */
+	const popupMenu = (id: 'folder' | 'mode', options: Parameters<typeof showMenu>[0]) => {
+		setOpenMenu(id);
+		showMenu({
+			...options,
+			onClose: () => {
+				options.onClose?.();
+				setOpenMenu(null);
+			},
+		});
 	};
 
-	// 点击页面其他区域关闭所有下拉菜单
-	createEffect(() => {
-		if (showFolderMenu() || showModeMenu() || showModelMenu()) {
-			const handler = () => closeAllMenus();
-			window.addEventListener('click', handler);
-			onCleanup(() => window.removeEventListener('click', handler));
+	/** 运行文件夹菜单 */
+	const openFolderMenu = () => {
+		const activeFolderId = getActiveConversation()?.folderId;
+		const menu: MenuItem[] = [
+			...appState.folders.map((f) => ({
+				type: 'radio' as const,
+				value: f.id,
+				label: f.name,
+				checked: activeFolderId === f.id,
+			})),
+			{ type: 'separator' as const },
+			{ type: 'normal' as const, value: '__new__', label: '+ 新建文件夹…' },
+		];
+		popupMenu('folder', {
+			triggerElem: folderBtn,
+			type: 'select',
+			menu,
+			onSelect: (_e, value) => {
+				if (value === '__new__') {
+					// requestFolderPath 内部会区分 electrobun 原生对话框与浏览器回退
+					void (async () => {
+						const folderPath = await requestFolderPath();
+						if (folderPath) {
+							const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
+							actions.addFolder(folderPath, folderName);
+						}
+					})();
+					return;
+				}
+				const conv = getActiveConversation();
+				if (conv) actions.setConversationFolder(conv.id, value);
+			},
+		});
+	};
+
+	/** Agent 模式菜单 */
+	const openModeMenu = () => {
+		popupMenu('mode', {
+			triggerElem: modeBtn,
+			type: 'select',
+			menu: AGENT_NAMES.map((name) => ({
+				type: 'radio' as const,
+				value: name,
+				label: name,
+				checked: appState.currentAgentName === name,
+			})),
+			onSelect: (_e, value) => actions.setCurrentAgentName(value as AgentName),
+		});
+	};
+
+	/* === 模型选择：只读 DropdownInput ===
+	   菜单项按供应商拆成 submenu（FFBox-UI 的 MenuItem 原生支持 submenu），
+	   值统一编码成 `providerId/modelId`，选中后解码写回 store。 */
+	const modelMenu = createMemo<MenuItem[]>(() => {
+		const current = appState.currentStandardModel;
+		if (appState.providers.length === 0) {
+			return [{ type: 'normal', value: '__none__', label: '还没有配置模型，去设置里添加吧', disabled: true }];
 		}
+		return appState.providers.map((provider) => ({
+			type: 'submenu' as const,
+			label: provider.name,
+			subMenu: provider.models.map((model) => ({
+				type: 'radio' as const,
+				value: `${provider.id}/${model.id}`,
+				label: model.displayName,
+				tooltip: model.id,
+				checked: current?.providerId === provider.id && current?.modelId === model.id,
+			})),
+		}));
 	});
+
+	const onModelChange = (e: CustomEvent<string>) => {
+		const value = e.detail;
+		if (typeof value !== 'string') return;
+		const sep = value.indexOf('/');
+		if (sep <= 0) return;
+		actions.setCurrentStandardModel({
+			providerId: value.slice(0, sep),
+			modelId: value.slice(sep + 1),
+		});
+		// dropdown-input 内部选中后会把 text 置为 value（形如 pid/mid）。重复选同一项时
+		// prop:text 的响应式值没变、Solid 不会重新赋值，所以这里手动把显示名写回。
+		if (modelInput) modelInput.text = currentModelDisplay();
+	};
 
 	const chatAreaRef = (el: HTMLDivElement) => {
 		// 自动滚动到底部
@@ -297,7 +346,7 @@ export default function ChatView() {
 		// 检查模型配置
 		const modelConfig = buildModelConfig();
 		if (!modelConfig) {
-			alert('请先在设置中配置模型！');
+			void alertMsgbox('未配置模型', '请先在「设置 → 模型」里配置模型提供商与模型，然后再发起任务。');
 			return;
 		}
 
@@ -536,92 +585,26 @@ export default function ChatView() {
 					{/* 上方控件 */}
 					<div class={styles['input-controls-top']}>
 						{/* 运行文件夹 */}
-						<div class={styles['chip-wrapper']}>
-							<button
-								ref={folderBtn}
-								classList={{ [styles['chip-btn']]: true, [styles.active]: showFolderMenu() }}
-								title='运行文件夹'
-								onclick={(e) => {
-									e.stopPropagation();
-									closeAllMenus();
-									setShowFolderMenu((v) => !v);
-								}}
-							>
-								📁 <span class={styles['chip-label']}>{currentFolderDisplay()}</span>
-								<ChevronDown />
-							</button>
-							<Show when={showFolderMenu()}>
-								<FixedDropdown btnEl={folderBtn} class={styles['chip-dropdown']}>
-									<For each={appState.folders}>
-										{(f) => (
-											<button
-												class={styles['chip-dropdown-item']}
-												onclick={() => {
-													const conv = getActiveConversation();
-													if (conv) {
-														actions.setConversationFolder(conv.id, f.id);
-													}
-													closeAllMenus();
-												}}
-											>
-												{f.icon} {f.name}
-											</button>
-										)}
-									</For>
-									<div class={styles['chip-dropdown-divider']} />
-									<button
-										class={`${styles['chip-dropdown-item']} ${styles['chip-dropdown-secondary']}`}
-										onclick={async () => {
-											const folderPath = await dialog.pickFolder();
-											if (folderPath) {
-												const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
-												actions.addFolder(folderPath, folderName);
-											}
-											closeAllMenus();
-										}}
-									>
-										+ 新建文件夹…
-									</button>
-								</FixedDropdown>
-							</Show>
-						</div>
+						<button
+							ref={folderBtn}
+							classList={{ [styles['chip-btn']]: true, [styles.active]: openMenu() === 'folder' }}
+							title='运行文件夹'
+							onclick={openFolderMenu}
+						>
+							📁 <span class={styles['chip-label']}>{currentFolderDisplay()}</span>
+							<ChevronDown />
+						</button>
 
 						{/* Agent 模式 */}
-						<div class={styles['chip-wrapper']}>
-							<button
-								ref={modeBtn}
-								classList={{ [styles['chip-btn']]: true, [styles.active]: showModeMenu() }}
-								title="运行模式"
-								onclick={(e) => {
-									e.stopPropagation();
-									closeAllMenus();
-									setShowModeMenu((v) => !v);
-								}}
-							>
-								🤖 <span class={styles['chip-label']}>{appState.currentAgentName}</span>
-								<ChevronDown />
-							</button>
-							<Show when={showModeMenu()}>
-								<FixedDropdown btnEl={modeBtn} class={styles['chip-dropdown']}>
-									<For each={(['默认', '编码', '文件夹浏览总结'] as const)}>
-										{(mode) => (
-											<button
-												classList={{
-													[styles['chip-dropdown-item']]: true,
-													[styles.selected]: appState.currentAgentName === mode,
-												}}
-												onclick={() => {
-													actions.setCurrentAgentName(mode as AgentName);
-													closeAllMenus();
-												}}
-											>
-												{appState.currentAgentName === mode ? '✓ ' : ''}{mode}
-											</button>
-										)}
-									</For>
-								</FixedDropdown>
-							</Show>
-						</div>
+						<button
+							ref={modeBtn}
+							classList={{ [styles['chip-btn']]: true, [styles.active]: openMenu() === 'mode' }}
+							title="运行模式"
+							onclick={openModeMenu}
+						>
+							🤖 <span class={styles['chip-label']}>{appState.currentAgentName}</span>
+							<ChevronDown />
+						</button>
 					</div>
 
 					{/* 输入框 */}
@@ -645,64 +628,17 @@ export default function ChatView() {
 							</svg>
 						</button>
 
-						{/* 模型选择（带下拉菜单） */}
-						<div class={styles['chip-wrapper']}>
-							<button
-								ref={modelBtn}
-								classList={{ [styles['input-model-btn']]: true, [styles.active]: showModelMenu() }}
-								title="选择模型"
-								onclick={(e) => {
-									e.stopPropagation();
-									closeAllMenus();
-									setShowModelMenu((v) => !v);
-								}}
-							>
-								🧠 {currentModelDisplay()}
-								<ChevronDown />
-							</button>
-							<Show when={showModelMenu()}>
-								<FixedDropdown btnEl={modelBtn} class={`${styles['chip-dropdown']} ${styles['chip-dropdown-wide']}`}>
-									<Show when={appState.providers.length === 0}>
-										<div class={styles['chip-dropdown-empty']}>
-											还没有配置模型，去设置里添加吧
-										</div>
-									</Show>
-									<For each={appState.providers}>
-										{(provider) => (
-											<div class={styles['chip-dropdown-group']}>
-												<div class={styles['chip-dropdown-group-label']}>{provider.name}</div>
-												<For each={provider.models}>
-													{(model) => {
-														const selected =
-															appState.currentStandardModel?.providerId === provider.id &&
-															appState.currentStandardModel?.modelId === model.id;
-														return (
-															<button
-																classList={{
-																	[styles['chip-dropdown-item']]: true,
-																	[styles.selected]: selected,
-																}}
-																onclick={() => {
-																	actions.setCurrentStandardModel({
-																		providerId: provider.id,
-																		modelId: model.id,
-																	});
-																	closeAllMenus();
-																}}
-															>
-																{selected ? '✓ ' : ''}
-																{model.displayName}
-																<span class={styles['chip-dropdown-item-id']}>{model.id}</span>
-															</button>
-														);
-													}}
-												</For>
-											</div>
-										)}
-									</For>
-								</FixedDropdown>
-							</Show>
-						</div>
+						{/* 模型选择：只读下拉框（供应商为 submenu） */}
+						<ffbox-dropdown-input
+							ref={modelInput}
+							class={styles['model-dropdown']}
+							title="选择模型"
+							placeholder="选择模型"
+							prop:readonly={true}
+							prop:text={currentModelDisplay()}
+							prop:list={modelMenu()}
+							onchange={onModelChange}
+						/>
 
 						<Show when={!isGenerating()}>
 							<button

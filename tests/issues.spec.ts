@@ -39,13 +39,9 @@ test("新建任务出现在侧边栏（本地文件夹下）", async ({ page }) 
 test("文件夹可删除，本地文件夹不可删除", async ({ page }) => {
 	await cleanState(page);
 
-	// 通过 PathInputModal 新建文件夹
+	// 新建文件夹：浏览器模式没有原生目录对话框，localBridge 走 window.prompt 兜底
+	page.once("dialog", (dialog) => dialog.accept("C:\\test-folder"));
 	await page.locator(".section-actions .icon-btn").nth(1).click();
-	const modal = page.locator(".path-modal");
-	await expect(modal).toBeVisible({ timeout: 5000 });
-	await page.locator(".path-modal-input").fill("C:\\test-folder");
-	await page.locator(".path-modal-ok").click();
-	await expect(modal).toBeHidden();
 
 	// 文件夹出现在侧边栏
 	const folderNames = page.locator(".tree-folder-name");

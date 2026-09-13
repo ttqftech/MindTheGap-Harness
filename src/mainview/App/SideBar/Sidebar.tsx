@@ -5,7 +5,7 @@
 import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
 import styles from './Sidebar.module.css';
 import { state, setState, actions } from '../../store';
-import { dialog } from '../../localBridge';
+import { requestFolderPath } from '../../localBridge';
 import { getTimeString } from '../../../bun/utils';
 
 function FolderIcon() {
@@ -109,7 +109,7 @@ export default function Sidebar() {
 	};
 
 	const handleNewFolder = async () => {
-		const folderPath = await dialog.pickFolder();
+		const folderPath = await requestFolderPath();
 		if (!folderPath) return;  // 用户取消
 		// 用目录名作为 folderId 和显示名
 		const folderName = folderPath.split(/[\\/]/).pop() || folderPath;

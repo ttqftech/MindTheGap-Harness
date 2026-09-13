@@ -1,0 +1,1 @@
+{"version":3,"file":"theme-context.js","sources":["../../../src/contexts/theme-context.ts"],"sourcesContent":["import { createContext } from '@lit/context';\r\n\r\nexport type Theme = 'light' | 'dark';\r\n\r\nexport const themeContext = createContext<Theme>('ffbox-theme');"],"names":["createContext"],"mappings":";AAIO,MAAM,eAAeA,EAAqB,aAAa;"}
