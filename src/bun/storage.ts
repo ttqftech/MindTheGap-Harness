@@ -7,9 +7,9 @@
    ========================================================================== */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, AgentConfig, UsageStats, Folder, AgentName } from '../shared/agent';
+import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, AgentConfig, UsageStats, Folder, AgentName, McpServerConfig } from '../shared/agent';
 
 const DATA_DIR = join(homedir(), '.mindthegap-harness');
 
@@ -38,6 +38,45 @@ function ensureConversationsDir() {
 	if (!existsSync(CONVERSATIONS_DIR)) mkdirSync(CONVERSATIONS_DIR, { recursive: true });
 }
 
+/**
+ * 定位内置示例 MCP 服务器（求正弦）的入口文件。
+ *
+ * 为什么需要运行时解析而不是写死相对路径：
+ * 主进程的 cwd 在 dev（项目根）和打包后（应用目录）下并不一致，
+ * 而 MCP 服务器是 spawn 出来的独立子进程，必须拿到绝对路径才可靠。
+ * 做法是从 cwd 逐级向上找含有 mcp-servers/sine/index.js 的目录。
+ */
+function resolveBuiltinSineServerPath(): string | null {
+	const rel = join('mcp-servers', 'sine', 'index.js');
+	let dir = process.cwd();
+	for (let i = 0; i < 6; i++) {
+		const candidate = join(dir, rel);
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return null;
+}
+
+/**
+ * 内置示例服务器：求正弦。
+ * 名字以英文 sine 开头，是为了让工具前缀（mcp__sine__xxx）不含中文，
+ * 因为多数 LLM 供应商限制工具名只能由字母数字和下划线组成。
+ */
+function builtinSineServer(): McpServerConfig {
+	const path = resolveBuiltinSineServerPath();
+	return {
+		id: 'builtin-sine',
+		name: 'sine 正弦函数（内置示例）',
+		enabled: path !== null,
+		transport: 'stdio',
+		command: 'node',
+		args: path ? [path] : [],
+		env: {},
+	};
+}
+
 const defaultSettings: ServiceSettings = {
 	providers: [],
 	currentStandardModel: null,
@@ -57,11 +96,20 @@ const defaultSettings: ServiceSettings = {
 		showTokensOutput: true,
 	},
 	folders: [{ id: 'local', name: '本地', isLocal: true }],
+	mcpServers: [builtinSineServer()],
 };
 
 export const storage = {
 	async getSettings(): Promise<ServiceSettings> {
-		return readJsonFile(SETTINGS_FILE, defaultSettings);
+		const raw = readJsonFile<Partial<ServiceSettings>>(SETTINGS_FILE, defaultSettings);
+		// 老版本的 settings.json 不含后加的字段（如 mcpServers），逐项用默认值补齐。
+		// 注意不能直接 {...defaultSettings, ...raw}：raw 里显式存在的 undefined 会覆盖默认值。
+		const merged = { ...defaultSettings };
+		for (const key of Object.keys(defaultSettings) as (keyof ServiceSettings)[]) {
+			const value = (raw as Record<string, unknown>)[key];
+			if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
+		}
+		return merged;
 	},
 
 	async setSettings(settings: ServiceSettings): Promise<void> {
@@ -116,6 +164,17 @@ export const storage = {
 	async getFolders(): Promise<Folder[]> {
 		const settings = await this.getSettings();
 		return settings.folders;
+	},
+
+	async getMcpServers(): Promise<McpServerConfig[]> {
+		const settings = await this.getSettings();
+		return settings.mcpServers ?? [];
+	},
+
+	async setMcpServers(servers: McpServerConfig[]): Promise<void> {
+		const settings = await this.getSettings();
+		settings.mcpServers = servers;
+		await this.setSettings(settings);
 	},
 
 	async setFolders(folders: Folder[]): Promise<void> {

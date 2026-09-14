@@ -17,6 +17,9 @@ import type {
 	AgentConfig,
 	UsageStats,
 	Folder,
+	McpServerConfig,
+	McpServerStatus,
+	McpToolInfo,
 } from '../shared/agent';
 
 const HTTP_PORT = 18999;
@@ -257,6 +260,101 @@ export async function setUsage(usage: UsageStats): Promise<boolean> {
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+/* ---------- 设置 — MCP 服务器 ---------- */
+
+export async function getMcpServers(): Promise<McpServerConfig[]> {
+	try {
+		return await httpFetch<McpServerConfig[]>('/api/settings/mcp-servers');
+	} catch {
+		return [];
+	}
+}
+
+export async function setMcpServers(servers: McpServerConfig[]): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/mcp-servers', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(servers),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** 运行态：哪些服务器已连上、各自有哪些工具 */
+export async function getMcpStatus(): Promise<McpServerStatus[]> {
+	try {
+		return await httpFetch<McpServerStatus[]>('/api/mcp/status');
+	} catch {
+		return [];
+	}
+}
+
+export async function getMcpTools(): Promise<McpToolInfo[]> {
+	try {
+		return await httpFetch<McpToolInfo[]>('/api/mcp/tools');
+	} catch {
+		return [];
+	}
+}
+
+export async function connectMcpServer(id: string): Promise<{ ok: boolean; error?: string; status?: McpServerStatus }> {
+	try {
+		return await httpFetch('/api/mcp/connect', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id }),
+		});
+	} catch (e: any) {
+		return { ok: false, error: e?.message };
+	}
+}
+
+export async function disconnectMcpServer(id: string): Promise<{ ok: boolean }> {
+	try {
+		return await httpFetch('/api/mcp/disconnect', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id }),
+		});
+	} catch {
+		return { ok: false };
+	}
+}
+
+/** 用一份还没保存的配置试连，返回服务器信息和工具清单 */
+export async function testMcpServer(config: McpServerConfig): Promise<{
+	ok: boolean;
+	tools: McpToolInfo[];
+	error?: string;
+	serverInfo?: { name?: string; version?: string };
+}> {
+	try {
+		return await httpFetch('/api/mcp/test', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config),
+		});
+	} catch (e: any) {
+		return { ok: false, tools: [], error: e?.message };
+	}
+}
+
+/** 手动调用一个 MCP 工具（设置面板里用来验证效果） */
+export async function callMcpTool(name: string, args: Record<string, unknown>): Promise<{ success: boolean; content: string; error?: string }> {
+	try {
+		return await httpFetch('/api/mcp/call', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name, arguments: args }),
+		});
+	} catch (e: any) {
+		return { success: false, content: '', error: e?.message };
 	}
 }
 

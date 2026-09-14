@@ -25,6 +25,8 @@ import type {
 	ModelProviderModel,
 	UsageStats,
 	Folder,
+	McpServerConfig,
+	McpServerStatus,
 } from '../../shared/agent';
 
 /* ---------- 前端扩展类型（UITask 模式） ---------- */
@@ -43,7 +45,7 @@ export type UIState = {
 	sidebarWidth: number;
 	sidebarCollapsed: boolean;
 	settingsOpen: boolean;
-	activeSettingsTab: '通用' | '模型' | '用量' | '模式配置';
+	activeSettingsTab: '通用' | '模型' | '用量' | '模式配置' | 'MCP';
 	viewMode: ViewMode;
 };
 
@@ -59,6 +61,10 @@ export type AppState = {
 	currentAgentName: AgentName;
 	agentConfigs: AgentConfig[];
 	usage: UsageStats;
+	/** MCP 服务器配置（持久化在后端 settings.json） */
+	mcpServers: McpServerConfig[];
+	/** MCP 运行态（后端内存维护，不持久化） */
+	mcpStatus: McpServerStatus[];
 };
 
 /* ---------- 初始状态 ---------- */
@@ -112,6 +118,8 @@ export const defaultState: AppState = {
 		showTokensInputCached: true,
 		showTokensOutput: true,
 	},
+	mcpServers: [],
+	mcpStatus: [],
 };
 
 /* ---------- Store ---------- */
@@ -162,18 +170,20 @@ async function saveBackendSettings() {
 	await agentBridge.setAgentConfigs(state.agentConfigs);
 	await agentBridge.setUsage(state.usage);
 	await agentBridge.setFolders(state.folders);
+	await agentBridge.setMcpServers(state.mcpServers);
 }
 
 async function loadBackendState(): Promise<void> {
 	console.log('[Store] 从 Agent Service 加载后端状态...');
 
-	const [providers, currentModel, agentConfigs, usage, folders, conversations] = await Promise.all([
+	const [providers, currentModel, agentConfigs, usage, folders, conversations, mcpServers] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getAgentConfigs(),
 		agentBridge.getUsage(),
 		agentBridge.getFolders(),
 		agentBridge.getConversations(),
+		agentBridge.getMcpServers(),
 	]);
 
 	if (providers.length > 0) setState('providers', providers);
@@ -184,6 +194,7 @@ async function loadBackendState(): Promise<void> {
 	if (agentConfigs.length > 0) setState('agentConfigs', agentConfigs);
 	if (usage) setState('usage', usage);
 	if (folders.length > 0) setState('folders', folders);
+	setState('mcpServers', mcpServers);
 
 	if (conversations.length > 0) {
 		const uiConvs: UIConversation[] = conversations.map((m) => ({
@@ -491,6 +502,64 @@ export const actions = {
 		scheduleSaveBackend();
 	},
 
+	/* ---------- MCP 服务器 ---------- */
+
+	addMcpServer(server: Omit<McpServerConfig, 'id'>) {
+		const s: McpServerConfig = { ...server, id: uid() };
+		setState('mcpServers', (prev) => [...prev, s]);
+		scheduleSaveBackend();
+		return s;
+	},
+	updateMcpServer(id: string, patch: Partial<McpServerConfig>) {
+		setState(
+			'mcpServers',
+			produce((list) => {
+				const s = list.find((s) => s.id === id);
+				if (s) Object.assign(s, patch);
+			}),
+		);
+		scheduleSaveBackend();
+	},
+	removeMcpServer(id: string) {
+		setState(
+			'mcpServers',
+			produce((list) => list.filter((s) => s.id !== id)),
+		);
+		scheduleSaveBackend();
+	},
+	/** 单独改 enabled 时立刻保存（后端收到 PUT 就会同步连接） */
+	setMcpServerEnabled(id: string, enabled: boolean) {
+		setState(
+			'mcpServers',
+			produce((list) => {
+				const s = list.find((s) => s.id === id);
+				if (s) s.enabled = enabled;
+			}),
+		);
+		scheduleSaveBackend();
+	},
+	/** 保存后立即触发一次后端重连（新增服务器时用，否则要等 debounce 500ms） */
+	async flushMcpServers() {
+		await agentBridge.setMcpServers(state.mcpServers);
+		await actions.refreshMcpStatus();
+	},
+	async refreshMcpStatus() {
+		// 后端是异步连接的，稍等一下再取状态，避免刚点完「连接」就读到旧值
+		await new Promise((r) => setTimeout(r, 300));
+		const status = await agentBridge.getMcpStatus();
+		setState('mcpStatus', status);
+		return status;
+	},
+	async connectMcpServer(id: string) {
+		const result = await agentBridge.connectMcpServer(id);
+		await actions.refreshMcpStatus();
+		return result;
+	},
+	async disconnectMcpServer(id: string) {
+		await agentBridge.disconnectMcpServer(id);
+		await actions.refreshMcpStatus();
+	},
+
 	setUsage<K extends keyof UsageStats>(key: K, value: UsageStats[K]) {
 		setState('usage', key, value as any);
 		scheduleSaveBackend();
@@ -517,6 +586,8 @@ export function getAgentConfig(name: AgentName): AgentConfig | undefined {
 export async function initApp() {
 	loadLocalSettings();
 	await loadBackendState();
+	// 后端在 HTTP 服务启动时就自动连了 MCP，这里拉一次运行态用于展示
+	void actions.refreshMcpStatus();
 
 	console.log(`[App] 运行环境: ${isElectrobunEnv() ? 'electrobun' : '浏览器'}`);
 }

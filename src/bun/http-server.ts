@@ -7,9 +7,10 @@
    ========================================================================== */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { AgentStreamEvent, AgentRunRequest } from '../shared/agent';
+import type { AgentStreamEvent, AgentRunRequest, McpServerConfig } from '../shared/agent';
 import { AgentEngine } from './agent/engine';
 import { storage } from './storage';
+import { mcpManager } from './mcp/manager';
 
 export const HTTP_PORT = 18999;
 
@@ -272,6 +273,75 @@ export function startHttpServer() {
 				const usage = JSON.parse(body || '{}');
 				await storage.setUsage(usage);
 				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 设置 — MCP 服务器（配置持久化）
+			if (req.method === 'GET' && path === '/api/settings/mcp-servers') {
+				const servers = await storage.getMcpServers();
+				sendJson(res, 200, servers);
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/mcp-servers') {
+				const body = await readBody(req);
+				const servers = JSON.parse(body || '[]') as McpServerConfig[];
+				await storage.setMcpServers(servers);
+				// 配置变了立即同步连接（内部串行化，UI 连续保存也安全）
+				void mcpManager.syncAll(servers);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// MCP — 运行态
+			if (req.method === 'GET' && path === '/api/mcp/status') {
+				sendJson(res, 200, mcpManager.getStatus());
+				return;
+			}
+
+			if (req.method === 'GET' && path === '/api/mcp/tools') {
+				sendJson(res, 200, mcpManager.getTools());
+				return;
+			}
+
+			if (req.method === 'POST' && path === '/api/mcp/connect') {
+				const body = await readBody(req);
+				const { id } = JSON.parse(body || '{}');
+				const servers = await storage.getMcpServers();
+				const cfg = servers.find((s) => s.id === id);
+				if (!cfg) {
+					sendJson(res, 404, { ok: false, error: `未找到 MCP 服务器 ${id}` });
+					return;
+				}
+				await mcpManager.syncAll(servers);
+				const status = mcpManager.getStatus().find((s) => s.id === id);
+				sendJson(res, 200, { ok: mcpManager.isConnected(id), status });
+				return;
+			}
+
+			if (req.method === 'POST' && path === '/api/mcp/disconnect') {
+				const body = await readBody(req);
+				const { id } = JSON.parse(body || '{}');
+				mcpManager.disconnect(id);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// MCP — 用一份临时配置试连（不落盘、不影响现有连接）
+			if (req.method === 'POST' && path === '/api/mcp/test') {
+				const body = await readBody(req);
+				const config = JSON.parse(body || '{}') as McpServerConfig;
+				const result = await mcpManager.test(config);
+				sendJson(res, 200, result);
+				return;
+			}
+
+			// MCP — 直接调用某个工具（供设置面板手动验证）
+			if (req.method === 'POST' && path === '/api/mcp/call') {
+				const body = await readBody(req);
+				const { name, arguments: args } = JSON.parse(body || '{}');
+				const result = await mcpManager.callTool(name, args ?? {});
+				sendJson(res, 200, result);
 				return;
 			}
 

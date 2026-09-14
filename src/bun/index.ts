@@ -1,6 +1,8 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
 import { buildRpcHandlers, setMainWindow } from './rpc-handlers';
 import { startHttpServer } from './http-server';
+import { mcpManager } from './mcp/manager';
+import { storage } from './storage';
 import type { AppRPC } from '../shared/rpc';
 import { logMsg } from './utils';
 
@@ -72,3 +74,12 @@ console.log(`[Main] Window ID: ${mainWindow.id}`);
 // 启动 Agent HTTP Server（浏览器 / WebView2 均可访问，参照 FFBox serviceBridge）
 // 流式推送通过 SSE（EventSource），不再需要 RPC send.agentStream
 startHttpServer();
+
+// 启动后自动连接所有已启用的 MCP 服务器
+void (async () => {
+	try {
+		await mcpManager.syncAll(await storage.getMcpServers());
+	} catch (e) {
+		console.error(`[MCP] 启动同步失败: ${(e as Error).message}`);
+	}
+})();

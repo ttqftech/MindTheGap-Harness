@@ -34,6 +34,7 @@ import type { AgentCtx, AgentEvent, AgentName, AgentRunRequest, AgentStreamEvent
 import { logMsg } from '../utils';
 import { callLlm, type LlmMessage, type LlmTool } from './model';
 import { executeTool, getLlmTools, type ToolContext, type AgentTool } from './tools';
+import { mcpManager } from '../mcp/manager';
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -58,7 +59,8 @@ function buildSystemPrompt(agentName: AgentName, transferableAgents: AgentName[]
 - 文件操作: 读写编辑文件、创建/删除/重命名/列出
 - Bash 命令: 在运行目录中执行 shell 命令
 - think: 内部推理
-- transfer: 转接任务给其他 Agent 模式`;
+- transfer: 转接任务给其他 Agent 模式
+- MCP 工具: 用户接入的外部能力，名称以 mcp__ 开头（见下方「MCP 外部工具」）`;
 
 	const transferSection = transferableAgents.length > 0
 		? `
@@ -241,8 +243,8 @@ export class AgentEngine {
 		const work = this.ctx.works[workId];
 		if (!work) throw new Error(`Work ${workId} not found`);
 
-		// 构建 system prompt
-		const systemPrompt = buildSystemPrompt(work.agentName, work.transferableAgents, work.runningDir);
+		// 构建 system prompt（MCP 工具说明由 mcpManager 动态提供）
+		const systemPrompt = buildSystemPrompt(work.agentName, work.transferableAgents, work.runningDir) + mcpManager.getPromptSection();
 		this.setSystemMessage(workId, systemPrompt);
 
 		let assistantContent = '';

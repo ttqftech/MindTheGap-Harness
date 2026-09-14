@@ -15,7 +15,8 @@
 		"noUnusedParameters": false,
 		"noFallthroughCasesInSwitch": true,
 		"jsx": "preserve",
-		"jsxImportSource": "solid-js"
+		"jsxImportSource": "solid-js",
+		"types": ["node"]
 	},
 	"include": ["src", "env.d.ts"],
 	"exclude": ["node_modules", "dist", "build", "../../package/dist"]

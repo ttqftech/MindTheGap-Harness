@@ -31,16 +31,39 @@ export interface AgentTool {
 
 const toolRegistry = new Map<string, AgentTool>();
 
+/**
+ * 动态工具源（当前只有 MCP）。
+ * 静态注册表放内置工具，动态源放运行时连上才有的工具，
+ * 两者在 getAllTools() 里合并，断开时按 sourceId 整体注销。
+ */
+const dynamicToolSources = new Map<string, AgentTool[]>();
+
 export function registerTool(tool: AgentTool): void {
 	toolRegistry.set(tool.name, tool);
 }
 
 export function getTool(name: string): AgentTool | undefined {
-	return toolRegistry.get(name);
+	return toolRegistry.get(name) ?? allDynamicTools().find((t) => t.name === name);
+}
+
+function allDynamicTools(): AgentTool[] {
+	const out: AgentTool[] = [];
+	for (const list of dynamicToolSources.values()) out.push(...list);
+	return out;
 }
 
 export function getAllTools(): AgentTool[] {
-	return Array.from(toolRegistry.values());
+	return [...toolRegistry.values(), ...allDynamicTools()];
+}
+
+/** 注册/替换某个来源的全部动态工具（如 MCP 服务器连上后） */
+export function setDynamicTools(sourceId: string, tools: AgentTool[]): void {
+	dynamicToolSources.set(sourceId, tools);
+}
+
+/** 注销某个来源的全部动态工具（如 MCP 服务器断开时） */
+export function clearDynamicTools(sourceId: string): void {
+	dynamicToolSources.delete(sourceId);
 }
 
 /** 导出给 LLM 的工具定义列表 */
@@ -61,7 +84,7 @@ export async function executeTool(
 	args: Record<string, unknown>,
 	ctx: ToolContext,
 ): Promise<ToolResult> {
-	const tool = toolRegistry.get(name);
+	const tool = getTool(name);
 	if (!tool) {
 		return {
 			success: false,

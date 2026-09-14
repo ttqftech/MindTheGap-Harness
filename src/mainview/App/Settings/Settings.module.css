@@ -228,6 +228,76 @@
     background-color: hwb(0 50% 95%);
 }
 
+/* ---------- MCP 服务器 ---------- */
+
+/* 连接状态小圆点。绿/灰两色在深浅主题下都够清晰，只有错误色跟随主题 */
+.mcp-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.mcp-status-dot.connected {
+    background-color: #22c55e;
+}
+.mcp-status-dot.disabled {
+    background-color: var(--fontColorMuted);
+}
+.mcp-status-dot.error {
+    background-color: var(--error);
+}
+
+.mcp-item-desc {
+    font-size: 12px;
+    color: var(--fontColorMuted);
+    margin-top: 2px;
+    word-break: break-all;
+}
+
+.tool-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.tool-item {
+    padding: 8px 12px;
+    background-color: hwb(var(--bg90) / 1);
+    border-radius: 8px;
+    border: 1px solid var(--borderLight);
+}
+
+.tool-item-name {
+    font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.tool-item-desc {
+    font-size: 12px;
+    color: var(--fontColorMuted);
+    margin-top: 2px;
+}
+
+.mono {
+    font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
+}
+
+.mcp-error {
+    font-size: 12px;
+    color: var(--error);
+    margin-top: 6px;
+    word-break: break-all;
+}
+
+.mcp-hint {
+    font-size: 12px;
+    color: var(--fontColorMuted);
+    margin-top: 6px;
+}
+
 @media (max-width: 768px) {
     .settings-panel {
         flex-direction: column;

@@ -174,6 +174,51 @@ export interface Folder {
 	isLocal?: boolean;
 }
 
+/* ==========================================================================
+   MCP（Model Context Protocol）
+
+   配置（McpServerConfig）持久化在 settings.json 里，
+   运行态（McpServerStatus）由主进程内存维护，不落盘。
+   ========================================================================== */
+
+/** MCP 传输方式 */
+export type McpTransport = 'stdio' | 'http';
+
+/** MCP 服务器配置（持久化） */
+export interface McpServerConfig {
+	id: string;
+	name: string;
+	enabled: boolean;
+	transport: McpTransport;
+	command?: string;	// stdio: 可执行命令（如 node / npx / python），在 Windows 上会自动补 .cmd 后缀
+	args?: string[];	// stdio: 命令参数
+	env?: Record<string, string>;	// stdio: 附加环境变量（与 process.env 合并，优先级更高）
+	cwd?: string;	// stdio: 子进程工作目录
+	url?: string;	// http: MCP 端点地址（Streamable HTTP）
+	headers?: Record<string, string>;	// http: 附加请求头
+}
+
+/** 一个 MCP 工具 */
+export interface McpToolInfo {
+	name: string;	// 暴露给 LLM 的名称，格式 mcp__<serverName>__<toolName>
+	originalName: string;	// MCP 服务器上的原始工具名
+	serverId: string;
+	serverName: string;
+	description: string;
+	inputSchema: Record<string, unknown>;
+}
+
+/** MCP 服务器实时状态（不持久化） */
+export interface McpServerStatus {
+	id: string;
+	name: string;
+	enabled: boolean;
+	connected: boolean;
+	transport: McpTransport;
+	error?: string;
+	tools: McpToolInfo[];
+}
+
 /** 模型提供商（完整配置） */
 export interface ModelProvider {
 	id: string;
@@ -217,6 +262,7 @@ export interface ServiceSettings {
 	agentConfigs: AgentConfig[];
 	usage: UsageStats;
 	folders: Folder[];
+	mcpServers: McpServerConfig[];
 }
 
 /** 后端完整应用状态（Agent Service 持久化） */
