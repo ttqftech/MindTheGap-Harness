@@ -20,6 +20,7 @@ import type {
 import { createMcpClient, type McpClientLike, type McpCallToolResult } from './client';
 import { setDynamicTools, clearDynamicTools } from '../agent/tools';
 import type { AgentTool } from '../agent/tools';
+import { logMsg } from '../utils';
 
 /** 工具名里允许的字符（多数 LLM 供应商要求 ^[a-zA-Z0-9_-]+$） */
 function sanitizePrefix(raw: string): string {
@@ -116,7 +117,7 @@ class McpManager {
 			} catch (err) {
 				// 单个服务器连接失败不影响其它服务器
 				const msg = (err as Error).message;
-				console.error(`[MCP] 连接 "${cfg.name}" 失败: ${msg}`);
+				logMsg.error(`[MCP] 连接 "${cfg.name}" 失败: ${msg}`);
 				this.lastErrors.set(id, msg);
 			}
 		}
@@ -131,7 +132,7 @@ class McpManager {
 			const tools = this.registerTools(config, rawTools);
 
 			this.connections.set(config.id, { config, client, tools });
-			console.log(`[MCP] 已连接 "${config.name}"，注册 ${tools.length} 个工具: ${tools.map((t) => t.name).join(', ')}`);
+			logMsg(`[MCP] 已连接 "${config.name}"，注册 ${tools.length} 个工具: ${tools.map((t) => t.name).join(', ')}`);
 			return tools;
 		} catch (err) {
 			client.close();
@@ -146,7 +147,7 @@ class McpManager {
 		conn.client.close();
 		this.connections.delete(id);
 		clearDynamicTools(this.sourceId(id));
-		console.log(`[MCP] 已断开 "${conn.config.name}"`);
+		logMsg(`[MCP] 已断开 "${conn.config.name}"`);
 	}
 
 	/**

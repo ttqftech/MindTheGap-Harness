@@ -9,8 +9,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AgentStreamEvent, AgentRunRequest, McpServerConfig } from '../shared/agent';
 import { AgentEngine } from './agent/engine';
-import { storage } from './storage';
+import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, snapshot } from './storage';
 import { mcpManager } from './mcp/manager';
+import { logMsg } from './utils';
 
 export const HTTP_PORT = 18999;
 
@@ -165,36 +166,32 @@ export function startHttpServer() {
 			// Ctx
 			if (req.method === 'GET' && path === '/api/agent/ctx') {
 				const conversationId = url.searchParams.get('conversationId') ?? '';
-				const ctx = await storage.getConversationCtx(conversationId);
-				sendJson(res, 200, ctx ?? null);
+				sendJson(res, 200, getConversationCtxById(conversationId));
 				return;
 			}
 
 			// 会话管理
 			if (req.method === 'GET' && path === '/api/conversations') {
-				const conversations = await storage.getConversationMetaList();
-				sendJson(res, 200, { conversations });
+				sendJson(res, 200, { conversations: conversationMetas() });
 				return;
 			}
 
 			if (req.method === 'GET' && path.startsWith('/api/conversations/')) {
 				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
-				const conv = await storage.getConversation(id);
-				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
+				sendJson(res, 200, conversations[id] ?? { ok: false, error: 'Not found' });
 				return;
 			}
 
 			if (req.method === 'POST' && path === '/api/conversations') {
 				const body = await readBody(req);
 				const params = JSON.parse(body || '{}');
-				const conv = await storage.createConversation(params);
-				sendJson(res, 200, conv);
+				sendJson(res, 200, createConversation(params));
 				return;
 			}
 
 			if (req.method === 'DELETE' && path.startsWith('/api/conversations/')) {
 				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
-				await storage.deleteConversation(id);
+				delete conversations[id];
 				sendJson(res, 200, { ok: true });
 				return;
 			}
@@ -203,7 +200,9 @@ export function startHttpServer() {
 				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
 				const body = await readBody(req);
 				const patch = JSON.parse(body || '{}');
-				const conv = await storage.updateConversation(id, patch);
+				const conv = conversations[id];
+				// 赋值即持久化（updatedAt 由 storage 自动刷新）
+				if (conv) Object.assign(conv, patch);
 				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
 				return;
 			}
@@ -212,82 +211,80 @@ export function startHttpServer() {
 				const id = decodeURIComponent(path.slice('/api/conversation-data/'.length));
 				const body = await readBody(req);
 				const data = JSON.parse(body || '{}');
-				const conv = await storage.saveConversationData(id, data);
+				const conv = conversations[id];
+				if (conv) {
+					conv.messages = data.messages;
+					if (data.agentCtx !== undefined) conv.agentCtx = data.agentCtx;
+				}
 				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
 				return;
 			}
 
 			// 设置 — 模型提供商
 			if (req.method === 'GET' && path === '/api/settings/providers') {
-				const providers = await storage.getProviders();
-				sendJson(res, 200, providers);
+				sendJson(res, 200, settings.providers);
 				return;
 			}
 
 			if (req.method === 'PUT' && path === '/api/settings/providers') {
 				const body = await readBody(req);
-				const providers = JSON.parse(body || '[]');
-				await storage.setProviders(providers);
+				settings.providers = JSON.parse(body || '[]');
 				sendJson(res, 200, { ok: true });
 				return;
 			}
 
 			if (req.method === 'GET' && path === '/api/settings/current-model') {
-				const data = await storage.getCurrentModel();
-				sendJson(res, 200, data);
+				sendJson(res, 200, { standard: settings.currentStandardModel, economy: settings.currentEconomyModel });
 				return;
 			}
 
 			if (req.method === 'PUT' && path === '/api/settings/current-model') {
 				const body = await readBody(req);
 				const params = JSON.parse(body || '{}');
-				await storage.setCurrentModel(params);
+				if (params.standard !== undefined) settings.currentStandardModel = params.standard;
+				if (params.economy !== undefined) settings.currentEconomyModel = params.economy;
 				sendJson(res, 200, { ok: true });
 				return;
 			}
 
 			// 设置 — Agent 配置
 			if (req.method === 'GET' && path === '/api/settings/agent-configs') {
-				const configs = await storage.getAgentConfigs();
-				sendJson(res, 200, configs);
+				sendJson(res, 200, settings.agentConfigs);
 				return;
 			}
 
 			if (req.method === 'PUT' && path === '/api/settings/agent-configs') {
 				const body = await readBody(req);
-				const configs = JSON.parse(body || '[]');
-				await storage.setAgentConfigs(configs);
+				settings.agentConfigs = JSON.parse(body || '[]');
 				sendJson(res, 200, { ok: true });
 				return;
 			}
 
 			// 设置 — 用量
 			if (req.method === 'GET' && path === '/api/settings/usage') {
-				const usage = await storage.getUsage();
-				sendJson(res, 200, usage);
+				sendJson(res, 200, settings.usage);
 				return;
 			}
 
 			if (req.method === 'PUT' && path === '/api/settings/usage') {
 				const body = await readBody(req);
-				const usage = JSON.parse(body || '{}');
-				await storage.setUsage(usage);
+				settings.usage = JSON.parse(body || '{}');
 				sendJson(res, 200, { ok: true });
 				return;
 			}
 
 			// 设置 — MCP 服务器（配置持久化）
 			if (req.method === 'GET' && path === '/api/settings/mcp-servers') {
-				const servers = await storage.getMcpServers();
-				sendJson(res, 200, servers);
+				sendJson(res, 200, settings.mcpServers);
 				return;
 			}
 
 			if (req.method === 'PUT' && path === '/api/settings/mcp-servers') {
 				const body = await readBody(req);
 				const servers = JSON.parse(body || '[]') as McpServerConfig[];
-				await storage.setMcpServers(servers);
+				settings.mcpServers = servers;
 				// 配置变了立即同步连接（内部串行化，UI 连续保存也安全）
+				// 传裸数据而不是 settings.mcpServers 代理：manager 会长期持有 config 做新旧比对
 				void mcpManager.syncAll(servers);
 				sendJson(res, 200, { ok: true });
 				return;
@@ -307,7 +304,7 @@ export function startHttpServer() {
 			if (req.method === 'POST' && path === '/api/mcp/connect') {
 				const body = await readBody(req);
 				const { id } = JSON.parse(body || '{}');
-				const servers = await storage.getMcpServers();
+				const servers = snapshot(settings.mcpServers);
 				const cfg = servers.find((s) => s.id === id);
 				if (!cfg) {
 					sendJson(res, 404, { ok: false, error: `未找到 MCP 服务器 ${id}` });
@@ -347,15 +344,13 @@ export function startHttpServer() {
 
 			// 设置 — 文件夹
 			if (req.method === 'GET' && path === '/api/settings/folders') {
-				const folders = await storage.getFolders();
-				sendJson(res, 200, folders);
+				sendJson(res, 200, settings.folders);
 				return;
 			}
 
 			if (req.method === 'PUT' && path === '/api/settings/folders') {
 				const body = await readBody(req);
-				const folders = JSON.parse(body || '[]');
-				await storage.setFolders(folders);
+				settings.folders = JSON.parse(body || '[]');
 				sendJson(res, 200, { ok: true });
 				return;
 			}
@@ -367,7 +362,7 @@ export function startHttpServer() {
 	});
 
 	server.listen(HTTP_PORT, () => {
-		console.log(`[HttpServer] Agent HTTP API listening on http://localhost:${HTTP_PORT}`);
+		logMsg(`[HttpServer] Agent HTTP API 开始监听 http://localhost:${HTTP_PORT}`);
 	});
 	return server;
 }

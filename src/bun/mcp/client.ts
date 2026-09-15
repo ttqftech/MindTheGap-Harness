@@ -20,6 +20,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { McpServerConfig } from '../../shared/agent';
+import { logMsg } from '../utils';
 
 /** 我们声称支持的协议版本。选一个兼容性最广的。 */
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
@@ -183,7 +184,7 @@ export class StdioMcpClient extends BaseMcpClient {
 	constructor(command: string, args: string[], options: { cwd?: string; env?: Record<string, string> } = {}) {
 		super();
 		const resolved = resolveCommand(command);
-		console.log(`[MCP] spawn: ${resolved} ${args.join(' ')}`);
+		logMsg(`[MCP] 启动进程: ${resolved} ${args.join(' ')}`);
 
 		this.child = spawn(resolved, args, {
 			cwd: options.cwd,

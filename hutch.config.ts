@@ -22,6 +22,7 @@ export default {
 		//   pnpm exec vite build             → 构建前端生产包
 		//   hutch electrobun build --env=stable → 打包桌面应用安装程序（stable 稳定通道）
 		build: "pnpm exec vite build && hutch electrobun build --env=stable",
+		build2: "hutch pm exec vite build && hutch electrobun build --env=stable",
 
 		// 与 build 类似，但 --env=canary：以 canary（金丝雀/预发布）环境打包，用于测试新功能
 		"build:canary": "pnpm exec vite build && hutch electrobun build --env=canary",
