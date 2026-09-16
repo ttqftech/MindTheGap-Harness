@@ -1,17 +1,17 @@
 /* ==========================================================================
-   图示模式 — Agent 执行时间线
-   
-   数据源: Conversation.agentCtx
-   - works: workId → AgentWorkInfo（Agent 树结构）
-   - events: 扁平事件数组，按时间排序
-   
-   渲染：每行一个 Agent work（按层级缩进），横向展示该 work 的事件序列
+   图示模式 — Agent 执行时间线（v2）
+
+   数据源: Conversation.agentCtx（ctxVersion 2）
+   - agentInstances: agentInstanceId → AgentInstance（实例树）
+   - events: 扁平事件数组（带 agentInstanceId）
+
+   渲染：每行一个 AgentInstance（按 depth 缩进），横向展示该实例的事件序列
    ========================================================================== */
 
 import { For, Show } from "solid-js";
 import { getActiveConversation } from "../../store";
 import styles from './DiagramView.module.css';
-import type { AgentCtx, AgentEvent, AgentWorkInfo } from "../shared/agent";
+import type { AgentCtx, AgentEvent, AgentInstance } from "../../../shared/agent";
 
 /** 事件类型 → 颜色映射 */
 const EVENT_COLORS: Record<string, string> = {
@@ -21,7 +21,7 @@ const EVENT_COLORS: Record<string, string> = {
 	tool_result: "hsl(45 60% 40%)",
 	agent_start: "hsl(280 70% 60%)",
 	agent_end: "hsl(280 50% 40%)",
-	transfer: "hsl(330 70% 55%)",
+	reflection: "hsl(330 70% 55%)",
 	system: "hsl(0 0% 50%)",
 };
 
@@ -33,92 +33,66 @@ const EVENT_ICONS: Record<string, string> = {
 	tool_result: "✅",
 	agent_start: "▶",
 	agent_end: "■",
-	transfer: "↗",
+	reflection: "🪞",
 	system: "⚙",
 };
 
-function WorkRow(props: {
-	workId: string;
-	work: AgentWorkInfo;
+const STATUS_CLASS: Record<string, string> = {
+	running: "status_running",
+	succeeded: "status_completed",
+	failed: "status_failed",
+	interrupted: "status_failed",
+	pending: "status_running",
+};
+
+function InstanceRow(props: {
+	instance: AgentInstance;
 	events: AgentEvent[];
-	level: number;
-	allWorks: Record<string, AgentWorkInfo>;
+	allInstances: Record<string, AgentInstance>;
 }) {
-	const { work, events, level, allWorks } = props;
+	const instance = () => props.instance;
+	const level = () => props.instance.depth;
 
-	// 子 work（按 parentWorkId 过滤）
-	const childWorks = Object.values(allWorks).filter(
-		(w) => w.parentWorkId === props.workId,
-	);
-
-	const formatDuration = (ms?: number) => {
-		if (!ms) return "";
-		if (ms < 1000) return `${ms}ms`;
-		return `${(ms / 1000).toFixed(1)}s`;
-	};
+	const children = () =>
+		instance().childAgentInstanceIds
+			.map((id) => props.allInstances[id])
+			.filter((x): x is AgentInstance => !!x);
 
 	return (
 		<div class={styles['diagram-work-row']}>
-			{/* 当前 work */}
-			<div
-				class={styles['diagram-work-header']}
-				style={{ "padding-left": `${level * 20}px` }}
-			>
-				<span class={styles['diagram-work-icon']}>🤖</span>
-				<span class={styles['diagram-work-name']}>{work.agentName}</span>
-				<span
-					classList={{
-						[styles['diagram-work-status']]: true,
-						[styles.status_running]: work.status === "running",
-						[styles.status_completed]: work.status === "completed",
-						[styles.status_failed]: work.status === "failed",
-					}}
-				>
-					{work.status}
+			<div class={styles['diagram-work-header']} style={{ "padding-left": `${level() * 20}px` }}>
+				<span class={styles['diagram-work-icon']}>{level() === 0 ? "🧭" : "🤖"}</span>
+				<span class={styles['diagram-work-name']}>{instance().agentName}</span>
+				<span class={styles['diagram-work-status']} classList={{ [styles[STATUS_CLASS[instance().status] ?? "status_running"]]: true }}>
+					{instance().status}
 				</span>
-				{work.tokens && (
+				<Show when={instance().tokens}>
 					<span class={styles['diagram-work-tokens']}>
-						tokens: {work.tokens.input ?? 0}↑ {work.tokens.output ?? 0}↓
+						tokens: {instance().tokens?.input ?? 0}↑ {instance().tokens?.output ?? 0}↓ · 轮次 {instance().rounds}
 					</span>
-				)}
+				</Show>
 			</div>
 
-			{/* 当前 work 的事件 */}
-			<div
-				class={styles['diagram-events-row']}
-				style={{ "padding-left": `${level * 20 + 20}px` }}
-			>
-				<For each={events}>
+			<div class={styles['diagram-events-row']} style={{ "padding-left": `${level() * 20 + 20}px` }}>
+				<For each={props.events}>
 					{(evt) => (
 						<div
 							class={styles['diagram-event']}
-							title={`${evt.type}${evt.duration ? ` · ${formatDuration(evt.duration)}` : ""}${evt.tokens ? ` · input:${evt.tokens.input ?? 0} output:${evt.tokens.output ?? 0}` : ""}`}
-							style={{
-								background: EVENT_COLORS[evt.type] ?? EVENT_COLORS.system,
-							}}
+							title={`${evt.type}${evt.tokens ? ` · input:${evt.tokens.input ?? 0} output:${evt.tokens.output ?? 0}` : ""}`}
+							style={{ background: EVENT_COLORS[evt.type] ?? EVENT_COLORS.system }}
 						>
-							<span class={styles['diagram-event-icon']}>
-								{EVENT_ICONS[evt.type] ?? "?"}
-							</span>
-							<Show when={evt.duration && evt.duration > 500}>
-								<span class={styles['diagram-event-duration']}>
-									{formatDuration(evt.duration)}
-								</span>
-							</Show>
+							<span class={styles['diagram-event-icon']}>{EVENT_ICONS[evt.type] ?? "?"}</span>
 						</div>
 					)}
 				</For>
 			</div>
 
-			{/* 递归渲染子 work */}
-			<For each={childWorks}>
+			<For each={children()}>
 				{(child) => (
-					<WorkRow
-						workId={child.workId}
-						work={child}
-						events={events.filter((e) => e.workId === child.workId)}
-						level={level + 1}
-						allWorks={allWorks}
+					<InstanceRow
+						instance={child}
+						events={props.events.filter((e) => e.agentInstanceId === child.agentInstanceId)}
+						allInstances={props.allInstances}
 					/>
 				)}
 			</For>
@@ -127,16 +101,16 @@ function WorkRow(props: {
 }
 
 export default function DiagramView() {
-	const conv = getActiveConversation();
-	const ctx = conv?.agentCtx;
-
-	// 根 workId
-	const rootWorkId = ctx?.rootWorkId;
-	const rootWork = rootWorkId ? ctx.works[rootWorkId] : null;
+	const ctx = (): AgentCtx | undefined => getActiveConversation()?.agentCtx;
+	const rootInstance = (): AgentInstance | undefined => {
+		const current = ctx();
+		if (!current) return undefined;
+		return current.agentInstances?.[current.rootAgentInstanceId];
+	};
 
 	return (
 		<div class={styles['diagram-container']}>
-			<Show when={!ctx}>
+			<Show when={!rootInstance()}>
 				<div class={styles['diagram-empty']}>
 					<div class={styles['diagram-empty-icon']}>🔥</div>
 					<h3>还没有 Agent 执行数据</h3>
@@ -144,13 +118,14 @@ export default function DiagramView() {
 				</div>
 			</Show>
 
-			<Show when={ctx && rootWork}>
+			<Show when={rootInstance()}>
 				<div class={styles['diagram-header']}>
 					<div class={styles['diagram-header-title']}>Agent 执行时间线</div>
 					<div class={styles['diagram-header-stats']}>
-						<span>📊 {ctx.events.length} 个事件</span>
-						<span>🤖 {Object.keys(ctx.works).length} 个 Agent</span>
-						<span>⏱️ 总时长 {((ctx.updatedAt - ctx.createdAt) / 1000).toFixed(1)}s</span>
+						<span>📊 {ctx()!.events.length} 个事件</span>
+						<span>🤖 {Object.keys(ctx()!.agentInstances ?? {}).length} 个实例</span>
+						<span>🔁 预算 {ctx()!.budget.spent} / {ctx()!.budget.total}</span>
+						<span>⏱️ 总时长 {((ctx()!.updatedAt - ctx()!.createdAt) / 1000).toFixed(1)}s</span>
 					</div>
 				</div>
 
@@ -166,12 +141,10 @@ export default function DiagramView() {
 				</div>
 
 				<div class={styles['diagram-timeline']}>
-					<WorkRow
-						workId={rootWorkId!}
-						work={rootWork!}
-						events={ctx.events.filter((e) => e.workId === rootWorkId)}
-						level={0}
-						allWorks={ctx.works}
+					<InstanceRow
+						instance={rootInstance()!}
+						events={ctx()!.events.filter((e) => e.agentInstanceId === rootInstance()!.agentInstanceId)}
+						allInstances={ctx()!.agentInstances}
 					/>
 				</div>
 			</Show>

@@ -1,0 +1,18 @@
+{
+	"id": "engineer",
+	"name": "通用软件工程师",
+	"promptFile": "prompt.md",
+	"taskListInject": false,
+	"reflectionCount": 2,
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search",
+				"file_write", "file_edit", "file_create", "file_delete", "file_rename",
+				"bash", "web_search", "web_fetch",
+				"ask_user", "finish"
+			]
+		}
+	}
+}

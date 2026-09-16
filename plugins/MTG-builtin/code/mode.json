@@ -1,0 +1,22 @@
+{
+	"id": "code",
+	"name": "编码",
+	"description": "意图分析驱动的编码模式",
+	"rootAgent": "intent",
+	"maxDepth": 3,
+	"injectBasePrompt": true,
+	"taskList": { "enabled": true, "writable": true },
+	"mcp": "none",
+	"defaultSettings": {
+		"limits": { "totalRounds": 45, "agentInstanceRounds": 15, "warnAtRemaining": 3 },
+		"reflectionPromptAppend": ""
+	},
+	"settingsSchema": {
+		"limits": {
+			"type": "object",
+			"description": "循环预算：totalRounds 一次 run 的总轮数上限，agentInstanceRounds 单实例上限，warnAtRemaining 剩余多少轮开始告警"
+		},
+		"reflectionPromptAppend": { "type": "string", "description": "追加到反思问题构造器的提示词" }
+	},
+	"ui": { "icon": "🧭", "accent": "blue" }
+}

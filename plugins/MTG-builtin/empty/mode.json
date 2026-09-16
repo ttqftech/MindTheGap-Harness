@@ -1,0 +1,12 @@
+{
+	"id": "empty",
+	"name": "空",
+	"description": "裸模型：无系统提示词、无内置工具",
+	"rootAgent": "plain",
+	"maxDepth": 0,
+	"injectBasePrompt": false,
+	"taskList": { "enabled": false, "writable": false },
+	"mcp": "none",
+	"defaultSettings": { "includeMcp": false },
+	"ui": { "icon": "⬜", "accent": "gray" }
+}

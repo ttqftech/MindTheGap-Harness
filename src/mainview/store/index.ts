@@ -14,8 +14,6 @@ import { localSettings, isElectrobunEnv } from '../localBridge';
 import * as agentBridge from '../agentBridge';
 import type {
 	AgentCtx,
-	AgentName,
-	AgentConfig,
 	ConversationMeta,
 	ServiceConversation,
 	Message,
@@ -23,10 +21,25 @@ import type {
 	MessageRole,
 	ModelProvider,
 	ModelProviderModel,
+	ModeConfigDefaults,
+	ModeSummary,
 	UsageStats,
 	Folder,
 	McpServerConfig,
 	McpServerStatus,
+} from '../../shared/agent';
+
+/* ---------- 转发共享类型（UI 侧统一从 store 引入，避免到处写 ../../shared/agent） ---------- */
+
+export type {
+	Message,
+	MessageBlock,
+	MessageRole,
+	ModelProvider,
+	ModelProviderModel,
+	ModeSummary,
+	ModeConfigDefaults,
+	AgentStreamEvent,
 } from '../../shared/agent';
 
 /* ---------- 前端扩展类型（UITask 模式） ---------- */
@@ -45,7 +58,7 @@ export type UIState = {
 	sidebarWidth: number;
 	sidebarCollapsed: boolean;
 	settingsOpen: boolean;
-	activeSettingsTab: '通用' | '模型' | '用量' | '模式配置' | 'MCP';
+	activeSettingsTab: '通用' | '模型' | '用量' | '插件 / 模式' | 'MCP';
 	viewMode: ViewMode;
 };
 
@@ -58,8 +71,15 @@ export type AppState = {
 	providers: ModelProvider[];
 	currentStandardModel: { providerId: string; modelId: string } | null;
 	currentEconomyModel: { providerId: string; modelId: string } | null;
-	currentAgentName: AgentName;
-	agentConfigs: AgentConfig[];
+	/** 当前模式 id（取代 v1 的 currentAgentName） */
+	currentModeId: string;
+	/** 插件提供的全部模式（聚合自 GET /api/modes） */
+	modes: ModeSummary[];
+	/** 各模式的配置覆盖（生效配置 = 插件 defaultSettings ⊕ 它） */
+	modeConfigs: Record<string, ModeConfigDefaults>;
+	/** 插件加载错误 / 被覆盖标记（设置页展示用） */
+	pluginErrors: { level: 'error' | 'warn'; pluginId?: string; modeId?: string; agentId?: string; message: string }[];
+	overriddenModes: string[];
 	usage: UsageStats;
 	/** MCP 服务器配置（持久化在后端 settings.json） */
 	mcpServers: McpServerConfig[];
@@ -78,12 +98,6 @@ const initialUI: UIState = {
 	activeSettingsTab: '通用',
 	viewMode: 'chat',
 };
-
-const initialAgentConfigs: AgentConfig[] = [
-	{ name: '默认', transferableAgents: ['编码', '文件夹浏览总结'] },
-	{ name: '编码', transferableAgents: ['默认'] },
-	{ name: '文件夹浏览总结', transferableAgents: ['默认', '编码'] },
-];
 
 const DEFAULT_PROVIDERS: ModelProvider[] = [
 	{
@@ -108,8 +122,11 @@ export const defaultState: AppState = {
 	providers: DEFAULT_PROVIDERS,
 	currentStandardModel: { providerId: 'deepseek', modelId: 'deepseek-v4-elite-extreme-enhanced-extraordinary' },
 	currentEconomyModel: null,
-	currentAgentName: '默认',
-	agentConfigs: initialAgentConfigs,
+	currentModeId: 'code',
+	modes: [],
+	modeConfigs: {},
+	pluginErrors: [],
+	overriddenModes: [],
 	usage: {
 		timeRange: '7d',
 		showApiRequests: true,
@@ -167,7 +184,8 @@ async function saveBackendSettings() {
 		standard: state.currentStandardModel,
 		economy: state.currentEconomyModel,
 	});
-	await agentBridge.setAgentConfigs(state.agentConfigs);
+	await agentBridge.setCurrentMode(state.currentModeId);
+	await agentBridge.setModeConfigs(state.modeConfigs);
 	await agentBridge.setUsage(state.usage);
 	await agentBridge.setFolders(state.folders);
 	await agentBridge.setMcpServers(state.mcpServers);
@@ -176,10 +194,12 @@ async function saveBackendSettings() {
 async function loadBackendState(): Promise<void> {
 	console.log('[Store] 从 Agent Service 加载后端状态...');
 
-	const [providers, currentModel, agentConfigs, usage, folders, conversations, mcpServers] = await Promise.all([
+	const [providers, currentModel, modes, modeConfigs, currentMode, usage, folders, conversations, mcpServers] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
-		agentBridge.getAgentConfigs(),
+		agentBridge.getModes(),
+		agentBridge.getModeConfigs(),
+		agentBridge.getCurrentMode(),
 		agentBridge.getUsage(),
 		agentBridge.getFolders(),
 		agentBridge.getConversations(),
@@ -189,9 +209,16 @@ async function loadBackendState(): Promise<void> {
 	if (providers.length > 0) setState('providers', providers);
 	if (currentModel) {
 		if (currentModel.standard) setState('currentStandardModel', currentModel.standard);
-		if ((currentModel as any).economy) setState('currentEconomyModel', (currentModel as any).economy);
+		if (currentModel.economy) setState('currentEconomyModel', currentModel.economy);
 	}
-	if (agentConfigs.length > 0) setState('agentConfigs', agentConfigs);
+	setState('modes', modes);
+	setState('modeConfigs', modeConfigs);
+	// 当前模式以「插件真的提供了这个模式」为准，否则退回第一个可用模式
+	if (currentMode && modes.some((m) => m.id === currentMode)) {
+		setState('currentModeId', currentMode);
+	} else if (modes.length > 0) {
+		setState('currentModeId', modes[0].id);
+	}
 	if (usage) setState('usage', usage);
 	if (folders.length > 0) setState('folders', folders);
 	setState('mcpServers', mcpServers);
@@ -487,19 +514,36 @@ export const actions = {
 		scheduleSaveBackend();
 	},
 
-	setCurrentAgentName(name: AgentName) {
-		setState('currentAgentName', name);
+	/** 切换当前模式（第一层的 chip） */
+	setCurrentModeId(modeId: string) {
+		setState('currentModeId', modeId);
 		scheduleSaveBackend();
 	},
-	updateAgentConfig(name: AgentName, transferableAgents: AgentName[]) {
-		setState(
-			'agentConfigs',
-			produce((list) => {
-				const cfg = list.find((c) => c.name === name);
-				if (cfg) cfg.transferableAgents = transferableAgents;
-			}),
-		);
+	/** 覆盖某个模式的配置（设置页 JSON 编辑器，唯一配置入口） */
+	setModeConfig(modeId: string, config: ModeConfigDefaults) {
+		setState('modeConfigs', (prev) => ({ ...prev, [modeId]: config }));
 		scheduleSaveBackend();
+	},
+	/** 重新加载插件并刷新模式列表 */
+	async reloadPlugins() {
+		const result = await agentBridge.reloadPlugins();
+		const [modes, plugins] = await Promise.all([agentBridge.getModes(), agentBridge.getPlugins()]);
+		setState('modes', modes);
+		setState('pluginErrors', plugins.errors);
+		setState('overriddenModes', plugins.overridden);
+		return result;
+	},
+	/** 从后端拉一次模式列表（启动 / 插件变更后） */
+	async refreshModes() {
+		const [modes, plugins] = await Promise.all([agentBridge.getModes(), agentBridge.getPlugins()]);
+		setState('modes', modes);
+		setState('pluginErrors', plugins.errors);
+		setState('overriddenModes', plugins.overridden);
+		return modes;
+	},
+	/** 回答 ask_user 提问卡片 */
+	async answerToolCall(conversationId: string, toolCallId: string, result: string) {
+		return agentBridge.answerToolCall({ conversationId, toolCallId, result });
 	},
 
 	/* ---------- MCP 服务器 ---------- */
@@ -577,8 +621,13 @@ export function getProviderById(id: string): ModelProvider | undefined {
 	return state.providers.find((p) => p.id === id);
 }
 
-export function getAgentConfig(name: AgentName): AgentConfig | undefined {
-	return state.agentConfigs.find((c) => c.name === name);
+export function getModeSummary(modeId: string): ModeSummary | undefined {
+	return state.modes.find((m) => m.id === modeId);
+}
+
+/** 当前模式的展示名 */
+export function currentModeName(): string {
+	return state.modes.find((m) => m.id === state.currentModeId)?.name ?? state.currentModeId;
 }
 
 /* ---------- 应用启动入口 ---------- */

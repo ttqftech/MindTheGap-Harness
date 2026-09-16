@@ -1,0 +1,13 @@
+{
+	"id": "review",
+	"name": "代码审查",
+	"promptFile": "prompt.md",
+	"taskListInject": false,
+	"reflectionCount": 1,
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["file_read", "file_list", "file_search", "bash", "finish"]
+		}
+	}
+}

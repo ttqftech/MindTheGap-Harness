@@ -1,22 +1,25 @@
 /* ==========================================================================
    Agent Service Storage — MindTheGap-Harness
 
-   持久化层。数据位置、字段、文件名沿用旧版（~/.mindthegap-harness/settings.json 与 ~/.mindthegap-harness/conversations/<id>.json），
-   变的只是访问方式：全部改成 Proxy，读写像操作普通 js object。
+   持久化层。访问方式全部是 Proxy，读写像操作普通 js object。
+
+   v2 的存储结构（一个会话一个文件夹）：
+     ~/.mindthegap-harness/
+       settings.json
+       plugins/                                  # 用户插件（由 plugins/loader 扫描）
+       conversations/<conversationId>/
+         ctx.json                                # 全量：meta + modeId + messages + agentCtx
+         requestLog.jsonl                        # LLM 层账本（由 llm/requestLog.ts 独立读写）
+         workspace/{docs,backups,tmp/llm}/       # AI 工作产出
 
    - settings：进程启动时通过 loadSettings() **异步读盘一次**（在 HTTP 服务监听前完成），
-     之后读全走内存缓存；
-     任意层级的写（settings.providers = [...] / settings.usage.timeRange = '1d'; settings.mcpServers.push(...)）都会自动 700ms 防抖落盘。
-   - conversations：按 id 索引的集合代理。
-     读 conversations[id] = 懒加载（首次读盘，之后走缓存）；
-     写任意字段 = 自动刷新 updatedAt + 700ms 防抖落盘；
-     delete conversations[id] = 删文件；id in conversations / Object.keys() 也可用。
+     之后读全走内存缓存；任意层级的写都会自动 700ms 防抖落盘。
+   - conversations：按 id 索引的集合代理，读 = 懒加载，写 = 刷新 updatedAt + 防抖落盘。
 
-   前提：后端是单例，「内存即真相」，不存在多进程同时写同一份文件的情况。
-   后期可替换为 SQLite / Redis 等更高效的存储（只需换掉本文件的读写实现）。
+   前提：后端是单例，「内存即真相」。
    ========================================================================== */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -30,6 +33,26 @@ const CONVERSATIONS_DIR = join(DATA_DIR, 'conversations');
 
 /** 落盘防抖时长（ms） */
 const SAVE_DEBOUNCE_MS = 700;
+
+/** 会话目录（workspace / requestLog 的根） */
+export function conversationDir(conversationId: string): string {
+	return join(CONVERSATIONS_DIR, conversationId);
+}
+
+/** 会话的 ctx.json 路径 */
+export function conversationCtxPath(conversationId: string): string {
+	return join(conversationDir(conversationId), 'ctx.json');
+}
+
+/** 确保会话目录与 workspace 子目录存在 */
+export function ensureConversationDir(conversationId: string): string {
+	const dir = conversationDir(conversationId);
+	for (const sub of ['', 'workspace', join('workspace', 'docs'), join('workspace', 'backups'), join('workspace', 'tmp')]) {
+		const target = sub ? join(dir, sub) : dir;
+		if (!existsSync(target)) mkdirSync(target, { recursive: true });
+	}
+	return dir;
+}
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
 	try {
@@ -130,11 +153,8 @@ export function snapshot<T>(value: T): T {
 
 /**
  * 定位内置示例 MCP 服务器（求正弦）的入口文件。
- *
- * 为什么需要运行时解析而不是写死相对路径：
  * 主进程的 cwd 在 dev（项目根）和打包后（应用目录）下并不一致，
  * 而 MCP 服务器是 spawn 出来的独立子进程，必须拿到绝对路径才可靠。
- * 做法是从 cwd 逐级向上找含有 mcp-servers/sine/index.js 的目录。
  */
 function resolveBuiltinSineServerPath(): string | null {
 	const rel = join('mcp-servers', 'sine', 'index.js');
@@ -171,13 +191,9 @@ const defaultSettings: ServiceSettings = {
 	providers: [],
 	currentStandardModel: null,
 	currentEconomyModel: null,
-	currentAgentName: '默认',
-	agentConfigs: [
-		{ name: '默认', transferableAgents: ['编码', '文件夹浏览总结'] },
-		{ name: '编码', transferableAgents: ['默认'] },
-		{ name: '文件夹浏览总结', transferableAgents: ['默认', '编码'] },
-	],
-	// TODO usage 不需要落盘。这个面板是纯前端展示，不需要后端管理并持久化。前端默认给值就行
+	// v2：模式取代了「子 Agent」作为第一层；modeConfigs 只存「覆盖值」，生效配置 = 插件 defaultSettings ⊕ 它
+	currentModeId: 'code',
+	modeConfigs: {},
 	usage: {
 		timeRange: '7d',
 		showApiRequests: true,
@@ -188,13 +204,21 @@ const defaultSettings: ServiceSettings = {
 	},
 	folders: [{ id: 'local', name: '本地', isLocal: true }],
 	mcpServers: [builtinSineServer()],
+	debug: {
+		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false },
+	},
 };
+
+/** v1 遗留字段（只用于一次性迁移，迁移后不再写回） */
+interface LegacySettings {
+	agentConfigs?: unknown;
+	currentAgentName?: unknown;
+}
 
 /**
  * 异步从磁盘加载设置进内存镜像。
  * 幂等（重复调用只读一次盘），必须在使用 settings 前完成 ——
  * index.ts 在启动 HTTP 服务与 MCP 同步前会先 await 它。
- * 加载完成前 settings 读到的是默认值；读盘失败（文件不存在 / JSON 损坏）也保持默认值。
  */
 let settingsLoaded = false;
 let settingsLoadPromise: Promise<void> | null = null;
@@ -206,22 +230,35 @@ export function loadSettings(): Promise<void> {
 }
 
 async function doLoadSettings(): Promise<void> {
-	let raw: Partial<ServiceSettings> = {};
+	let raw: (Partial<ServiceSettings> & LegacySettings) = {};
 	try {
-		raw = JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')) as Partial<ServiceSettings>;
+		raw = JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')) as Partial<ServiceSettings> & LegacySettings;
 	} catch {
 		// 文件不存在或损坏 → 保持默认值
 	}
-	// 老版本的 settings.json 不含后加的字段（如 mcpServers），逐项用默认值补齐。
+	// 老版本的 settings.json 不含后加的字段，逐项用默认值补齐。
 	// 注意不能直接 {...defaultSettings, ...raw}：raw 里显式存在的 undefined 会覆盖默认值。
 	for (const key of Object.keys(defaultSettings) as (keyof ServiceSettings)[]) {
 		const value = (raw as Record<string, unknown>)[key];
 		if (value !== undefined) (settingsRaw as unknown as Record<string, unknown>)[key] = value;
 	}
+
+	// v1 → v2 迁移：agentConfigs / currentAgentName 一律丢弃，落到新的模式字段上（幂等）
+	if (raw.currentAgentName !== undefined || raw.agentConfigs !== undefined) {
+		(settingsRaw as unknown as Record<string, unknown>).currentModeId =
+			(settingsRaw as unknown as Record<string, unknown>).currentModeId ?? 'code';
+		(settingsRaw as unknown as Record<string, unknown>).modeConfigs =
+			(settingsRaw as unknown as Record<string, unknown>).modeConfigs ?? {};
+		// 迁移结果立即落盘一次，避免每次启动都走迁移分支
+		settingsDirty = true;
+		flushSettings();
+		console.log('[Storage] 检测到 v1 设置（agentConfigs / currentAgentName），已迁移为 currentModeId + modeConfigs');
+	}
+
 	settingsLoaded = true;
 }
 
-/** 磁盘数据的内存镜像。落盘写它，settings 只是它的代理外壳（启动时先装默认值，loadSettings 后被磁盘数据覆盖） */
+/** 磁盘数据的内存镜像。落盘写它，settings 只是它的代理外壳 */
 const settingsRaw: ServiceSettings = { ...defaultSettings };
 
 let settingsTimer: ReturnType<typeof setTimeout> | null = null;
@@ -256,14 +293,13 @@ export function flushSettings() {
  * 全局设置。像普通对象一样读写即可（先 await loadSettings() 再用）：
  *   settings.providers                    // 读（内存缓存，无 IO）
  *   settings.providers = [...]            // 写（700ms 防抖落盘）
- *   settings.usage.timeRange = '1d'       // 深层写也会触发落盘
- *   settings.mcpServers.push(cfg)         // 数组变更同样会触发
+ *   settings.modeConfigs.code = {...}     // 深层写也会触发落盘
  */
 export const settings: ServiceSettings = deepProxy(settingsRaw, scheduleSettingsSave, new WeakMap());
 
 // #endregion
 
-// #region 会话（conversations/<id>.json）
+// #region 会话（conversations/<id>/ctx.json）
 
 interface ConversationSlot {
 	raw: ServiceConversation;
@@ -283,7 +319,7 @@ function openSlot(raw: ServiceConversation): ConversationSlot {
 	return slot;
 }
 
-/** 会话被改动：刷新 updatedAt（写 raw，不会再次触发通知）并安排防抖落盘 */
+/** 会话被改动：刷新 updatedAt 并安排防抖落盘 */
 function touchConversation(slot: ConversationSlot) {
 	slot.raw.updatedAt = Date.now();
 	slot.dirty = true;
@@ -294,7 +330,7 @@ function touchConversation(slot: ConversationSlot) {
 	}, SAVE_DEBOUNCE_MS);
 }
 
-/** 立刻把某个会话落盘（无改动则什么都不做） */
+/** 立刻把某个会话落盘（无改动则什么都不做）。落盘是全量的，推送是增量的——两条独立路径 */
 export function flushConversation(id: string) {
 	const slot = slots.get(id);
 	if (!slot) return;
@@ -305,21 +341,23 @@ export function flushConversation(id: string) {
 	if (!slot.dirty) return;
 	slot.dirty = false;
 	try {
-		writeJsonFile(join(CONVERSATIONS_DIR, `${id}.json`), slot.raw);
+		ensureConversationDir(id);
+		writeJsonFile(conversationCtxPath(id), slot.raw);
 	} catch (e) {
 		slot.dirty = true;
 		console.error(`[Storage] 写入会话 ${id} 失败: ${(e as Error).message}`);
 	}
 }
 
-/** 从缓存中取一个会话（如果不存在则从磁盘读取并缓存）（如果不存在则返回 undefined）并创建 slot */
+/** 从缓存中取一个会话（不存在则从磁盘读取并缓存；仍不存在返回 undefined） */
 function loadConversation(id: string): ServiceConversation | undefined {
 	const slot = slots.get(id);
 	if (slot) return slot.proxy;
-	const raw = readJsonFile<ServiceConversation | null>(join(CONVERSATIONS_DIR, `${id}.json`), null);
+	const raw = readJsonFile<ServiceConversation | null>(conversationCtxPath(id), null);
 	if (!raw) return undefined;
-	// 兼容手工改过文件名的情况：以文件名为准，避免缓存 key 与磁盘对不上
+	// 兼容手工改过文件夹名的情况：以目录名为准
 	raw.id = id;
+	if (!raw.modeId) raw.modeId = 'code';
 	return openSlot(raw).proxy;
 }
 
@@ -327,8 +365,14 @@ function removeConversation(id: string) {
 	const slot = slots.get(id);
 	if (slot?.timer) clearTimeout(slot.timer);
 	slots.delete(id);
-	const filePath = join(CONVERSATIONS_DIR, `${id}.json`);
-	if (existsSync(filePath)) unlinkSync(filePath);
+	const dir = conversationDir(id);
+	if (existsSync(dir)) {
+		try {
+			rmSync(dir, { recursive: true, force: true });
+		} catch (e) {
+			console.error(`[Storage] 删除会话目录 ${id} 失败: ${(e as Error).message}`);
+		}
+	}
 }
 
 /** 覆盖式写入一整个会话（用于 conversations[id] = conv，立即落盘） */
@@ -337,7 +381,8 @@ function putConversation(id: string, conv: ServiceConversation) {
 	if (slot?.timer) clearTimeout(slot.timer);
 	slots.delete(id);
 	const raw: ServiceConversation = { ...conv, id, updatedAt: Date.now() };
-	writeJsonFile(join(CONVERSATIONS_DIR, `${id}.json`), raw);
+	ensureConversationDir(id);
+	writeJsonFile(conversationCtxPath(id), raw);
 	openSlot(raw);
 }
 
@@ -345,10 +390,7 @@ function putConversation(id: string, conv: ServiceConversation) {
  * 会话集合。索引读写等价于文件读写：
  *   conversations['abc123']                       // 读（懒加载 + 缓存），不存在返回 undefined
  *   conversations['abc123'].title = '新标题'       // 写（自动刷新 updatedAt，700ms 防抖落盘）
- *   conversations['abc123'].messages.push(msg)    // 深层写同样有效
- *   delete conversations['abc123']                // 删除文件
- *   'abc123' in conversations                     // 是否存在
- *   Object.keys(conversations)                    // 全部 id（按 updatedAt 倒序）
+ *   delete conversations['abc123']                // 删除整个会话目录
  */
 export interface ConversationStore {
 	[id: string]: ServiceConversation | undefined;
@@ -375,7 +417,7 @@ export const conversations: ConversationStore = new Proxy({} as ConversationStor
 	},
 	has(_target, prop) {
 		if (typeof prop !== 'string') return false;
-		return slots.has(prop) || existsSync(join(CONVERSATIONS_DIR, `${prop}.json`));
+		return slots.has(prop) || existsSync(conversationCtxPath(prop));
 	},
 	ownKeys() {
 		return conversationMetas().map((m) => m.id);
@@ -396,15 +438,16 @@ export const conversations: ConversationStore = new Proxy({} as ConversationStor
 export function conversationMetas(): ConversationMeta[] {
 	if (!existsSync(CONVERSATIONS_DIR)) mkdirSync(CONVERSATIONS_DIR, { recursive: true });
 	const metas: ConversationMeta[] = [];
-	for (const file of readdirSync(CONVERSATIONS_DIR)) {
-		if (!file.endsWith('.json')) continue;
-		const id = file.slice(0, -'.json'.length);
-		const conv = slots.get(id)?.raw ?? readJsonFile<ServiceConversation | null>(join(CONVERSATIONS_DIR, file), null);
+	for (const entry of readdirSync(CONVERSATIONS_DIR, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;	// 兼容旧版的 <id>.json 单文件（不迁移，直接忽略）
+		const id = entry.name;
+		const conv = slots.get(id)?.raw ?? readJsonFile<ServiceConversation | null>(conversationCtxPath(id), null);
 		if (!conv) continue;
 		metas.push({
-			id: conv.id,
+			id: conv.id ?? id,
 			folderId: conv.folderId,
 			title: conv.title,
+			modeId: conv.modeId ?? 'code',
 			createdAt: conv.createdAt,
 			updatedAt: conv.updatedAt,
 		});
@@ -412,10 +455,10 @@ export function conversationMetas(): ConversationMeta[] {
 	return metas.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** 新建会话（需要生成 id 和默认字段，因此保留为函数），返回的就是可直接改的代理 */
-export function createConversation(params: { folderId?: string; title?: string } = {}): ServiceConversation {
+/** 新建会话（需要生成 id 和默认字段），返回可直接改的代理 */
+export function createConversation(params: { folderId?: string; title?: string; modeId?: string } = {}): ServiceConversation {
 	let id = Math.random().toString(36).slice(2, 10);
-	while (slots.has(id) || existsSync(join(CONVERSATIONS_DIR, `${id}.json`))) {
+	while (slots.has(id) || existsSync(conversationDir(id))) {
 		id = Math.random().toString(36).slice(2, 10);
 	}
 	const now = Date.now();
@@ -423,11 +466,13 @@ export function createConversation(params: { folderId?: string; title?: string }
 		id,
 		folderId: params.folderId ?? 'local',
 		title: params.title ?? '新任务',
+		modeId: params.modeId ?? (settings.currentModeId || 'code'),
 		createdAt: now,
 		updatedAt: now,
 		messages: [],
 	};
-	writeJsonFile(join(CONVERSATIONS_DIR, `${id}.json`), raw);
+	ensureConversationDir(id);
+	writeJsonFile(conversationCtxPath(id), raw);
 	return openSlot(raw).proxy;
 }
 

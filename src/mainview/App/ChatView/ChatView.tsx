@@ -1,21 +1,21 @@
 ﻿/* ==========================================================================
    主聊天视图 — MindTheGap-Harness
-   
-   对接 Agent 引擎：
-   - handleSend → rpc.request.agentRun 发起 Agent
-   - subscribeAgentStream 订阅流式事件实现打字机效果
-   - text chunk → appendMessageContent 追加到 assistant 消息
-   - done / error → 结束 generating 状态
+
+   对接 v2 Agent：
+   - handleSend → agentBridge.runAgent（body 用 modeId）
+   - subscribeStream 订阅流式事件实现打字机效果
+   - 事件自带 agentInstanceId → 直接映射深度，并行子 Agent 也不会串层
+   - ask_user 走 client_tool_call：渲染提问卡片，回答后 POST /api/agent/answer
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
 import styles from './ChatView.module.css';
-import { state as appState, actions, getActiveConversation, getProviderById } from '../../store';
+import { state as appState, actions, getActiveConversation, getProviderById, currentModeName } from '../../store';
 import type { Message, MessageBlock } from '../../store';
-import type { AgentName, ModelConfig } from '../../../shared/agent';
-import { runAgent, cancelAgent, subscribeStream, saveConversationData } from '../../agentBridge';
-import type { AgentStreamEvent } from '../shared/agent';
+import type { ModelConfig } from '../../../shared/agent';
+import { runAgent, cancelAgent, subscribeStream, saveConversationData, getTaskList, getCtx } from '../../agentBridge';
+import type { AgentStreamEvent } from '../../../shared/agent';
 import { requestFolderPath } from '../../localBridge';
 import { showMenu, alertMsgbox } from '../../ffboxBridge';
 import DiagramView from './DiagramView';
@@ -57,9 +57,6 @@ function SparkleIcon() {
 	);
 }
 
-/** 可选的 Agent 列表 */
-const AGENT_NAMES: AgentName[] = ['默认', '编码', '文件夹浏览总结'];
-
 /** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
 function buildModelConfig(): ModelConfig | null {
 	const ref = appState.currentStandardModel;
@@ -79,38 +76,112 @@ function buildModelConfig(): ModelConfig | null {
 	};
 }
 
+/* ---------- ask_user 提问卡片 ----------
+   单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
+
+function AskUserCard(props: {
+	block: Extract<MessageBlock, { type: 'ask_user' }>;
+	onSubmit: (text: string) => void;
+}) {
+	const [choice, setChoice] = createSignal<string | null>(null);
+	const [extra, setExtra] = createSignal('');
+	const [freeText, setFreeText] = createSignal('');
+	const answered = () => props.block.status !== 'waiting';
+
+	const submit = () => {
+		const parts: string[] = [];
+		if (choice()) parts.push(`选择：${choice()}`);
+		if (freeText().trim()) parts.push(freeText().trim());
+		if (extra().trim()) parts.push(`补充：${extra().trim()}`);
+		props.onSubmit(parts.join('\n') || '(未填写内容)');
+	};
+
+	return (
+		<div class={styles['ask-card']} classList={{ [styles['is-answered']]: answered() }}>
+			<div class={styles['ask-card-question']}>❓ {props.block.question}</div>
+			<Show when={!answered()}>
+				<Show when={props.block.options.length > 0}>
+					<div class={styles['ask-card-options']}>
+						<For each={props.block.options}>
+							{(opt) => (
+								<label class={styles['ask-card-option']}>
+									<input
+										type="radio"
+										name={`ask-${props.block.key}`}
+										checked={choice() === opt.label}
+										onchange={() => setChoice(opt.label)}
+									/>
+									<span class={styles['ask-card-option-label']}>{opt.label}</span>
+									<Show when={opt.description}>
+										<span class={styles['ask-card-option-desc']}>{opt.description}</span>
+									</Show>
+								</label>
+							)}
+						</For>
+						<label class={styles['ask-card-option']}>
+							<input type="radio" name={`ask-${props.block.key}`} checked={choice() === '__other__'} onchange={() => setChoice('__other__')} />
+							<span class={styles['ask-card-option-label']}>其他</span>
+						</label>
+					</div>
+				</Show>
+
+				<Show when={props.block.options.length === 0 || choice() === '__other__'}>
+					<textarea
+						class={styles['ask-card-input']}
+						placeholder="直接输入你的回答..."
+						rows={2}
+						value={freeText()}
+						oninput={(e) => setFreeText(e.currentTarget.value)}
+					/>
+				</Show>
+
+				<div class={styles['ask-card-extra-label']}>还有什么要补充的吗？</div>
+				<textarea
+					class={styles['ask-card-input']}
+					placeholder="可留空。补充说明会一起交给 Agent。"
+					rows={2}
+					value={extra()}
+					oninput={(e) => setExtra(e.currentTarget.value)}
+				/>
+
+				<div class={styles['ask-card-actions']}>
+					<button class={styles['ask-card-submit']} onclick={submit}>提交</button>
+					<button class={styles['ask-card-skip']} onclick={() => props.onSubmit('用户已跳过此提问')}>跳过</button>
+				</div>
+			</Show>
+			<Show when={answered()}>
+				<div class={styles['ask-card-answer']}>{props.block.answer}</div>
+			</Show>
+		</div>
+	);
+}
+
 export default function ChatView() {
 	const [inputText, setInputText] = createSignal('');
 	const [isGenerating, setIsGenerating] = createSignal(false);
 	/** 当前流式写入的 assistant 消息 ID */
 	const [streamMsgId, setStreamMsgId] = createSignal<string | null>(null);
+	/** 任务清单面板 */
+	const [taskList, setTaskList] = createSignal('');
+	const [taskListOpen, setTaskListOpen] = createSignal(false);
 	/** 取消订阅函数 */
 	let unsubscribeFn: (() => void) | null = null;
 
-	/* === Agent 层级追踪（一次 run 内有效） === */
-	/** workId → 层级深度（根=0） */
-	let workDepths = new Map<string, number>();
-	/** 当前收到事件的 Agent 深度（text/tool 事件不带 workId，按事件流顺序归属） */
-	let currentDepth = 0;
-
+	/* === Agent 层级追踪（一次 run 内有效）：
+	   v2 的事件自带 agentInstanceId，因此只需要一张 id → depth 的映射，不再靠事件顺序猜深度 === */
+	let instanceDepths = new Map<string, number>();
+	const depthOf = (agentInstanceId?: string) => (agentInstanceId ? instanceDepths.get(agentInstanceId) ?? 0 : 0);
 	const resetRunState = () => {
-		workDepths = new Map();
-		currentDepth = 0;
+		instanceDepths = new Map();
 	};
 
-	/* === 下拉菜单 ===
-	   文件夹 / Agent 两个 chip 用 FFBox-UI 的 FFBoxMenu（命令式弹出，自带定位 / 键盘导航 / 遮罩关闭），
-	   这里只记录当前打开的是哪一个，用于按钮高亮。
-	   模型选择用的是 ffbox-dropdown-input（见下方 modelMenu），不需要这套状态。 */
+	/* === 下拉菜单 === */
 	const [openMenu, setOpenMenu] = createSignal<'folder' | 'mode' | null>(null);
 
-	// 两个 chip 触发按钮的 ref（给 FFBoxMenu 当弹出锚点）
 	let folderBtn: HTMLButtonElement | undefined;
 	let modeBtn: HTMLButtonElement | undefined;
-	/** 模型下拉框的 ref：选中后需要把显示文本写回组件（原因见 onModelChange） */
 	let modelInput: FFBoxDropdownInput | undefined;
 
-	/** 统一入口：弹出菜单并在关闭时清掉按钮高亮 */
 	const popupMenu = (id: 'folder' | 'mode', options: Parameters<typeof showMenu>[0]) => {
 		setOpenMenu(id);
 		showMenu({
@@ -141,7 +212,6 @@ export default function ChatView() {
 			menu,
 			onSelect: (_e, value) => {
 				if (value === '__new__') {
-					// requestFolderPath 内部会区分 electrobun 原生对话框与浏览器回退
 					void (async () => {
 						const folderPath = await requestFolderPath();
 						if (folderPath) {
@@ -157,24 +227,30 @@ export default function ChatView() {
 		});
 	};
 
-	/** Agent 模式菜单 */
+	/** 模式菜单（第一层的 chip 从「子 Agent」改成「模式」，数据来自 GET /api/modes） */
 	const openModeMenu = () => {
+		if (appState.modes.length === 0) {
+			void alertMsgbox('没有可用模式', '插件里没有加载到任何模式，请到「设置 → 插件 / 模式」检查插件目录。');
+			return;
+		}
 		popupMenu('mode', {
 			triggerElem: modeBtn,
 			type: 'select',
-			menu: AGENT_NAMES.map((name) => ({
+			menu: appState.modes.map((m) => ({
 				type: 'radio' as const,
-				value: name,
-				label: name,
-				checked: appState.currentAgentName === name,
+				value: m.id,
+				label: `${m.ui?.icon ?? ''} ${m.name}`.trim(),
+				checked: appState.currentModeId === m.id,
 			})),
-			onSelect: (_e, value) => actions.setCurrentAgentName(value as AgentName),
+			onSelect: (_e, value) => {
+				actions.setCurrentModeId(value);
+				const conv = getActiveConversation();
+				if (conv) void import('../../agentBridge').then((b) => b.updateConversation(conv.id, { modeId: value }));
+			},
 		});
 	};
 
-	/* === 模型选择：只读 DropdownInput ===
-	   菜单项按供应商拆成 submenu（FFBox-UI 的 MenuItem 原生支持 submenu），
-	   值统一编码成 `providerId/modelId`，选中后解码写回 store。 */
+	/* === 模型选择：只读 DropdownInput === */
 	const modelMenu = createMemo<MenuItem[]>(() => {
 		const current = appState.currentStandardModel;
 		if (appState.providers.length === 0) {
@@ -198,36 +274,43 @@ export default function ChatView() {
 		if (typeof value !== 'string') return;
 		const sep = value.indexOf('/');
 		if (sep <= 0) return;
-		actions.setCurrentStandardModel({
-			providerId: value.slice(0, sep),
-			modelId: value.slice(sep + 1),
-		});
-		// dropdown-input 内部选中后会把 text 置为 value（形如 pid/mid）。重复选同一项时
-		// prop:text 的响应式值没变、Solid 不会重新赋值，所以这里手动把显示名写回。
+		actions.setCurrentStandardModel({ providerId: value.slice(0, sep), modelId: value.slice(sep + 1) });
 		if (modelInput) modelInput.text = currentModelDisplay();
 	};
 
 	const chatAreaRef = (el: HTMLDivElement) => {
-		// 自动滚动到底部
 		createEffect(() => {
-			getActiveConversation(); // 触发响应式
+			getActiveConversation();
+			taskList();
 			queueMicrotask(() => {
 				el.scrollTop = el.scrollHeight;
 			});
 		});
 	};
 
-	/** 处理单个 AgentStreamEvent（全部写入结构化 blocks，不替换已有内容） */
+	/** 刷新任务清单面板 */
+	const refreshTaskList = async (convId: string) => {
+		const list = await getTaskList(convId);
+		setTaskList(list);
+	};
+
+	/** 拉一次最新 ctx 给结构图用（ctx 归后端所有，前端只持有快照，跑完必须重新拉） */
+	const refreshCtx = async (convId: string) => {
+		const ctx = await getCtx(convId);
+		if (ctx) actions.setConversationCtx(convId, ctx);
+	};
+
+	/** 处理单个 AgentStreamEvent（全部写入结构化 blocks） */
 	const handleStreamEvent = (convId: string, event: AgentStreamEvent) => {
 		const msgId = streamMsgId();
-		console.log(`[ChatView] agentStream received: type=${event.type}, msgId=${msgId}, convId=${convId}`);
 		if (!msgId) return;
 
 		switch (event.type) {
 			case 'text':
 				actions.appendMessageBlock(convId, msgId, {
 					type: 'text',
-					depth: currentDepth,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
 					content: event.chunk,
 				});
 				break;
@@ -236,9 +319,11 @@ export default function ChatView() {
 				actions.appendMessageBlock(convId, msgId, {
 					type: 'tool',
 					key: event.callId,
-					depth: currentDepth,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
 					name: event.toolName,
 					status: 'running',
+					reason: event.reason,
 				});
 				break;
 
@@ -249,47 +334,64 @@ export default function ChatView() {
 						? undefined
 						: event.result.error || event.result.content?.slice(0, 200),
 				} as Partial<MessageBlock>);
+				if (event.toolName === 'task_list_write' || event.toolName === 'task_list_read') {
+					void refreshTaskList(convId);
+				}
 				break;
 
 			case 'agent_start':
-				// 根 Agent 深度 0；子 Agent 由 transfer 事件先记录深度
-				if (!workDepths.has(event.workId)) {
-					workDepths.set(event.workId, currentDepth);
+				instanceDepths.set(event.agentInstanceId, event.depth);
+				if (event.depth > 0) {
+					actions.appendMessageBlock(convId, msgId, {
+						type: 'agent',
+						key: event.agentInstanceId,
+						depth: event.depth,
+						agentInstanceId: event.agentInstanceId,
+						name: event.agentName,
+						running: true,
+					});
 				}
-				currentDepth = workDepths.get(event.workId)!;
 				break;
 
-			case 'transfer': {
-				// 转接：子 Agent 深度 = 父深度 + 1，后续事件归属子 Agent
-				const parentDepth = workDepths.get(event.fromWorkId) ?? currentDepth;
-				const childDepth = parentDepth + 1;
-				workDepths.set(event.toWorkId, childDepth);
-				currentDepth = childDepth;
+			case 'agent_end':
+				if (depthOf(event.agentInstanceId) > 0) {
+					actions.patchMessageBlock(convId, msgId, event.agentInstanceId, {
+						running: false,
+						summary: event.summary?.slice(0, 500) || `（${event.status}）`,
+					} as Partial<MessageBlock>);
+				}
+				break;
+
+			case 'reflection':
 				actions.appendMessageBlock(convId, msgId, {
-					type: 'agent',
-					key: event.toWorkId,
-					depth: childDepth,
-					name: event.targetAgentName,
-					running: true,
+					type: 'reflection',
+					key: `refl-${event.agentInstanceId}-${Date.now()}`,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
+					remaining: event.remaining,
+					text: event.prompt,
 				});
 				break;
-			}
 
-			case 'agent_end': {
-				// 子 Agent 结束：回填总结，当前深度回到父级
-				const d = workDepths.get(event.workId);
-				if (d != null) currentDepth = Math.max(0, d - 1);
-				actions.patchMessageBlock(convId, msgId, event.workId, {
-					running: false,
-					summary: event.summary?.slice(0, 500),
-				} as Partial<MessageBlock>);
+			case 'client_tool_call':
+				actions.appendMessageBlock(convId, msgId, {
+					type: 'ask_user',
+					key: event.callId,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
+					question: String((event.args as Record<string, unknown>)?.question ?? '需要你的确认'),
+					options: ((event.args as Record<string, unknown>)?.options as { label: string; description?: string }[]) ?? [],
+					status: 'waiting',
+				});
+				// 挂起：结束本轮「生成中」状态，让用户可以回答或直接发新消息（后者会把提问标记为跳过）
+				finishStreaming();
 				break;
-			}
 
 			case 'error':
 				actions.appendMessageBlock(convId, msgId, {
 					type: 'error',
-					depth: currentDepth,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
 					message: event.message,
 				});
 				finishStreaming();
@@ -300,20 +402,16 @@ export default function ChatView() {
 				break;
 
 			case 'done':
-				// 完整保留本次运行的所有块（文本/工具/转接），只在完全没收到
-				// 文本时用 finalSummary 兜底，绝不替换已有内容
 				{
 					const conv = appState.conversations.find((c) => c.id === convId);
 					const msg = conv?.messages.find((m) => m.id === msgId);
 					const hasText = msg?.blocks?.some((b) => b.type === 'text') || !!msg?.content;
-					if (!hasText && event.finalSummary) {
-						actions.appendMessageBlock(convId, msgId, {
-							type: 'text',
-							depth: 0,
-							content: event.finalSummary,
-						});
+					if (!hasText && event.summary) {
+						actions.appendMessageBlock(convId, msgId, { type: 'text', depth: 0, content: event.summary });
 					}
 				}
+				void refreshTaskList(convId);
+				void refreshCtx(convId);
 				finishStreaming();
 				break;
 		}
@@ -331,11 +429,40 @@ export default function ChatView() {
 		if (convId) {
 			const conv = appState.conversations.find((c) => c.id === convId);
 			if (conv && conv.messages.length > 0) {
-				void saveConversationData(convId, {
-					messages: conv.messages,
-					agentCtx: conv.agentCtx,
-				});
+				// 只写 messages：UI 消息归前端所有，agentCtx 归后端所有（ctx.json 是 agent 层的唯一真相）。
+				// 这里手上的 conv.agentCtx 只是「打开会话时的快照」，一并回写会把 Runner 刚更新过的
+				// 实例树 / 轮次 / 预算回滚成旧值。
+				void saveConversationData(convId, { messages: conv.messages });
 			}
+		}
+	};
+
+	/** 把一条 assistant 占位消息加到会话里，返回它的 id */
+	const addAssistantPlaceholder = (convId: string): string | null => {
+		actions.addMessage(convId, { role: 'assistant', content: '', modeId: appState.currentModeId });
+		const conv = appState.conversations.find((c) => c.id === convId);
+		return conv?.messages[conv.messages.length - 1]?.id ?? null;
+	};
+
+	/** 回答 ask_user 卡片：把答案续接回该实例，并开一条新的 assistant 消息承接后续输出 */
+	const handleAskUserAnswer = async (convId: string, msgId: string, callId: string, text: string) => {
+		actions.patchMessageBlock(convId, msgId, callId, {
+			status: text === '用户已跳过此提问' ? 'skipped' : 'answered',
+			answer: text,
+		} as Partial<MessageBlock>);
+
+		if (text === '用户已跳过此提问') return;
+
+		const newMsgId = addAssistantPlaceholder(convId);
+		if (!newMsgId) return;
+		setIsGenerating(true);
+		setStreamMsgId(newMsgId);
+		unsubscribeFn = subscribeStream(convId, (event) => handleStreamEvent(convId, event));
+
+		const result = await actions.answerToolCall(convId, callId, text);
+		if (!result.ok) {
+			actions.appendMessageBlock(convId, newMsgId, { type: 'error', depth: 0, message: `回答提交失败: ${result.error}` });
+			finishStreaming();
 		}
 	};
 
@@ -343,73 +470,62 @@ export default function ChatView() {
 		const text = inputText().trim();
 		if (!text || isGenerating()) return;
 
-		// 检查模型配置
 		const modelConfig = buildModelConfig();
 		if (!modelConfig) {
 			void alertMsgbox('未配置模型', '请先在「设置 → 模型」里配置模型提供商与模型，然后再发起任务。');
 			return;
 		}
+		if (appState.modes.length === 0) {
+			void alertMsgbox('没有可用模式', '插件里没有加载到任何模式，请到「设置 → 插件 / 模式」检查插件目录。');
+			return;
+		}
 
-		// 获取或创建会话
 		let conv = getActiveConversation();
 		if (!conv) {
-			conv = actions.createConversation('local', text.slice(0, 20) || '新任务');
+			conv = await actions.createConversation('local', text.slice(0, 20) || '新任务');
+			if (!conv) return;
 		} else if (conv.messages.length === 0) {
-			actions.renameConversation(conv.id, text.slice(0, 30));
+			await actions.renameConversation(conv.id, text.slice(0, 30));
 		}
 		const convId = conv.id;
 
-		// 添加用户消息
-		actions.addMessage(convId, { role: 'user', content: text });
+		// 用户直接发新消息：把仍等待回答的卡片标记为已跳过
+		for (const msg of conv.messages) {
+			for (const block of msg.blocks ?? []) {
+				if (block.type === 'ask_user' && block.status === 'waiting') {
+					actions.patchMessageBlock(convId, msg.id, block.key, { status: 'skipped', answer: '用户已跳过此提问' } as Partial<MessageBlock>);
+				}
+			}
+		}
 
-		// 添加空的 assistant 消息占位（用于流式填充）
-		const assistantMsg: Omit<Message, 'id' | 'createdAt'> = {
-			role: 'assistant',
-			content: '',
-			agentName: appState.currentAgentName,
-		};
-		actions.addMessage(convId, assistantMsg);
-		// 拿到刚添加的消息 ID
-		const convAfterAdd = appState.conversations.find((c) => c.id === convId);
-		const addedMsg = convAfterAdd?.messages[convAfterAdd.messages.length - 1];
-		if (!addedMsg) {
+		actions.addMessage(convId, { role: 'user', content: text });
+		const assistantMsgId = addAssistantPlaceholder(convId);
+		if (!assistantMsgId) {
 			console.error('[ChatView] 没能获取新添加的 assistant 消息');
 			return;
 		}
 
 		setInputText('');
 		setIsGenerating(true);
-		setStreamMsgId(addedMsg.id);
+		setStreamMsgId(assistantMsgId);
 		resetRunState();
 
-		// 订阅流式事件
-		unsubscribeFn = subscribeStream(convId, (event) => {
-			console.log(`[ChatView] stream callback fired for ${convId}`);
-			handleStreamEvent(convId, event);
-		});
+		unsubscribeFn = subscribeStream(convId, (event) => handleStreamEvent(convId, event));
 
 		try {
-			console.log(`[ChatView] calling runAgent for ${convId}...`);
 			const result = await runAgent({
 				conversationId: convId,
 				userMessage: text,
-				agentName: appState.currentAgentName,
+				modeId: appState.currentModeId,
 				model: modelConfig,
 			});
 
 			if (!result.ok) {
-				// 启动失败：不会有 done 事件，这里收尾并显示错误
-				actions.updateMessage(convId, addedMsg.id, {
-					content: `❌ Agent 错误: ${result.error}`,
-				});
+				actions.updateMessage(convId, assistantMsgId, { content: `❌ Agent 错误: ${result.error}` });
 				finishStreaming();
 			}
-			// result.ok：runAgent 是 fire-and-forget，agent 后台跑，
-			// 流式事件从 agentStream 推送，真正的结束由 done/error 事件触发 finishStreaming。
 		} catch (err: any) {
-			actions.updateMessage(convId, addedMsg.id, {
-				content: `❌ RPC 调用失败: ${err?.message || String(err)}`,
-			});
+			actions.updateMessage(convId, assistantMsgId, { content: `❌ 调用失败: ${err?.message || String(err)}` });
 			finishStreaming();
 		}
 	};
@@ -423,18 +539,14 @@ export default function ChatView() {
 
 	const handleStop = async () => {
 		const conv = getActiveConversation();
-		if (conv) {
-			await cancelAgent(conv.id);
-		}
+		if (conv) await cancelAgent(conv.id);
 		finishStreaming();
 	};
 
-	// 组件卸载时清理订阅
 	onCleanup(() => {
 		if (unsubscribeFn) unsubscribeFn();
 	});
 
-	// 获取当前选中的模型显示名
 	const currentModelDisplay = () => {
 		const ref = appState.currentStandardModel;
 		if (!ref) return '未选择模型';
@@ -444,7 +556,6 @@ export default function ChatView() {
 		return `${provider.name} / ${model.displayName}`;
 	};
 
-	// 获取当前运行文件夹
 	const currentFolderDisplay = () => {
 		const conv = getActiveConversation();
 		if (!conv) return '选择文件夹...';
@@ -452,14 +563,15 @@ export default function ChatView() {
 		return folder?.name || '本地';
 	};
 
-	const conversationTitle = () => {
-		const conv = getActiveConversation();
-		return conv?.title || '新任务';
-	};
+	const conversationTitle = () => getActiveConversation()?.title || '新任务';
 
-	/** 渲染单个结构化块（Agent 回复）：文本/工具调用/子Agent转接/错误 */
-	const renderBlock = (block: MessageBlock) => {
+	const parseTaskListLines = (text: string) =>
+		text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
+
+	/** 渲染单个结构化块：文本 / 工具调用 / 子 Agent / 反思轮 / 提问卡片 / 错误 */
+	const renderBlock = (block: MessageBlock, msgId: string) => {
 		const indent = { 'margin-left': `${block.depth * 18}px` };
+		const convId = appState.activeConversationId ?? '';
 
 		switch (block.type) {
 			case 'text':
@@ -472,6 +584,9 @@ export default function ChatView() {
 							{block.status === 'running' ? '⏳' : block.status === 'success' ? '✓' : '✗'}
 						</span>
 						<span class={styles['agent-tool-name']}>{block.name}</span>
+						<Show when={block.reason}>
+							<span class={styles['agent-tool-reason']}>原因：{block.reason}</span>
+						</Show>
 						<Show when={block.status === 'error' && block.detail}>
 							<span class={styles['agent-tool-detail']}>{block.detail}</span>
 						</Show>
@@ -483,11 +598,29 @@ export default function ChatView() {
 					<div class={styles['agent-block-agent']} style={indent} classList={{ [styles['is-running']]: block.running }}>
 						<div class={styles['agent-block-agent-header']}>
 							<span class={styles['agent-tool-icon']}>{block.running ? '⏳' : '🤖'}</span>
-							<span class={styles['agent-tool-name']}>转接 → {block.name} Agent</span>
+							<span class={styles['agent-tool-name']}>委托 → {block.name}</span>
 						</div>
 						<Show when={block.summary}>
 							<div class={styles['agent-block-agent-summary']}>{block.summary}</div>
 						</Show>
+					</div>
+				);
+
+			case 'reflection':
+				return (
+					<details class={styles['agent-block-reflection']} style={indent}>
+						<summary>🪞 反思轮（剩 {block.remaining} 次）</summary>
+						<div class={styles['agent-block-reflection-body']}>{block.text}</div>
+					</details>
+				);
+
+			case 'ask_user':
+				return (
+					<div style={indent}>
+						<AskUserCard
+							block={block}
+							onSubmit={(text) => void handleAskUserAnswer(convId, msgId, block.key, text)}
+						/>
 					</div>
 				);
 
@@ -519,7 +652,6 @@ export default function ChatView() {
 
 			{/* 聊天区域 */}
 			<div class={styles['chat-area']} ref={chatAreaRef}>
-				{/* 空状态 */}
 				<Show when={!getActiveConversation() || getActiveConversation()!.messages.length === 0}>
 					<div class={styles['empty-state']}>
 						<div class={styles['empty-state-logo']}>
@@ -530,15 +662,28 @@ export default function ChatView() {
 					</div>
 				</Show>
 
-				{/* 消息列表（聊天模式） */}
 				<Show when={appState.ui.viewMode === 'chat' && getActiveConversation()}>
 					<div class={styles['message-list']}>
+						{/* 任务清单小面板（可折叠） */}
+						<Show when={parseTaskListLines(taskList()).length > 0}>
+							<div class={styles['task-panel']}>
+								<button class={styles['task-panel-header']} onclick={() => setTaskListOpen((v) => !v)}>
+									📋 任务清单（{parseTaskListLines(taskList()).length}）
+									<span>{taskListOpen() ? '▾' : '▸'}</span>
+								</button>
+								<Show when={taskListOpen()}>
+									<For each={parseTaskListLines(taskList())}>
+										{(line) => <div class={styles['task-panel-item']}>{line.replace(/^-\s*\[[ xX]\]\s*/, (m) => (/- \[[xX]\]/.test(m) ? '✅ ' : '⬜ '))}</div>}
+									</For>
+								</Show>
+							</div>
+						</Show>
+
 						<For each={getActiveConversation()!.messages}>
 							{(msg) => (
 								<Show
 									when={msg.role === 'assistant'}
 									fallback={
-										/* 用户消息：右侧气泡（保留头像+气泡样式） */
 										<div class={`${styles.message} ${styles[msg.role]}`}>
 											<div class={styles['message-avatar']}>
 												<UserIcon />
@@ -547,14 +692,13 @@ export default function ChatView() {
 										</div>
 									}
 								>
-									{/* AI 回复：无头像、无气泡，结构化块全保留 + 层级缩进 */}
 									<div class={styles['agent-reply']}>
 										<Show
 											when={msg.blocks?.length}
 											fallback={<div class={styles['agent-block-text']}>{msg.content}</div>}
 										>
 											<For each={msg.blocks}>
-												{(block) => renderBlock(block)}
+												{(block) => renderBlock(block, msg.id)}
 											</For>
 										</Show>
 									</div>
@@ -582,9 +726,7 @@ export default function ChatView() {
 			{/* 输入区域 */}
 			<div class={styles['input-area']}>
 				<div class={styles['input-wrapper']}>
-					{/* 上方控件 */}
 					<div class={styles['input-controls-top']}>
-						{/* 运行文件夹 */}
 						<button
 							ref={folderBtn}
 							classList={{ [styles['chip-btn']]: true, [styles.active]: openMenu() === 'folder' }}
@@ -595,19 +737,19 @@ export default function ChatView() {
 							<ChevronDown />
 						</button>
 
-						{/* Agent 模式 */}
+						{/* 模式 chip（v1 的「子 Agent」chip） */}
 						<button
 							ref={modeBtn}
 							classList={{ [styles['chip-btn']]: true, [styles.active]: openMenu() === 'mode' }}
 							title="运行模式"
 							onclick={openModeMenu}
 						>
-							🤖 <span class={styles['chip-label']}>{appState.currentAgentName}</span>
+							{appState.modes.find((m) => m.id === appState.currentModeId)?.ui?.icon ?? '🤖'}{' '}
+							<span class={styles['chip-label']}>{currentModeName()}</span>
 							<ChevronDown />
 						</button>
 					</div>
 
-					{/* 输入框 */}
 					<div class={styles['input-textarea-wrapper']}>
 						<textarea
 							class={styles['input-textarea']}
@@ -619,7 +761,6 @@ export default function ChatView() {
 						/>
 					</div>
 
-					{/* 下方控件 */}
 					<div class={styles['input-controls-bottom']}>
 						<button class={styles['input-add-btn']} title="添加图片/文件">
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -628,7 +769,6 @@ export default function ChatView() {
 							</svg>
 						</button>
 
-						{/* 模型选择：只读下拉框（供应商为 submenu） */}
 						<ffbox-dropdown-input
 							ref={modelInput}
 							class={styles['model-dropdown']}
@@ -662,7 +802,6 @@ export default function ChatView() {
 					</div>
 				</div>
 			</div>
-
 		</div>
 	);
 }

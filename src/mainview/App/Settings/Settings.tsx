@@ -1,5 +1,6 @@
 /* ==========================================================================
-   设置面板 — 四个 Tab：通用 / 模型 / 用量 / 模式配置
+   设置面板 — 五个 Tab：通用 / 模型 / 用量 / 插件·模式 / MCP
+   （v2：原「模式配置」Tab 换成「插件 / 模式」，成为模式配置的唯一入口）
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
@@ -10,9 +11,11 @@ import { state, actions } from '../../store';
 import { setTheme, getCurrentThemeMode } from '../../theme/theme';
 import { z } from 'zod';
 import type { ModelProvider } from '../../store';
-import type { AgentName, ModelProviderModel, McpServerConfig, McpToolInfo } from '../../../shared/agent';
+import type {
+	ModelProviderModel, McpServerConfig, McpToolInfo, ModeConfigDefaults, LlmRequestRecord, AgentDefinition,
+} from '../../../shared/agent';
 import { confirmMsgbox, alertMsgbox } from '../../ffboxBridge';
-import { testMcpServer } from '../../agentBridge';
+import { testMcpServer, getMode, getRequests, clearRequests } from '../../agentBridge';
 
 /** 把 [{value,label}] 转成 FFBox-UI 的菜单项数组 */
 function toMenuItems(options: readonly { value: string; label: string }[]): MenuItem[] {
@@ -659,107 +662,252 @@ function DashboardItem(props: {
 	);
 }
 
-/* ---------- 模式配置 Tab ---------- */
+/* ---------- 插件 / 模式 Tab ----------
+   这是模式配置的**唯一入口**（需求 11）：
+   - 插件列表（内置 / 用户、被覆盖标记、重新加载）
+   - 每个模式的配置 JSON 编辑器（limits / includeMcp / reflectionPromptAppend）
+   - 只读展示该模式的 Agent（名字 / 工具白名单 / 可委托目标 / 反思轮数）
+   - 只读展示当前会话的 LLM 请求日志（§8.7）
+   -------------------------------------------------------------------------- */
 
-const ALL_AGENT_NAMES: AgentName[] = ["默认", "编码", "文件夹浏览总结"];
-
-const AGENT_OPTIONS = ALL_AGENT_NAMES.map((name) => ({ value: name, label: name }));
-
-function ModeConfigTab() {
-	const [selectedAgentName, setSelectedAgentName] = createSignal<AgentName>(state.currentAgentName);
-	const currentConfig = createMemo(() =>
-		state.agentConfigs.find((c) => c.name === selectedAgentName())
-	);
-	const [jsonText, setJsonText] = createSignal("");
+/** 当前模式生效配置的编辑器 */
+function ModeConfigEditor(props: { modeId: string }) {
+	const overrides = () => (state.modeConfigs[props.modeId] ?? {});
+	const [jsonText, setJsonText] = createSignal('');
 
 	createEffect(() => {
-		setJsonText(JSON.stringify({
-			agentName: selectedAgentName(),
-			transferableAgents: currentConfig()?.transferableAgents || [],
-		}, null, 2));
+		setJsonText(JSON.stringify(overrides(), null, 2));
 	});
 
 	const handleSave = () => {
 		try {
-			const parsed = JSON.parse(jsonText());
-			if (parsed.transferableAgents && Array.isArray(parsed.transferableAgents)) {
-				actions.updateAgentConfig(selectedAgentName(), parsed.transferableAgents);
-				void alertMsgbox("已保存", "可转接的 Agent 配置已更新。", "好的");
-			}
-		} catch (e) {
-			void alertMsgbox("保存失败", "JSON 格式错误，请检查后重试。");
+			const parsed = JSON.parse(jsonText() || '{}') as ModeConfigDefaults;
+			actions.setModeConfig(props.modeId, parsed);
+			void alertMsgbox('已保存', `模式「${props.modeId}」的配置覆盖已更新。`, '好的');
+		} catch {
+			void alertMsgbox('保存失败', 'JSON 格式错误，请检查后重试。');
 		}
 	};
 
 	return (
-		<div>
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>选择 Agent</div>
-				<ffbox-dropdown-input
-					class={styles['ffbox-dropdown']}
-					prop:list={toMenuItems(AGENT_OPTIONS)}
-					prop:text={selectedAgentName()}
-					prop:readonly={true}
-					onchange={(e) => setSelectedAgentName(e.detail as AgentName)}
-				/>
+		<div class={styles['setting-group']}>
+			<div class={styles['setting-group-label']}>配置覆盖（JSON）</div>
+			<div class={styles['setting-group-desc']}>
+				这里只写**覆盖值**；生效配置 = 插件 mode.json 的 defaultSettings ⊕ 这里的 JSON。
+				<br />
+				可用字段：<code>limits.totalRounds</code> / <code>limits.agentInstanceRounds</code> /{' '}
+				<code>limits.warnAtRemaining</code> / <code>includeMcp</code> / <code>reflectionPromptAppend</code>。
+				<br />
+				留 <code>{'{}'}</code> 表示完全使用插件默认值。
 			</div>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>可转接的 Agent（JSON）</div>
-				<div class={styles['setting-group-desc']}>
-					这个 Agent 运行时，允许通过 "转接" 工具将工作转交给这些 Agent。
-					<br />
-					提示：直接编辑下面的 JSON，或勾选下方的复选框快速配置。
-				</div>
-
-				{/* 快速复选框 */}
-				<div style={{
-					display: "flex",
-					gap: "16px",
-					padding: "10px 14px",
-					backgroundColor: "hwb(var(--bg95) / 1)",
-					borderRadius: 8,
-					marginBottom: 12,
-				}}>
-					<For each={ALL_AGENT_NAMES.filter((m) => m !== selectedAgentName())}>
-						{(name) => {
-							const checked = currentConfig()?.transferableAgents.includes(name) ?? false;
-							return (
-								<label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
-									<ffbox-checkbox
-										prop:checked={checked}
-										onchange={(e) => {
-											const list = currentConfig()?.transferableAgents.slice() || [];
-											if (e.detail) {
-												if (!list.includes(name)) list.push(name);
-											} else {
-												const idx = list.indexOf(name);
-												if (idx >= 0) list.splice(idx, 1);
-											}
-											actions.updateAgentConfig(selectedAgentName(), list);
-										}}
-									/>
-									<span>{name}</span>
-								</label>
-							);
-						}}
-					</For>
-				</div>
-
-				{/* JSON 编辑器 */}
-				<textarea
-					class={styles['json-textarea']}
-					value={jsonText()}
-					oninput={(e) => setJsonText(e.currentTarget.value)}
-					rows={10}
-				/>
-				<ffbox-button type="primary" style={{ marginTop: 8 }} onclick={handleSave}>
-					保存
-				</ffbox-button>
-			</div>
+			<textarea
+				class={styles['json-textarea']}
+				value={jsonText()}
+				oninput={(e) => setJsonText(e.currentTarget.value)}
+				rows={8}
+			/>
+			<ffbox-button type="primary" style={{ 'margin-top': '8px' }} onclick={handleSave}>
+				保存
+			</ffbox-button>
 		</div>
 	);
 }
+
+/** 某个模式的 Agent 只读清单 */
+function AgentsReadonly(props: { modeId: string }) {
+	const [agents, setAgents] = createSignal<AgentDefinition[]>([]);
+	const [rootAgent, setRootAgent] = createSignal('');
+
+	createEffect(() => {
+		void (async () => {
+			const detail = await getMode(props.modeId) as { rootAgent?: string; agents?: Record<string, AgentDefinition> } | null;
+			setRootAgent(detail?.rootAgent ?? '');
+			setAgents(Object.values(detail?.agents ?? {}));
+		})();
+	});
+
+	const allowOf = (def: AgentDefinition) => def.ability?.tools?.allow?.join(', ') || '(全部内置工具)';
+
+	return (
+		<div class={styles['setting-group']}>
+			<div class={styles['setting-group-label']}>该模式的 Agent（只读）</div>
+			<For each={agents()}>
+				{(def) => (
+					<div style={{ padding: '8px 0', 'border-bottom': '1px solid hwb(var(--fg90) / 0.08)' }}>
+						<div style={{ display: 'flex', gap: '8px', 'align-items': 'baseline' }}>
+							<strong>{def.name}</strong>
+							<span style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>{def.id}</span>
+							<Show when={def.id === rootAgent()}>
+								<span style={{ color: 'hwb(220 70% 55%)', 'font-size': '0.8em' }}>[根 Agent]</span>
+							</Show>
+						</div>
+						<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em', 'margin-top': '4px' }}>
+							工具：{allowOf(def)}
+						</div>
+						<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>
+							可委托：{def.delegatable?.length ? def.delegatable.join(', ') : '—'} ｜ 反思轮数：{def.reflectionCount ?? 0} ｜
+							任务清单注入：{def.taskListInject ? '是' : '否'}
+						</div>
+					</div>
+				)}
+			</For>
+		</div>
+	);
+}
+
+/** 当前会话的 LLM 请求日志（只读） */
+function RequestLogReadonly() {
+	const [records, setRecords] = createSignal<LlmRequestRecord[]>([]);
+	const [loading, setLoading] = createSignal(false);
+
+	const refresh = async () => {
+		const convId = state.activeConversationId;
+		if (!convId) {
+			setRecords([]);
+			return;
+		}
+		setLoading(true);
+		setRecords(await getRequests(convId, { limit: 50 }));
+		setLoading(false);
+	};
+
+	createEffect(() => {
+		state.activeConversationId;
+		void refresh();
+	});
+
+	return (
+		<div class={styles['setting-group']}>
+			<div class={styles['setting-group-label']}>
+				请求日志（当前会话，最近 50 条）
+				<span style={{ 'margin-left': '10px' }}>
+					<ffbox-button onclick={() => void refresh()}>刷新</ffbox-button>
+					<ffbox-button
+						style={{ 'margin-left': '6px' }}
+						onclick={async () => {
+							const convId = state.activeConversationId;
+							if (!convId) return;
+							await clearRequests(convId);
+							void refresh();
+						}}
+					>
+						清空
+					</ffbox-button>
+				</span>
+			</div>
+			<Show when={!state.activeConversationId}>
+				<div class={styles['setting-group-desc']}>先打开一个会话，这里会显示它的 LLM 请求账本。</div>
+			</Show>
+			<Show when={state.activeConversationId && records().length === 0 && !loading()}>
+				<div class={styles['setting-group-desc']}>还没有记录（或 requestLog 被关闭了）。</div>
+			</Show>
+			<Show when={records().length > 0}>
+				<div style={{ 'font-size': '0.85em', color: 'var(--fontColorDim)', 'line-height': '1.7' }}>
+					<For each={records()}>
+						{(r) => (
+							<div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
+								<span>{new Date(r.startedAt).toLocaleTimeString('zh-CN')}</span>
+								<span>{r.agentName ?? '(llm 层)'}</span>
+								<span>{r.purpose}</span>
+								<span>{r.model}</span>
+								<span>{r.usage?.input ?? 0}↑ {r.usage?.output ?? 0}↓</span>
+								<span>{r.durationMs}ms</span>
+								<span style={{ color: r.status === 'success' ? 'inherit' : 'var(--error)' }}>{r.status}</span>
+							</div>
+						)}
+					</For>
+				</div>
+			</Show>
+		</div>
+	);
+}
+
+function PluginModeTab() {
+	const [selectedModeId, setSelectedModeId] = createSignal(state.currentModeId);
+	const modeOptions = createMemo(() => state.modes.map((m) => ({ value: m.id, label: `${m.ui?.icon ?? ''} ${m.name}`.trim() })));
+
+	createEffect(() => {
+		// 模式列表变化（插件重载）后，保证选中的模式依然存在
+		const ids = state.modes.map((m) => m.id);
+		if (ids.length > 0 && !ids.includes(selectedModeId())) setSelectedModeId(ids[0]);
+	});
+
+	return (
+		<div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>插件</div>
+				<div class={styles['setting-group-desc']}>
+					插件目录：应用内置 <code>plugins/</code> 与用户目录 <code>~/.mindthegap-harness/plugins/</code>。
+					同名模式以用户插件为准（会被标记「被覆盖」）。
+				</div>
+				<For each={state.modes}>
+					{(m) => (
+						<div style={{ padding: '6px 0', 'font-size': '0.9em' }}>
+							<span>{m.ui?.icon ?? '🧩'} </span>
+							<strong>{m.name}</strong>
+							<span style={{ color: 'var(--fontColorDim)' }}> （{m.id}）</span>
+							<span style={{ color: 'var(--fontColorDim)' }}> — 来自插件 {m.pluginName}</span>
+							<Show when={m.overridden}>
+								<span style={{ color: 'hwb(35 80% 45%)' }}> [被用户插件覆盖]</span>
+							</Show>
+							<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>
+								{m.description} ｜ 根 Agent：{m.rootAgent} ｜ 最大深度：{m.maxDepth} ｜ Agent 数：
+								{m.agents.length}
+							</div>
+						</div>
+					)}
+				</For>
+				<Show when={state.pluginErrors.length > 0}>
+					<div style={{ 'margin-top': '8px', 'font-size': '0.85em' }}>
+						<For each={state.pluginErrors}>
+							{(err) => (
+								<div style={{ color: err.level === 'error' ? 'var(--error)' : 'hwb(35 80% 45%)' }}>
+									[{err.level}] {[err.pluginId, err.modeId, err.agentId].filter(Boolean).join('/')} {err.message}
+								</div>
+							)}
+						</For>
+					</div>
+				</Show>
+				<ffbox-button
+					type="primary"
+					style={{ 'margin-top': '10px' }}
+					onclick={async () => {
+						const result = await actions.reloadPlugins();
+						void alertMsgbox(
+							result.ok ? '已重新加载' : '重载失败',
+							result.ok ? `当前模式：${(result.modes ?? []).join(', ')}` : '请查看上方的加载错误。',
+						);
+					}}
+				>
+					重新加载插件
+				</ffbox-button>
+			</div>
+
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>模式</div>
+				<ffbox-dropdown-input
+					class={styles['ffbox-dropdown']}
+					prop:list={toMenuItems(modeOptions())}
+					prop:text={modeOptions().find((o) => o.value === selectedModeId())?.label ?? selectedModeId()}
+					prop:readonly={true}
+					onchange={(e) => setSelectedModeId(e.detail as string)}
+				/>
+				<div class={styles['setting-group-desc']} style={{ 'margin-top': '8px' }}>
+					当前聊天使用的模式：
+					<strong>{state.modes.find((m) => m.id === state.currentModeId)?.name ?? state.currentModeId}</strong>
+					<span style={{ 'margin-left': '8px' }}>
+						<ffbox-button onclick={() => actions.setCurrentModeId(selectedModeId())}>设为当前模式</ffbox-button>
+					</span>
+				</div>
+			</div>
+
+			<ModeConfigEditor modeId={selectedModeId()} />
+			<AgentsReadonly modeId={selectedModeId()} />
+			<RequestLogReadonly />
+		</div>
+	);
+}
+
 
 /* ---------- MCP Tab ---------- */
 
@@ -1089,13 +1237,13 @@ function McpEditor(props: {
 
 /* ---------- 设置面板主体 ---------- */
 
-type TabId = '通用' | '模型' | '用量' | '模式配置' | 'MCP';
+type TabId = '通用' | '模型' | '用量' | '插件 / 模式' | 'MCP';
 
 const TABS: Array<{ id: TabId; label: string; icon: string }> = [
 	{ id: '通用', label: '通用', icon: '⚙️' },
 	{ id: '模型', label: '模型', icon: '🧠' },
 	{ id: '用量', label: '用量', icon: '📊' },
-	{ id: '模式配置', label: '模式配置', icon: '🔀' },
+	{ id: '插件 / 模式', label: '插件 / 模式', icon: '🧩' },
 	{ id: 'MCP', label: 'MCP', icon: '🔌' },
 ];
 
@@ -1135,7 +1283,7 @@ export default function Settings() {
 						{state.ui.activeSettingsTab === "通用" && <GeneralTab />}
 						{state.ui.activeSettingsTab === "模型" && <ModelsTab />}
 						{state.ui.activeSettingsTab === "用量" && <UsageTab />}
-						{state.ui.activeSettingsTab === "模式配置" && <ModeConfigTab />}
+						{state.ui.activeSettingsTab === "插件 / 模式" && <PluginModeTab />}
 						{state.ui.activeSettingsTab === "MCP" && <McpTab />}
 					</div>
 				</div>

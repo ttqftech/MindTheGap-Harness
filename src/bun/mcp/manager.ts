@@ -256,9 +256,13 @@ class McpManager {
 
 	/* ---------- System Prompt ---------- */
 
-	/** 生成追加到 system prompt 里的 MCP 工具说明 */
-	getPromptSection(): string {
-		const tools = this.getTools();
+	/**
+	 * 生成追加到 system prompt 里的 MCP 工具说明。
+	 * @param filterToolNames 只列这些工具（按实例的能力策略过滤后传入）；不传 = 全部
+	 */
+	getPromptSection(filterToolNames?: string[]): string {
+		const all = this.getTools();
+		const tools = filterToolNames ? all.filter((t) => filterToolNames.includes(t.name)) : all;
 		if (tools.length === 0) return '';
 		const lines = tools.map((t) => `- ${t.name}: ${t.description}`);
 		return `

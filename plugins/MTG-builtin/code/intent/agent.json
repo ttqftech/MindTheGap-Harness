@@ -1,0 +1,20 @@
+{
+	"id": "intent",
+	"name": "意图分析",
+	"promptFile": "prompt.md",
+	"taskListInject": true,
+	"reflectionCount": 1,
+	"delegatable": ["explore", "plan", "engineer", "verify", "review", "websearch"],
+	"model": "standard",
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search",
+				"task_list_read", "task_list_write",
+				"ask_user",
+				"delegate", "resume_pending_child", "resume_completed_child", "ask_child"
+			]
+		}
+	}
+}

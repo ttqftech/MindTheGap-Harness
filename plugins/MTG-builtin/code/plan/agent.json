@@ -1,0 +1,19 @@
+{
+	"id": "plan",
+	"name": "计划",
+	"promptFile": "prompt.md",
+	"taskListInject": true,
+	"reflectionCount": 1,
+	"delegatable": ["explore"],
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search", "file_write",
+				"web_search", "web_fetch", "bash",
+				"task_list_read", "task_list_write",
+				"ask_user", "delegate", "finish"
+			]
+		}
+	}
+}

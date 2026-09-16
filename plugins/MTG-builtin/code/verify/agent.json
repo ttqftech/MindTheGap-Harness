@@ -1,0 +1,13 @@
+{
+	"id": "verify",
+	"name": "验证",
+	"promptFile": "prompt.md",
+	"taskListInject": false,
+	"reflectionCount": 0,
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["file_read", "file_list", "file_search", "bash", "file_write", "finish"]
+		}
+	}
+}

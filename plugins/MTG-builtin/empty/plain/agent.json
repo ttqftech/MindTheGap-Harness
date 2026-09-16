@@ -1,0 +1,7 @@
+{
+	"id": "plain",
+	"name": "默认",
+	"promptFile": "prompt.md",
+	"taskListInject": false,
+	"ability": { "tools": { "allow": [] }, "mcp": "none" }
+}

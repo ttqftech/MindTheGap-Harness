@@ -1,0 +1,13 @@
+{
+	"id": "websearch",
+	"name": "网络信息搜索",
+	"promptFile": "prompt.md",
+	"taskListInject": false,
+	"reflectionCount": 0,
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["file_read", "file_list", "file_search", "web_search", "web_fetch", "finish"]
+		}
+	}
+}
