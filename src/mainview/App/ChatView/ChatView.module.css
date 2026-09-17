@@ -180,21 +180,148 @@
     padding-left: 8px;
 }
 
+/* 工具块：一行摘要（可点击展开）+ 入参 / 完整输出 */
 .agent-block-tool {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 3px 8px;
+    margin: 3px 0;
     font-size: 12.5px;
     font-family: Consolas, monospace;
     color: var(--fontColorMuted);
     background-color: hwb(var(--bg95) / 0.6);
     border-radius: 6px;
-    max-width: fit-content;
+    max-width: 100%;
 }
 
 .agent-block-tool.is-error {
     color: var(--dangerColor, #e5484d);
+}
+
+.agent-tool-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 8px;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+}
+
+.agent-tool-summary::-webkit-details-marker {
+    display: none;
+}
+
+.agent-tool-summary::before {
+    content: '▸';
+    flex-shrink: 0;
+    opacity: 0.55;
+    transition: transform 0.12s ease;
+}
+
+.agent-block-tool[open] > .agent-tool-summary::before {
+    content: '▾';
+}
+
+/* 这条是谁产生的（子 Agent 名） */
+.agent-tool-owner {
+    flex-shrink: 0;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 0.8em;
+    background: hwb(var(--bg85) / 0.8);
+    color: var(--fontColorDim);
+}
+
+/* 输出首行预览：不展开也能看出工具干了什么 */
+.agent-tool-preview {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.agent-tool-body {
+    padding: 0 8px 8px 22px;
+}
+
+.agent-tool-section {
+    margin: 6px 0 2px;
+    font-size: 0.8em;
+    letter-spacing: 0.04em;
+    color: var(--fontColorDim);
+}
+
+.agent-tool-pre {
+    margin: 0;
+    padding: 6px 8px;
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--fontColor);
+    background: hwb(var(--bg85) / 0.6);
+    border-radius: 5px;
+}
+
+.agent-tool-hint {
+    font-size: 0.85em;
+    opacity: 0.6;
+}
+
+/* 子 Agent 说话时的归属标注（委托不再单独成块，靠它区分是谁在输出） */
+.agent-block-owner {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--fontColorDim);
+    margin-bottom: 2px;
+}
+
+/* 消息级用量脚注（后端账本投影到前端） */
+.agent-msg-usage {
+    margin-top: 6px;
+    font-size: 11px;
+    font-family: Consolas, monospace;
+    color: var(--fontColorDim);
+    opacity: 0.75;
+}
+
+/* ---- token 账本：单次调用一行流水；agentLoop 中断的小计要更醒目 ---- */
+.agent-block-usage {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin: 2px 0;
+    padding: 1px 8px;
+    font-size: 11px;
+    font-family: Consolas, monospace;
+    color: var(--fontColorDim);
+    opacity: 0.8;
+    border-radius: 6px;
+}
+
+/* 小计行：一次交互烧了多少，用户主要看这个，所以给它底色 + 上下留白 */
+.agent-block-usage.is-loop {
+    margin: 6px 0;
+    padding: 4px 8px;
+    opacity: 1;
+    color: var(--fontColor);
+    background: hwb(var(--bg95) / 1);
+    border-left: 2px solid hwb(200 45% 50% / 0.7);
+}
+
+.agent-usage-icon {
+    flex-shrink: 0;
+}
+
+.agent-usage-owner {
+    font-weight: 600;
+    color: var(--fontColorMuted);
+}
+
+.agent-usage-text {
+    word-break: break-all;
 }
 
 .agent-tool-icon {
@@ -433,6 +560,47 @@
     white-space: pre-wrap;
     font-family: var(--monoFont, monospace);
     font-size: 0.92em;
+}
+
+.agent-block-reasoning {
+    margin: 6px 0;
+    padding: 5px 10px;
+    border-left: 2px solid hwb(var(--fg90) / 0.22);
+    background: hwb(var(--bg95) / 1);
+    border-radius: 6px;
+    font-size: 0.86em;
+    color: var(--fontColorDim);
+}
+
+.agent-block-reasoning > summary {
+    cursor: pointer;
+    user-select: none;
+    color: var(--fontColor);
+}
+
+.agent-reasoning-label {
+    opacity: 0.8;
+}
+
+/* 折叠状态下也要能看出「模型还在动」：实时滚出思考内容的末尾 */
+.agent-reasoning-peek {
+    display: block;
+    margin-top: 2px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    opacity: 0.5;
+    font-family: var(--monoFont, monospace);
+    font-size: 0.95em;
+}
+
+.agent-block-reasoning-body {
+    margin-top: 6px;
+    max-height: 280px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-family: var(--monoFont, monospace);
+    font-size: 0.95em;
 }
 
 .ask-card {

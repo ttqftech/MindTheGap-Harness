@@ -84,6 +84,16 @@ export function resolvePromptsDir(): string | null {
 	return base ? join(base, 'prompts') : null;
 }
 
+/**
+ * 仓库内某个资源的绝对路径（从 cwd 逐级向上找）。
+ * 给「跟着仓库走的脚本 / 数据文件」用，例如 scripts/web-render.mjs。
+ * 路径用 `/` 分隔即可，Windows 下 join 也能正确拼接。
+ */
+export function resolveRepoFile(relPath: string): string | null {
+	const base = findUp(relPath);
+	return base ? join(base, relPath) : null;
+}
+
 // #endregion
 
 // #region 读文件
@@ -264,6 +274,7 @@ function loadModeDefinition(
 		injectBasePrompt: raw.injectBasePrompt ?? true,
 		taskList: raw.taskList ?? { enabled: false, writable: false },
 		mcp: raw.mcp ?? 'none',
+		reflectionPromptFile: raw.reflectionPromptFile,
 		defaultSettings: raw.defaultSettings ?? {},
 		settingsSchema: raw.settingsSchema,
 		ui: raw.ui,

@@ -1,0 +1,23 @@
+{
+	"id": "daily",
+	"name": "日常信息查询",
+	"description": "轻量助手：总台分诊 + 环境查询（公网 IP / IP 归属地）+ 天气查询，无文件与 MCP 能力，预算收紧",
+	"rootAgent": "router",
+	"maxDepth": 1,
+	"injectBasePrompt": true,
+	"taskList": { "enabled": false, "writable": false },
+	"mcp": "none",
+	"reflectionPromptFile": "daily/_reflection.md",
+	"defaultSettings": {
+		"limits": { "totalRounds": 14, "agentInstanceRounds": 6, "warnAtRemaining": 2 },
+		"reflectionPromptAppend": ""
+	},
+	"settingsSchema": {
+		"limits": {
+			"type": "object",
+			"description": "循环预算：totalRounds 一次 run 的总轮数上限，agentInstanceRounds 单实例上限，warnAtRemaining 剩余多少轮开始告警（日常查询不需要长循环，默认给得很小）"
+		},
+		"reflectionPromptAppend": { "type": "string", "description": "追加到反思问题构造器的提示词" }
+	},
+	"ui": { "icon": "🌤️", "accent": "green" }
+}

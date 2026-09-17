@@ -15,7 +15,7 @@ import { state as appState, actions, getActiveConversation, getProviderById, cur
 import type { Message, MessageBlock } from '../../store';
 import type { ModelConfig } from '../../../shared/agent';
 import { runAgent, cancelAgent, subscribeStream, saveConversationData, getTaskList, getCtx } from '../../agentBridge';
-import type { AgentStreamEvent } from '../../../shared/agent';
+import type { AgentStreamEvent, ToolResult } from '../../../shared/agent';
 import { requestFolderPath } from '../../localBridge';
 import { showMenu, alertMsgbox } from '../../ffboxBridge';
 import DiagramView from './DiagramView';
@@ -76,7 +76,70 @@ function buildModelConfig(): ModelConfig | null {
 	};
 }
 
-/* ---------- ask_user 提问卡片 ----------
+/* ---------- 工具入参 / 输出的展示上限 ----------
+   「透明」不等于「无上限」：一条 web_search 的结果动辄几万字符，
+   全量塞进 message.blocks 会把会话文件撑爆、也会让 UI 卡死。
+   这里截断到 8K 并注明总长度，完整内容仍在后端 ctx.json 里（图示模式可见）。 */
+const TOOL_ARGS_LIMIT = 1500;
+const TOOL_OUTPUT_LIMIT = 8000;
+
+function truncateWithNote(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	const head = text.slice(0, Math.floor(limit * 0.8));
+	const tail = text.slice(-Math.floor(limit * 0.2));
+	return `${head}\n\n…（已省略 ${text.length - head.length - tail.length} 字符，完整内容见后端 ctx）\n\n${tail}`;
+}
+
+/** 工具入参 → 可读字符串 */
+function formatToolArgs(args: unknown): string {
+	if (args === undefined || args === null) return '';
+	const text = typeof args === 'string' ? args : (() => {
+		try { return JSON.stringify(args, null, 2); } catch { return String(args); }
+	})();
+	return truncateWithNote(text, TOOL_ARGS_LIMIT);
+}
+
+/** 工具结果 → 可读字符串（失败时把错误信息也带上） */
+function formatToolOutput(result: ToolResult): string {
+	const body = result.content ?? '';
+	if (!result.success) {
+		return `[失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
+	}
+	return truncateWithNote(body, TOOL_OUTPUT_LIMIT);
+}
+
+/** 1234 → "1.2k"：账本里数字位数差别很大，统一压成短形式才不会把一行撑爆 */
+function fmtTokens(n?: number): string {
+	if (n === undefined || n === null) return '?';
+	if (n < 1000) return String(n);
+	if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+	return `${Math.round(n / 1000)}k`;
+}
+
+function fmtDuration(ms?: number): string {
+	if (!ms && ms !== 0) return '';
+	return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** LLM 用途 → 中文标签。账本里的 purpose 是内部枚举，直接显示用户看不懂 */
+const PURPOSE_LABEL: Record<string, string> = {
+	agent_loop: '主循环',
+	reflection: '反思',
+	ask_child: '询问子 Agent',
+	web_rank: '搜索结果打分',
+	other: '其他',
+};
+
+/** agentLoop 中断原因 → 中文标签 */
+const LOOP_REASON_LABEL: Record<string, string> = {
+	ask_user: '等待用户回答',
+	finish: '本段结束',
+	interrupted: '被中断',
+	error: '出错中止',
+	await_child: '等待子 Agent',
+};
+
+/** ask_user 提问卡片 ----------
    单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
 
 function AskUserCard(props: {
@@ -168,11 +231,20 @@ export default function ChatView() {
 	let unsubscribeFn: (() => void) | null = null;
 
 	/* === Agent 层级追踪（一次 run 内有效）：
-	   v2 的事件自带 agentInstanceId，因此只需要一张 id → depth 的映射，不再靠事件顺序猜深度 === */
+	   v2 的事件自带 agentInstanceId，因此只需要一张 id → depth 的映射，不再靠事件顺序猜深度。
+	   另外记一张 id → 名称，用于在块上标注「这条是谁产生的」（子 Agent 的产出不再单独成块，
+	   没有名字就看不出是根 Agent 还是哪个子 Agent 在说话）。 */
 	let instanceDepths = new Map<string, number>();
+	let instanceNames = new Map<string, string>();
 	const depthOf = (agentInstanceId?: string) => (agentInstanceId ? instanceDepths.get(agentInstanceId) ?? 0 : 0);
+	/** 只给 depth > 0（子 Agent）标注名字，根 Agent 不必重复显示 */
+	const nameOf = (agentInstanceId?: string) => {
+		if (!agentInstanceId) return undefined;
+		return depthOf(agentInstanceId) > 0 ? instanceNames.get(agentInstanceId) : undefined;
+	};
 	const resetRunState = () => {
 		instanceDepths = new Map();
+		instanceNames = new Map();
 	};
 
 	/* === 下拉菜单 === */
@@ -311,6 +383,7 @@ export default function ChatView() {
 					type: 'text',
 					depth: depthOf(event.agentInstanceId),
 					agentInstanceId: event.agentInstanceId,
+					agentName: nameOf(event.agentInstanceId),
 					content: event.chunk,
 				});
 				break;
@@ -321,45 +394,46 @@ export default function ChatView() {
 					key: event.callId,
 					depth: depthOf(event.agentInstanceId),
 					agentInstanceId: event.agentInstanceId,
+					agentName: nameOf(event.agentInstanceId),
 					name: event.toolName,
 					status: 'running',
 					reason: event.reason,
+					args: formatToolArgs(event.args),
 				});
 				break;
 
 			case 'tool_end':
+				// 工具输出原样展示：成功是结果正文，失败是错误信息。
+				// delegate / resume_* 这类异步工具会先发一次「未完成」占位，
+				// 子 Agent 终态时再发一次终态结果，同一个 key 直接覆盖即可。
 				actions.patchMessageBlock(convId, msgId, event.callId, {
 					status: event.result.success ? 'success' : 'error',
-					detail: event.result.success
-						? undefined
-						: event.result.error || event.result.content?.slice(0, 200),
-				} as Partial<MessageBlock>);
+					output: formatToolOutput(event.result),
+				} as Partial<MessageBlock>, 'tool');
 				if (event.toolName === 'task_list_write' || event.toolName === 'task_list_read') {
 					void refreshTaskList(convId);
 				}
 				break;
 
 			case 'agent_start':
+				// 只记层级与名字，不再生成「委托卡片」——委托本身就是一次工具调用，
+				// 它的入参与结果（子 Agent 总结）都在 tool 块里，额外 UI 是重复的。
 				instanceDepths.set(event.agentInstanceId, event.depth);
-				if (event.depth > 0) {
-					actions.appendMessageBlock(convId, msgId, {
-						type: 'agent',
-						key: event.agentInstanceId,
-						depth: event.depth,
-						agentInstanceId: event.agentInstanceId,
-						name: event.agentName,
-						running: true,
-					});
-				}
+				instanceNames.set(event.agentInstanceId, event.agentName);
 				break;
 
 			case 'agent_end':
-				if (depthOf(event.agentInstanceId) > 0) {
-					actions.patchMessageBlock(convId, msgId, event.agentInstanceId, {
-						running: false,
-						summary: event.summary?.slice(0, 500) || `（${event.status}）`,
-					} as Partial<MessageBlock>);
-				}
+				break;
+
+			case 'reasoning':
+				// 思考模型的推理增量：实时显示，但折叠起来不抢正文的位置
+				actions.appendMessageBlock(convId, msgId, {
+					type: 'reasoning',
+					key: `think-${event.agentInstanceId}-${Date.now()}`,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
+					content: event.chunk,
+				});
 				break;
 
 			case 'reflection':
@@ -368,6 +442,7 @@ export default function ChatView() {
 					key: `refl-${event.agentInstanceId}-${Date.now()}`,
 					depth: depthOf(event.agentInstanceId),
 					agentInstanceId: event.agentInstanceId,
+					agentName: nameOf(event.agentInstanceId),
 					remaining: event.remaining,
 					text: event.prompt,
 				});
@@ -397,9 +472,37 @@ export default function ChatView() {
 				finishStreaming();
 				break;
 
-			case 'usage':
-				actions.updateMessage(convId, msgId, { tokens: event.tokens });
+			case 'usage': {
+				const t = event.tokens ?? {};
+				// scope='loop' 是「本段小计」，它只是对已播报过的单次调用再汇总一次，
+				// 不能重复计入总量；只有 scope='call' 才代表真正多花了一次请求的钱。
+				if (event.scope !== 'loop') {
+					actions.addMessageTokens(convId, msgId, t);
+				}
+				actions.appendMessageBlock(convId, msgId, {
+					type: 'usage',
+					key: `usage-${event.logId ?? Date.now()}-${event.scope ?? 'call'}`,
+					depth: depthOf(event.agentInstanceId),
+					agentInstanceId: event.agentInstanceId,
+					agentName: event.agentName ?? nameOf(event.agentInstanceId),
+					scope: event.scope ?? 'call',
+					input: t.input,
+					output: t.output,
+					cached: t.inputCached,
+					total: t.total,
+					seq: event.seq,
+					round: event.round,
+					purpose: event.purpose,
+					durationMs: event.durationMs,
+					model: event.model,
+					deltaInput: event.loopDelta?.input,
+					deltaOutput: event.loopDelta?.output,
+					deltaTotal: event.loopDelta?.total,
+					loopCalls: event.loopCalls,
+					reason: event.reason,
+				});
 				break;
+			}
 
 			case 'done':
 				{
@@ -575,41 +678,138 @@ export default function ChatView() {
 
 		switch (block.type) {
 			case 'text':
-				return <div class={styles['agent-block-text']} style={indent}>{block.content}</div>;
-
-			case 'tool':
 				return (
-					<div class={styles['agent-block-tool']} style={indent} classList={{ [styles['is-error']]: block.status === 'error' }}>
-						<span class={styles['agent-tool-icon']}>
-							{block.status === 'running' ? '⏳' : block.status === 'success' ? '✓' : '✗'}
-						</span>
-						<span class={styles['agent-tool-name']}>{block.name}</span>
-						<Show when={block.reason}>
-							<span class={styles['agent-tool-reason']}>原因：{block.reason}</span>
+					<div style={indent}>
+						<Show when={block.agentName}>
+							<div class={styles['agent-block-owner']}>🤖 {block.agentName}</div>
 						</Show>
-						<Show when={block.status === 'error' && block.detail}>
-							<span class={styles['agent-tool-detail']}>{block.detail}</span>
-						</Show>
+						<div class={styles['agent-block-text']}>{block.content}</div>
 					</div>
 				);
+
+			case 'tool': {
+				// 工具调用 = 一行摘要（谁调用 / 调什么 / 为什么 / 状态 / 输出预览）+ 可展开的入参与完整输出。
+				// 委托、总结返回（finish）、ask_user 在后端都是工具调用，因此一律走这里，不另设 UI。
+				return (
+					<details
+						class={styles['agent-block-tool']}
+						style={indent}
+						classList={{ [styles['is-error']]: block.status === 'error' }}
+						/* 直接在属性里写表达式（而不是先算好存常量），Solid 才会把它编译成响应式更新：
+						   工具结果到达时，短输出 / 出错的块会自动展开，长的仍保持折叠。 */
+						open={block.status === 'error' || (!!block.output && block.output.length <= 240) ? true : undefined}
+					>
+						<summary class={styles['agent-tool-summary']}>
+							<span class={styles['agent-tool-icon']}>
+								{block.status === 'running' ? '⏳' : block.status === 'success' ? '✓' : '✗'}
+							</span>
+							<span class={styles['agent-tool-name']}>{block.name}</span>
+							<Show when={block.agentName}>
+								<span class={styles['agent-tool-owner']}>{block.agentName}</span>
+							</Show>
+							<Show when={block.reason}>
+								<span class={styles['agent-tool-reason']}>{block.reason}</span>
+							</Show>
+							<Show
+								when={block.output}
+								fallback={
+									<Show when={block.status === 'running'}>
+										<span class={styles['agent-tool-preview']}>执行中…</span>
+									</Show>
+								}
+							>
+								<span class={styles['agent-tool-preview']}>
+									{block.output!.replace(/\s+/g, ' ').trim().slice(0, 120)}
+								</span>
+							</Show>
+						</summary>
+						<div class={styles['agent-tool-body']}>
+							<Show when={block.args}>
+								<div class={styles['agent-tool-section']}>入参</div>
+								<pre class={styles['agent-tool-pre']}>{block.args}</pre>
+							</Show>
+							<Show when={block.output}>
+								<div class={styles['agent-tool-section']}>输出</div>
+								<pre class={styles['agent-tool-pre']}>{block.output}</pre>
+							</Show>
+							<Show when={!block.args && !block.output}>
+								<div class={styles['agent-tool-hint']}>
+									{block.status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
+								</div>
+							</Show>
+						</div>
+					</details>
+				);
+			}
 
 			case 'agent':
+				// 旧会话数据兼容：委托早已不再单独成块，这里退化成一行（不再显示 summary）
 				return (
-					<div class={styles['agent-block-agent']} style={indent} classList={{ [styles['is-running']]: block.running }}>
-						<div class={styles['agent-block-agent-header']}>
-							<span class={styles['agent-tool-icon']}>{block.running ? '⏳' : '🤖'}</span>
-							<span class={styles['agent-tool-name']}>委托 → {block.name}</span>
-						</div>
-						<Show when={block.summary}>
-							<div class={styles['agent-block-agent-summary']}>{block.summary}</div>
-						</Show>
+					<div class={styles['agent-block-agent']} style={indent}>
+						<span class={styles['agent-tool-icon']}>🤖</span>
+						<span class={styles['agent-tool-name']}>{block.name}</span>
 					</div>
 				);
+
+			case 'reasoning':
+				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
+				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
+				return (
+					<details class={styles['agent-block-reasoning']} style={indent}>
+						<summary>
+							<span class={styles['agent-reasoning-label']}>💭 思考中</span>
+							<span class={styles['agent-reasoning-peek']}>{block.content.slice(-72)}</span>
+						</summary>
+						<div class={styles['agent-block-reasoning-body']}>{block.content}</div>
+					</details>
+				);
+
+			case 'usage': {
+				// 单次调用一行「流水」；agentLoop 中断时一行「小计」（加粗，因为它才是用户要看的那个数）
+				const isLoop = block.scope === 'loop';
+				const parts: string[] = [];
+				if (isLoop) {
+					parts.push(`本段 ${block.loopCalls ?? 0} 次调用`);
+					parts.push(`↑${fmtTokens(block.deltaInput)} ↓${fmtTokens(block.deltaOutput)}`);
+					parts.push(`本段共 ${fmtTokens(block.deltaTotal)}`);
+					parts.push(`累计 ${fmtTokens(block.total)}`);
+					if (block.reason) parts.push(LOOP_REASON_LABEL[block.reason] ?? block.reason);
+				} else {
+					parts.push(`#${block.seq ?? '?'}`);
+					if (block.round) parts.push(`第 ${block.round} 轮`);
+					parts.push(`↑${fmtTokens(block.input)} ↓${fmtTokens(block.output)}`);
+					parts.push(`共 ${fmtTokens(block.total)}`);
+					if (block.cached) parts.push(`缓存 ${fmtTokens(block.cached)}`);
+					const dur = fmtDuration(block.durationMs);
+					if (dur) parts.push(dur);
+					if (block.purpose && block.purpose !== 'agent_loop') {
+						parts.push(PURPOSE_LABEL[block.purpose] ?? block.purpose);
+					}
+				}
+				return (
+					<div
+						class={styles['agent-block-usage']}
+						style={indent}
+						classList={{ [styles['is-loop']]: isLoop }}
+					>
+						<span class={styles['agent-usage-icon']}>{isLoop ? '∑' : '🧮'}</span>
+						<Show when={block.agentName}>
+							<span class={styles['agent-usage-owner']}>{block.agentName}</span>
+						</Show>
+						<span class={styles['agent-usage-text']}>{parts.join(' · ')}</span>
+					</div>
+				);
+			}
 
 			case 'reflection':
 				return (
 					<details class={styles['agent-block-reflection']} style={indent}>
-						<summary>🪞 反思轮（剩 {block.remaining} 次）</summary>
+						<summary>
+							🪞 反思轮（剩 {block.remaining} 次）
+							<Show when={block.agentName}>
+								<span class={styles['agent-tool-owner']}>{block.agentName}</span>
+							</Show>
+						</summary>
 						<div class={styles['agent-block-reflection-body']}>{block.text}</div>
 					</details>
 				);
@@ -700,6 +900,18 @@ export default function ChatView() {
 											<For each={msg.blocks}>
 												{(block) => renderBlock(block, msg.id)}
 											</For>
+										</Show>
+										{/* 用量脚注：ctx 里记的账本，前端能看到才算透明 */}
+										<Show when={msg.tokens}>
+											<div class={styles['agent-msg-usage']}>
+												共 {msg.llmCalls ?? 0} 次 LLM 调用 · tokens ↑{fmtTokens(msg.tokens!.input)} ↓{fmtTokens(msg.tokens!.output)}
+												<Show when={msg.tokens!.cached}>
+													{' '}· 缓存 {fmtTokens(msg.tokens!.cached)}
+												</Show>
+												<Show when={msg.duration}>
+													{' '}· {(msg.duration! / 1000).toFixed(1)}s
+												</Show>
+											</div>
 										</Show>
 									</div>
 								</Show>

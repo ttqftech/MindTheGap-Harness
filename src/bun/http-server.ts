@@ -584,8 +584,21 @@ export function startHttpServer() {
 		// 启动时加载插件 + 同步 requestLog 配置 + 订阅 usage 事件
 		const loaded = reloadPlugins();
 		setRequestLogOptions(getRequestLogOptionsFromSettings());
-		setUsageEmitter((conversationId, agentInstanceId, logId, tokens) => {
-			broadcastAgentStream(conversationId, { type: 'usage', agentInstanceId, logId, tokens });
+		setUsageEmitter((e) => {
+			broadcastAgentStream(e.conversationId, {
+				type: 'usage',
+				agentInstanceId: e.agentInstanceId,
+				logId: e.logId,
+				tokens: e.tokens,
+				scope: 'call',
+				seq: e.seq,
+				round: e.round,
+				purpose: e.purpose,
+				agentName: e.agentName,
+				depth: e.depth,
+				durationMs: e.durationMs,
+				model: e.model,
+			});
 		});
 		for (const plugin of listPlugins()) {
 			logMsg(`[HttpServer] 插件 ${plugin.id} (${plugin.source}) → 模式 ${plugin.modes.join(', ')}`);

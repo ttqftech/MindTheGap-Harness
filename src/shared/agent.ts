@@ -89,6 +89,11 @@ export interface ModeDefinition {
 	taskList?: { enabled: boolean; writable: boolean };
 	/** 该模式默认的 MCP 策略（可被 agent 级 ability.mcp 覆盖） */
 	mcp?: 'none' | 'all' | string[];
+	/**
+	 * 反思问题构造器的提示词文件（相对 prompts/ 目录）。
+	 * 缺省用 `_reflection.md`（严格审阅者口径）；轻量模式可以指向自己的宽松版本。
+	 */
+	reflectionPromptFile?: string;
 	/** 循环预算默认值（可被 settings.modeConfigs[modeId].limits 覆盖） */
 	defaultSettings: ModeConfigDefaults;
 	/** 该模式对外暴露的可配置项（设置页 JSON 编辑器据此渲染说明） */
@@ -261,14 +266,30 @@ export interface ToolResult {
 /** Agent 流式输出事件（SSE 推送，前端按 agentInstanceId 归层） */
 export type AgentStreamEvent =
 	| { type: 'text'; agentInstanceId: string; chunk: string }
+	| { type: 'reasoning'; agentInstanceId: string; chunk: string }
 	| { type: 'tool_start'; agentInstanceId: string; callId: string; toolName: string; args: unknown; reason: string }
 	| { type: 'tool_end'; agentInstanceId: string; callId: string; toolName: string; result: ToolResult }
 	| { type: 'agent_start'; agentInstanceId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
-	/** 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call */
-	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }
+	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
 	| { type: 'reflection'; agentInstanceId: string; remaining: number; prompt: string }
-	| { type: 'usage'; agentInstanceId?: string; logId?: string; tokens: TokenUsage }
+	| {
+		type: 'usage';
+		agentInstanceId?: string;
+		logId?: string;
+		tokens: TokenUsage;
+		scope?: 'call' | 'loop';	// call: 每次 LLM 请求结束就发一条　loop: agentLoop 中断时发（询问用户 / 完成任务 / 出错），带本段增量与实例累计
+		seq?: number;	// 该会话内第几次 LLM 请求（requestLog 的自增序号）
+		round?: number;	// 该实例的第几轮 agentLoop
+		purpose?: string;	// agent_loop / reflection / ask_child / web_rank
+		agentName?: string;
+		depth?: number;
+		durationMs?: number;
+		model?: string;
+		loopDelta?: TokenUsage;	// 仅 scope='loop'：本段（本次 agentLoop）的增量
+		loopCalls?: number;	// 仅 scope='loop'：本段发生了几次 LLM 调用
+		reason?: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child';	// 仅 scope='loop'：中断原因（ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child'）
+	}
 	| { type: 'error'; agentInstanceId?: string; message: string }
 	| { type: 'done'; summary: string };
 
@@ -327,7 +348,12 @@ export interface AgentAnswerRequest {
    7. LLM 层请求日志（§8）
    ========================================================================== */
 
-export type LlmPurpose = 'agent_loop' | 'reflection' | 'ask_child' | 'other';
+export type LlmPurpose =
+	| 'agent_loop'		// 实例主循环（含重入）
+	| 'reflection'		// 反思轮
+	| 'ask_child'		// ask_child 的一次性问答
+	| 'web_rank'		// web_search 内部的相关性打分（工具发起的独立请求）
+	| 'other';
 
 /** 什么导致了这次请求 */
 export type LlmTrigger =
@@ -402,13 +428,58 @@ export interface RequestLogConfig {
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+/**
+ * UI 侧的「一块内容」。
+ *
+ * 透明性原则：后端 ctx 里能看到的，前端尽量都能看到——工具入参、工具完整输出、
+ * 反思轮、思考过程，全部落进 block 里，而不是只留一行「调用了某某工具」。
+ */
 export type MessageBlock =
-	| { type: 'text'; key?: string; depth: number; agentInstanceId?: string; content: string }
-	| { type: 'tool'; key: string; depth: number; agentInstanceId?: string; name: string; status: 'running' | 'success' | 'error'; reason?: string; detail?: string }
+	| { type: 'text'; key?: string; depth: number; agentInstanceId?: string; agentName?: string; content: string }
+	| { type: 'reasoning'; key: string; depth: number; agentInstanceId?: string; agentName?: string; content: string; done?: boolean }
+	| {
+		type: 'tool';
+		key: string;
+		depth: number;
+		agentInstanceId?: string;
+		agentName?: string;
+		name: string;
+		status: 'running' | 'success' | 'error';
+		reason?: string;
+		args?: string;	// 入参（格式化后的字符串），长内容会被截断
+		output?: string;	// 工具的完整输出。委托 / resume 这类异步工具会在子 Agent 终态时被最终总结覆盖
+		detail?: string;
+	}
+	/** @deprecated 委托不再单独成块——它本身就是一次工具调用，总结显示在工具输出里。
+	    保留类型只为兼容旧会话数据，渲染时退化成一行。 */
 	| { type: 'agent'; key: string; depth: number; agentInstanceId?: string; name: string; running: boolean; summary?: string }
-	| { type: 'reflection'; key: string; depth: number; agentInstanceId?: string; remaining: number; text: string }
-	| { type: 'ask_user'; key: string; depth: number; agentInstanceId?: string; question: string; options: { label: string; description?: string }[]; status: 'waiting' | 'answered' | 'skipped'; answer?: string }
-	| { type: 'error'; key?: string; depth: number; agentInstanceId?: string; message: string };
+	| { type: 'reflection'; key: string; depth: number; agentInstanceId?: string; agentName?: string; remaining: number; text: string }
+	/** 一次 LLM 调用的账本（scope='call'）或一段 agentLoop 的小计（scope='loop'） */
+	| {
+		type: 'usage';
+		key: string;
+		depth: number;
+		agentInstanceId?: string;
+		agentName?: string;
+		scope: 'call' | 'loop';
+		input?: number;
+		output?: number;
+		cached?: number;
+		total?: number;
+		seq?: number;
+		round?: number;
+		purpose?: string;
+		durationMs?: number;
+		model?: string;
+		/** 仅 scope='loop'：本段增量 */
+		deltaInput?: number;
+		deltaOutput?: number;
+		deltaTotal?: number;
+		loopCalls?: number;
+		reason?: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child';
+	}
+	| { type: 'ask_user'; key: string; depth: number; agentInstanceId?: string; agentName?: string; question: string; options: { label: string; description?: string }[]; status: 'waiting' | 'answered' | 'skipped'; answer?: string }
+	| { type: 'error'; key?: string; depth: number; agentInstanceId?: string; agentName?: string; message: string };
 
 export interface Message {
 	id: string;
@@ -419,6 +490,7 @@ export interface Message {
 	modeId?: string;
 	tokens?: { input?: number; output?: number; cached?: number };
 	duration?: number;
+	llmCalls?: number;	// 这条消息期间共发起了多少次 LLM 请求（含所有子 Agent）
 	blocks?: MessageBlock[];
 }
 

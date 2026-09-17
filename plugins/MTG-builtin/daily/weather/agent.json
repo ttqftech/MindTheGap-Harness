@@ -1,0 +1,14 @@
+{
+	"id": "weather",
+	"name": "天气查询",
+	"promptFile": "prompt.md",
+	"reflectionCount": 1,
+	"delegatable": [],
+	"model": "standard",
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["web_fetch", "web_search", "finish", "ask_user"]
+		}
+	}
+}

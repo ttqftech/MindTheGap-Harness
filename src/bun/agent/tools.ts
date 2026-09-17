@@ -23,6 +23,9 @@ import type {
 	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool, ModeConfigDefaults,
 	ModeDefinition, ToolResult,
 } from '../../shared/agent';
+import { fetchMany, fetchUrl, type FetchFormat, type RenderPolicy } from './web/fetch';
+import { searchEngines } from './web/engines';
+import { rankCandidates, type RankInput } from './web/rank';
 
 // #region 类型
 
@@ -53,6 +56,8 @@ export interface ToolContext {
 	reason: string;
 	def: AgentDefinition;
 	mode: ModeDefinition;
+	/** 本轮 run 的中断信号（工具内部发起的网络 / LLM 请求都该跟着它一起断） */
+	signal: AbortSignal;
 	// ---- 编排原语 ----
 	delegate: (tasks: { agentId: string; task: string }[]) => Promise<ToolResult>;
 	finish: (summary: string) => Promise<ToolResult>;
@@ -62,6 +67,32 @@ export interface ToolContext {
 	askUser: (q: AskUserArgs) => Promise<ToolResult>;
 	readTaskList: () => string;
 	writeTaskList: (op: TaskListOp) => string;
+	/**
+	 * 工具内部发起一次**独立 LLM 请求**的能力（如 web_search 的候选相关性打分）。
+	 * 会照常写 requestLog（purpose=web_rank），所以这部分花费在账本里看得到。
+	 * 失败不抛异常，返回 ok:false 让工具自己决定降级策略。
+	 */
+	runLlm: (req: ToolLlmRequest) => Promise<ToolLlmResult>;
+}
+
+/** 工具内部 LLM 请求（最小契约：一段 system + 一段 user，可选要求 JSON 输出） */
+export interface ToolLlmRequest {
+	system: string;
+	user: string;
+	/** 要求模型只输出 JSON（openai-chat 下会带 response_format=json_object） */
+	json?: boolean;
+	/**
+	 * 结构化输出契约（json_schema）。字段与 web/rank.ts 的 RankLlmRequest 保持一致，
+	 * 这样工具层可以直接把 rank 的请求对象透传过来（web/ 不能反向依赖 tools/，类型只能各写一份）。
+	 */
+	jsonSchema?: { name: string; schema: Record<string, unknown> };
+	signal?: AbortSignal;
+}
+
+export interface ToolLlmResult {
+	ok: boolean;
+	text: string;
+	error?: string;
 }
 
 /** 工具定义 */
@@ -623,136 +654,220 @@ registerTool({
 
 // #region 内置工具 —— 网络
 
-const WEB_TIMEOUT_MS = 15000;
-const WEB_MAX_CHARS = 20000;
+/**
+ * 网络工具的实现体在 ./web/ 下：
+ * - web/fetch.ts   统一抓取（先 HTTP，必要时无头浏览器渲染）
+ * - web/engines.ts 多引擎搜索结果页抓取与合并
+ * - web/rank.ts    候选相关性打分（动态 Schema + 一次独立 LLM 请求）
+ * - web/render.ts  桥接到 scripts/web-render.mjs（Node 子进程，负责真正的浏览器渲染）
+ * 这里只负责「工具长什么样、参数怎么校验、结果怎么拼成给模型看的文本」。
+ */
 
-function stripHtml(html: string): string {
-	return html
-		.replace(/<script[\s\S]*?<\/script>/gi, '')
-		.replace(/<style[\s\S]*?<\/style>/gi, '')
-		.replace(/<!--[\s\S]*?-->/g, '')
-		.replace(/<\/(p|div|li|h[1-6]|tr|br)>/gi, '\n')
-		.replace(/<br\s*\/?>/gi, '\n')
-		.replace(/<[^>]+>/g, '')
-		.replace(/&nbsp;/g, ' ')
-		.replace(/&lt;/g, '<')
-		.replace(/&gt;/g, '>')
-		.replace(/&amp;/g, '&')
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/[ \t]+\n/g, '\n')
-		.replace(/\n{3,}/g, '\n\n')
-		.trim();
-}
+const WEB_MAX_CHARS = 20000;
+const SEARCH_DEFAULT_PAGES = 3;
+const SEARCH_MAX_PAGES = 6;
+const SEARCH_PAGE_CHARS = 4000;
+const SEARCH_TOTAL_CHARS = 24000;
 
 registerTool({
 	name: 'web_fetch',
-	description: '抓取一个 URL 的正文（自动剥离 HTML 标签，超长会截断）。',
+	description:
+		'抓取一个 URL 的正文，转成 Markdown（自动剥掉导航 / 脚本 / 样式等噪声，超长会截断）。' +
+		'默认先用轻量 HTTP 请求；如果页面是靠 JS 渲染的空壳（SPA / 懒加载），或 HTTP 直接失败，' +
+		'会自动改用无头浏览器渲染 —— 你不用自己判断该用哪种。' +
+		'如果 URL 本来就是 API / JSON / 纯文本，会原样返回，不做转换。',
 	parameters: {
 		type: 'object',
 		properties: {
-			url: { type: 'string', description: '要抓取的完整 URL' },
+			url: { type: 'string', description: '要抓取的完整 URL（http/https）' },
+			format: {
+				type: 'string',
+				enum: ['auto', 'markdown', 'text', 'html', 'raw'],
+				description: '返回格式。auto（默认）= HTML 转 Markdown，非 HTML 原样返回；raw = 不做任何转换',
+			},
+			render: {
+				type: 'string',
+				enum: ['auto', 'always', 'never'],
+				description: '是否允许用无头浏览器渲染。auto（默认）= HTTP 拿不到正文时才渲染；never = 只用 HTTP（更快）',
+			},
 			maxChars: { type: 'integer', description: `最多返回多少字符，默认 ${WEB_MAX_CHARS}` },
+			waitMs: { type: 'integer', description: '渲染时：页面加载完再等多久（毫秒），慢站点用，默认 0' },
+			selector: { type: 'string', description: '渲染时：等待该 CSS 选择器出现后再取正文（如 "#root"）' },
 		},
 		required: ['url'],
 	},
-	async execute(args) {
-		const url = String(args.url ?? '');
-		if (!/^https?:\/\//i.test(url)) return { success: false, content: 'url 必须以 http(s):// 开头' };
-		const maxChars = (args.maxChars as number) ?? WEB_MAX_CHARS;
+	async execute(args, ctx) {
+		const outcome = await fetchUrl(String(args.url ?? ''), {
+			format: (args.format as FetchFormat) ?? 'auto',
+			render: (args.render as RenderPolicy) ?? 'auto',
+			maxChars: (args.maxChars as number) ?? WEB_MAX_CHARS,
+			waitMs: args.waitMs as number | undefined,
+			selector: args.selector as string | undefined,
+			signal: ctx.signal,
+		});
 
-		const ctrl = new AbortController();
-		const timer = setTimeout(() => ctrl.abort(), WEB_TIMEOUT_MS);
-		try {
-			const resp = await fetch(url, {
-				signal: ctrl.signal,
-				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MindTheGap-Harness/0.1)' },
-			});
-			const raw = await resp.text();
-			if (!resp.ok) {
-				return { success: false, content: `HTTP ${resp.status}: ${raw.slice(0, 500)}` };
-			}
-			const text = stripHtml(raw);
-			const truncated = text.length > maxChars;
+		if (!outcome.ok) {
 			return {
-				success: true,
-				content: truncated ? `${text.slice(0, maxChars)}\n\n...(已截断，原文 ${text.length} 字符)` : text,
-				structured: { url, status: resp.status, chars: text.length, truncated },
+				success: false,
+				content: `抓取失败：${outcome.error}\nURL: ${outcome.url}`,
+				error: outcome.error,
+				structured: { url: outcome.url, via: outcome.via, status: outcome.status },
 			};
-		} catch (err) {
-			return { success: false, content: `Failed to fetch: ${(err as Error).message}` };
-		} finally {
-			clearTimeout(timer);
 		}
+
+		const footer = [
+			`（${outcome.url}${outcome.finalUrl !== outcome.url ? ` → ${outcome.finalUrl}` : ''}`,
+			outcome.status ? `HTTP ${outcome.status}` : '',
+			outcome.via === 'browser' ? '浏览器渲染' : 'HTTP 直取',
+			`${outcome.format}`,
+			`${outcome.chars} 字符${outcome.truncated ? '（已截断）' : ''}）`,
+		]
+			.filter(Boolean)
+			.join(' ｜ ');
+
+		const head = outcome.title ? `# ${outcome.title}\n\n` : '';
+		const note = outcome.note ? `\n\n> 说明：${outcome.note}` : '';
+
+		return {
+			success: true,
+			content: `${head}${outcome.content}\n\n---\n${footer}${note}`,
+			structured: {
+				url: outcome.url,
+				finalUrl: outcome.finalUrl,
+				status: outcome.status,
+				via: outcome.via,
+				format: outcome.format,
+				chars: outcome.chars,
+				truncated: outcome.truncated,
+			},
+		};
 	},
 });
 
 registerTool({
 	name: 'web_search',
 	description:
-		'网络搜索（基于 DuckDuckGo HTML 端点，无需 API Key）。返回标题 + 链接 + 摘要列表。' +
-		'需要正文时再用 web_fetch 打开具体链接。',
+		'多引擎网络搜索，并且**直接把最相关页面的正文抓回来**。流程：同一个关键词并发查多个搜索引擎' +
+		'（必应 / 百度 / 搜狗 / 360 / 谷歌，某个引擎在当前网络下不可达时会如实标注、不影响其余结果）' +
+		'→ 合并去重得到「标题 + 链接 + 摘要」候选 → 用一次独立模型调用按相关性给每条候选打分 ' +
+		'→ 取分数最高的若干条展开正文。所以返回的是**经过相关性筛选、带正文的调研材料**，不是链接列表。' +
+		'需要外部世界的事实时优先用它；只有一个明确 URL 时用 web_fetch 更直接。',
 	parameters: {
 		type: 'object',
 		properties: {
-			query: { type: 'string', description: '检索词' },
-			limit: { type: 'integer', description: '返回条数，默认 8' },
+			query: { type: 'string', description: '检索词：带上具体的产品名 / 版本号 / 报错原文，比泛泛的关键词有效得多' },
+			limit: {
+				type: 'integer',
+				description: `展开正文的条数，默认 ${SEARCH_DEFAULT_PAGES}（最多 ${SEARCH_MAX_PAGES}）。1~2 条适合只要一个事实，3~4 条适合需要对照多个来源`,
+			},
+			engines: {
+				type: 'array',
+				items: { type: 'string', enum: ['bing', 'baidu', 'sogou', 'so', 'google'] },
+				description: '只用这些引擎（默认全部）。一般不用填',
+			},
+			maxCharsPerPage: { type: 'integer', description: `每篇正文最多返回多少字符，默认 ${SEARCH_PAGE_CHARS}` },
 		},
 		required: ['query'],
 	},
-	async execute(args) {
+	async execute(args, ctx) {
 		const query = String(args.query ?? '').trim();
 		if (!query) return { success: false, content: 'query 不能为空' };
-		const limit = Math.min((args.limit as number) ?? 8, 20);
 
-		const endpoint = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-		const ctrl = new AbortController();
-		const timer = setTimeout(() => ctrl.abort(), WEB_TIMEOUT_MS);
-		try {
-			const resp = await fetch(endpoint, {
-				signal: ctrl.signal,
-				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MindTheGap-Harness/0.1)' },
-			});
-			const html = await resp.text();
-			if (!resp.ok) {
-				return { success: false, content: `搜索失败 HTTP ${resp.status}（可能是端点被限流）` };
-			}
+		const limit = Math.max(1, Math.min((args.limit as number) ?? SEARCH_DEFAULT_PAGES, SEARCH_MAX_PAGES));
+		const perPage = Math.max(500, (args.maxCharsPerPage as number) ?? SEARCH_PAGE_CHARS);
 
-			const results: { title: string; url: string; snippet: string }[] = [];
-			const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-			let m: RegExpExecArray | null;
-			while ((m = linkRe.exec(html)) && results.length < limit) {
-				let href = m[1];
-				// DDG 的跳转链接：/l/?uddg=<encoded>
-				const uddg = /[?&]uddg=([^&]+)/.exec(href);
-				if (uddg) href = decodeURIComponent(uddg[1]);
-				results.push({ title: stripHtml(m[2]), url: href, snippet: '' });
-			}
-
-			const snippetRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
-			let s: RegExpExecArray | null;
-			let i = 0;
-			while ((s = snippetRe.exec(html)) && i < results.length) {
-				results[i].snippet = stripHtml(s[1]);
-				i++;
-			}
-
-			if (results.length === 0) {
-				return {
-					success: false,
-					content: '没有解析出搜索结果（端点可能改版或被限流）。可以改用 web_fetch 直接打开已知 URL。',
-				};
-			}
-
-			const text = results
-				.map((r, idx) => `${idx + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
-				.join('\n');
-			return { success: true, content: text, structured: { query, count: results.length, results } };
-		} catch (err) {
-			return { success: false, content: `搜索失败: ${(err as Error).message}` };
-		} finally {
-			clearTimeout(timer);
+		// ---- 1. 多引擎检索 ----
+		const searched = await searchEngines(query, {
+			engines: args.engines as string[] | undefined,
+			signal: ctx.signal,
+		});
+		if (searched.hits.length === 0) {
+			const detail = searched.reports.map((r) => `${r.name}：${r.error ?? '无结果'}`).join('；');
+			return {
+				success: false,
+				content: `所有搜索引擎都没有返回可解析的结果（${detail}）。可以换关键词重试，或用 web_fetch 直接打开已知 URL。`,
+				error: 'NO_SEARCH_RESULTS',
+				structured: { query, engines: searched.reports },
+			};
 		}
+
+		// ---- 2. 相关性打分（独立 LLM 请求，失败则退回引擎原始名次）----
+		const rankInput: RankInput[] = searched.hits.map((h, i) => ({
+			id: `c${i + 1}`,
+			title: h.title,
+			url: h.url,
+			snippet: h.snippet,
+			engines: h.engines,
+		}));
+		const ranked = await rankCandidates(query, rankInput, (req) => ctx.runLlm(req), ctx.signal);
+		const picked = ranked.items.slice(0, limit);
+
+		// ---- 3. 展开正文（一次浏览器调用覆盖所有需要渲染的页面）----
+		const fetched = await fetchMany(picked.map((p) => p.url), {
+			format: 'markdown',
+			maxChars: perPage,
+			signal: ctx.signal,
+		});
+
+		// ---- 4. 拼装 ----
+		const engineLine = searched.reports
+			.map((r) => (r.ok ? `${r.name} ${r.count} 条` : `${r.name} 不可用(${r.error})`))
+			.join(' · ');
+
+		const header = [
+			`# 搜索：${query}`,
+			'',
+			`引擎：${engineLine}`,
+			`去重后候选：${searched.hits.length} 条；相关性打分：${ranked.ranked ? '已完成' : `未完成（${ranked.note ?? '未知原因'}）`}；已展开正文 ${picked.length} 篇。`,
+		].join('\n');
+
+		const sections: string[] = [];
+		picked.forEach((item, i) => {
+			const got = fetched[i]?.outcome;
+			const score = item.score === null ? '未打分' : `相关性 ${item.score.toFixed(1)}`;
+			const lines = [`## ${i + 1}. ${item.title}`, '', `链接：${got?.finalUrl ?? item.url}（${item.engines.join('/')} ｜ ${score}）`, ''];
+			if (got?.ok) {
+				lines.push(got.content || '(正文为空)');
+				if (got.note) lines.push('', `> 说明：${got.note}`);
+			} else {
+				lines.push(`（正文抓取失败：${got?.error ?? '未知原因'}。摘要：${item.snippet || '无'}）`);
+			}
+			sections.push(lines.join('\n'));
+		});
+
+		// 没被展开的候选也列出来——它们是「已经过筛选」的备选，比让模型重新搜一遍便宜
+		const rest = ranked.items.slice(limit);
+		if (rest.length > 0) {
+			const restLines = rest
+				.slice(0, 12)
+				.map((r) => `- ${r.score === null ? '(未打分)' : r.score.toFixed(1)}  ${r.title} — ${r.url}  ← ${r.engines.join('/')}`);
+			sections.push(`## 未展开的候选（按相关性排序）\n\n${restLines.join('\n')}`);
+		}
+
+		let content = `${header}\n\n---\n\n${sections.join('\n\n---\n\n')}`;
+		let truncated = false;
+		if (content.length > SEARCH_TOTAL_CHARS) {
+			content = `${content.slice(0, SEARCH_TOTAL_CHARS)}\n\n...(搜索结果总长超过 ${SEARCH_TOTAL_CHARS} 字符，已截断。需要更多内容时用 web_fetch 打开上面某个链接)`;
+			truncated = true;
+		}
+
+		return {
+			success: true,
+			content,
+			structured: {
+				query,
+				engines: searched.reports,
+				candidates: searched.hits.length,
+				ranked: ranked.ranked,
+				picked: picked.map((p, i) => ({
+					title: p.title,
+					url: fetched[i]?.outcome.finalUrl ?? p.url,
+					score: p.score,
+					ok: fetched[i]?.outcome.ok ?? false,
+				})),
+				truncated,
+			},
+		};
 	},
 });
 

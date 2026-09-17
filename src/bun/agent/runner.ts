@@ -41,7 +41,7 @@ import { logMsg } from '../utils';
 import { assembleSystemPrompt, loadReflectionPrompt } from './prompt';
 import {
 	executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools,
-	type AgentTool, type TaskListOp, type ToolContext,
+	type AgentTool, type TaskListOp, type ToolContext, type ToolLlmRequest, type ToolLlmResult,
 } from './tools';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
@@ -92,6 +92,20 @@ function renderTaskList(items: { done: boolean; item: string }[]): string {
 	return `# 任务清单\n${items.map((i) => `- [${i.done ? 'x' : ' '}] ${i.item}`).join('\n')}`;
 }
 
+/**
+ * 反思输出里是否含「真正要补做的事」。
+ *
+ * 宽松口径的反思提示词（见 prompts/daily/_reflection.md）允许模型直接回「无」——
+ * 那不是一个可执行的追问，若当成追问去重入，就又白烧一轮。所以除了空串，
+ * 还要认几种「明确表示无需补做」的短语（限短文本，避免误伤真正的追问）。
+ */
+function reflectionActionable(text: string): boolean {
+	const t = text.trim();
+	if (!t) return false;
+	if (t.length <= 12 && /^(无|没有|无需|无需要|无需追问|无追问|none|n\/?a|nothing)/i.test(t)) return false;
+	return true;
+}
+
 // #endregion
 
 // #region Runner
@@ -117,7 +131,7 @@ export class AgentRunner {
 	/** delegate / resume 的分组：callId → 组 */
 	private groups = new Map<string, { parentAgentInstanceId: string; childAgentInstanceIds: string[]; results: Map<string, string> }>();
 	/** 子实例 → 它属于哪次委托 */
-	private childLink = new Map<string, { parentAgentInstanceId: string; callId: string }>();
+	private childLink = new Map<string, { parentAgentInstanceId: string; callId: string; toolName: string }>();
 
 	private doneResolve: (() => void) | null = null;
 	private donePromise: Promise<void>;
@@ -364,8 +378,13 @@ export class AgentRunner {
 		this.busy.add(agentInstanceId);
 
 		let nextTrigger: LlmTrigger | null = null;
+		// 本段 agentLoop 的账本快照：进入时记一次，退出时算增量播报给前端
+		const tokensBefore: TokenUsage = { ...(instance.tokens ?? {}) };
+		const callsBefore = this.llmCallCount.get(agentInstanceId) ?? 0;
+		let exitReason: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child' = 'finish';
 		try {
 			if (this.aborted) {
+				exitReason = 'interrupted';
 				this.markInterrupted(instance, '用户取消');
 				return;
 			}
@@ -405,6 +424,11 @@ export class AgentRunner {
 					messages: instance.messages.map(({ updatedAt: _u, ...rest }) => rest),
 					tools: llmTools,
 					onChunk: (chunk) => {
+						// 思考增量先发：思考模型的推理阶段通常远长于正文，
+						// 只推 text 的话「模型正在思考」这段时间界面上是全黑的。
+						if (chunk.reasoningDelta) {
+							this.emitStream({ type: 'reasoning', agentInstanceId, chunk: chunk.reasoningDelta });
+						}
 						if (chunk.textDelta) {
 							this.emitStream({ type: 'text', agentInstanceId, chunk: chunk.textDelta });
 						}
@@ -440,6 +464,7 @@ export class AgentRunner {
 			}
 			instance.messages.push(message(assistantMessage));
 			instance.tokens = this.mergeTokens(instance.tokens, result.usage);
+			this.bumpLlmCalls(instance.agentInstanceId);
 			instance.lastUpdatedAt = now();
 			this.emitEvent(instance, 'assistant_message', { text: result.text, toolCallIds: result.toolCalls.map((t) => t.id) });
 
@@ -458,8 +483,10 @@ export class AgentRunner {
 			nextTrigger = await this.dispatch(instance, def, result.toolCalls);
 			this.persist();
 		} catch (e) {
+			exitReason = 'error';
 			const err = e as Error;
 			if (this.aborted || err?.name === 'AbortError') {
+				exitReason = 'interrupted';
 				this.markInterrupted(instance, '用户取消');
 			} else {
 				logMsg.error(`[Runner] 实例 ${agentInstanceId} 出错:`, err.message);
@@ -473,10 +500,77 @@ export class AgentRunner {
 			}
 		} finally {
 			this.busy.delete(agentInstanceId);
+			// 只有「本段到此为止、不再重入」才播报小计：重入的话后面还会接着花，
+			// 每段都报会让界面上出现一串互相矛盾的小计。
+			// 判断实例此刻的状态即可区分是「等用户」还是「等子 Agent」，不用把标记从 dispatch 里传出来。
+			if (!nextTrigger) {
+				const pending = instance.pendingCallIds ?? [];
+				// ⚠️ ask_user 与等子 Agent 都会把实例置成 pending，光看 status 分不开。
+				// 真正的区别在「等的东西是不是 client 工具」—— delegate 的 callId 留在 pending 里
+				// 是等子实例，ask_user 的 callId 留在 pending 里是等用户点按钮。
+				exitReason = pending.some((id) => this.isClientToolResult(instance, id))
+					? 'ask_user'
+					: pending.length > 0
+						? 'await_child'
+						: exitReason;
+				this.emitLoopUsage(instance, tokensBefore, callsBefore, exitReason);
+			}
 			// 重入统一放这里：任何 return 路径（含结束路径的反思轮）都先释放 busy 再重入，
 			// 否则 maybeReenter 会被 busy 守卫挡掉。
 			if (nextTrigger) this.maybeReenter(agentInstanceId, nextTrigger);
 		}
+	}
+
+	/** 每个实例累计发起了多少次 LLM 请求（供 agentLoop 小计算「本段几次调用」） */
+	private llmCallCount = new Map<string, number>();
+
+	private bumpLlmCalls(agentInstanceId: string): void {
+		this.llmCallCount.set(agentInstanceId, (this.llmCallCount.get(agentInstanceId) ?? 0) + 1);
+	}
+
+	/** 工具内部的 LLM 请求（web_search 的相关性打分）同样记在发起它的实例账上 */
+	private chargeSubLlm(instance: AgentInstance, usage: TokenUsage): void {
+		instance.tokens = this.mergeTokens(instance.tokens, usage);
+		this.bumpLlmCalls(instance.agentInstanceId);
+	}
+
+	/**
+	 * agentLoop 中断时播报一次「本段小计」。
+	 *
+	 * 为什么需要它：单次调用（scope='call'）的事件只能回答「这一次花了多少」，
+	 * 而用户真正想知道的是「我这一句话到停下来为止总共烧了多少」——
+	 * 尤其 ask_user 挂起时，界面必须有个数，否则会以为还在跑。
+	 */
+	private emitLoopUsage(
+		instance: AgentInstance,
+		before: TokenUsage,
+		callsBefore: number,
+		reason: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child',
+	): void {
+		const after = instance.tokens ?? {};
+		const delta: TokenUsage = {
+			input: (after.input ?? 0) - (before.input ?? 0),
+			inputCached: (after.inputCached ?? 0) - (before.inputCached ?? 0),
+			output: (after.output ?? 0) - (before.output ?? 0),
+			total: (after.total ?? 0) - (before.total ?? 0),
+		};
+		const calls = (this.llmCallCount.get(instance.agentInstanceId) ?? 0) - callsBefore;
+		// 本段一次都没花钱（例如纯粹在等子 Agent）就不打扰界面
+		if (!delta.total && !calls) return;
+
+		this.emitStream({
+			type: 'usage',
+			agentInstanceId: instance.agentInstanceId,
+			tokens: after,
+			scope: 'loop',
+			loopDelta: delta,
+			loopCalls: calls,
+			reason,
+			round: instance.rounds,
+			agentName: instance.agentName,
+			depth: instance.depth,
+			model: this.model.modelId,
+		});
 	}
 
 	/** 上一次 LLM 请求是在回填哪些 tool_call 的结果之后发出的（写进 requestLog） */
@@ -513,7 +607,7 @@ export class AgentRunner {
 				reason,
 			});
 
-			const toolCtx = this.buildToolContext(instance, def, call.id, reason);
+			const toolCtx = this.buildToolContext(instance, def, call.id, reason, call.name);
 			const result = await executeTool(call.name, call.arguments, toolCtx);
 			const marker = result.structured?.[ORCH] as OrchestratorMarker | undefined;
 
@@ -573,7 +667,13 @@ export class AgentRunner {
 	}
 
 	/** 构造某次工具调用的 ToolContext（编排原语捕获 callId） */
-	private buildToolContext(instance: AgentInstance, def: AgentDefinition, callId: string, reason: string): ToolContext {
+	private buildToolContext(
+		instance: AgentInstance,
+		def: AgentDefinition,
+		callId: string,
+		reason: string,
+		toolName: string,
+	): ToolContext {
 		return {
 			ctx: this.ctx,
 			agentInstanceId: instance.agentInstanceId,
@@ -582,14 +682,15 @@ export class AgentRunner {
 			reason,
 			def,
 			mode: this.mode,
-			delegate: async (tasks) => this.primitiveDelegate(instance, callId, tasks),
+			signal: this.abortController.signal,
+			delegate: async (tasks) => this.primitiveDelegate(instance, callId, tasks, toolName),
 			finish: async (summary) => ({
 				success: true,
 				content: summary,
 				structured: { [ORCH]: { kind: 'finish', summary } satisfies OrchestratorMarker },
 			}),
-			resumePendingChild: async (targetId) => this.primitiveResumePending(instance, callId, targetId),
-			resumeCompletedChild: async (targetId, followUp) => this.primitiveResumeCompleted(instance, callId, targetId, followUp),
+			resumePendingChild: async (targetId) => this.primitiveResumePending(instance, callId, targetId, toolName),
+			resumeCompletedChild: async (targetId, followUp) => this.primitiveResumeCompleted(instance, callId, targetId, followUp, toolName),
 			askChild: async (targetId, question) => this.primitiveAskChild(instance, targetId, question),
 			askUser: async (args) => ({
 				success: true,
@@ -598,7 +699,72 @@ export class AgentRunner {
 			}),
 			readTaskList: () => this.ctx.taskList || '',
 			writeTaskList: (op) => this.applyTaskListOp(op),
+			runLlm: (req) => this.toolSubLlm(instance, req),
 		};
+	}
+
+	/**
+	 * 工具发起的「内部」LLM 请求（目前只有 web_search 的相关性打分用）。
+	 *
+	 * 为什么不复用主循环的请求：工具的输入（几十条候选）不属于 agent 的消息历史，
+	 * 混进去会污染上下文、也让账本里「谁在花钱」变得看不清。
+	 * 这里独立成一次 purpose=web_rank 的请求，账本里一眼可见。
+	 */
+	private async toolSubLlm(instance: AgentInstance, req: ToolLlmRequest): Promise<ToolLlmResult> {
+		const meta = {
+			conversationId: this.conversationId,
+			purpose: 'web_rank' as const,
+			agentInstanceId: instance.agentInstanceId,
+			agentId: instance.agentId,
+			agentName: instance.agentName,
+			depth: instance.depth,
+			modeId: this.mode.id,
+			trigger: 'tool_results' as const,
+			agentInstanceRound: instance.rounds,
+		};
+		const messages: LlmMessage[] = [
+			{ role: 'system', content: req.system },
+			{ role: 'user', content: req.user },
+		];
+		const signal = req.signal ?? this.abortController.signal;
+
+		// 优先给「动态 schema」；没有 schema 时退到 json_object。
+		// 二者都只是「约束模型输出形状」的请求，不支持它们的 provider 会 400，走下面的重试。
+		const responseFormat = req.jsonSchema
+			? { type: 'json_schema', json_schema: { name: req.jsonSchema.name, schema: req.jsonSchema.schema, strict: true } }
+			: req.json
+				? { type: 'json_object' }
+				: undefined;
+
+		if (!responseFormat) {
+			try {
+				const result = await callLlm({ config: this.model, messages, tools: [], signal }, meta);
+				this.chargeSubLlm(instance, result.usage);
+				return { ok: true, text: result.text };
+			} catch (err) {
+				return { ok: false, text: '', error: (err as Error)?.message ?? String(err) };
+			}
+		}
+
+		try {
+			const result = await callLlm({ config: this.model, messages, tools: [], signal, responseFormat }, meta);
+			this.chargeSubLlm(instance, result.usage);
+			return { ok: true, text: result.text };
+		} catch (err) {
+			const first = (err as Error)?.message ?? String(err);
+			// 有些 OpenAI 兼容端点不认 response_format（json_schema 尤其），会被 400 顶回来。
+			// 这类失败不该让「相关性打分」整条路作废：去掉约束字段再试一次，
+			// 形状由提示词兜住（提示词里已经写死了键名规则）。
+			if (!/response_format|json_schema|json_object|400|invalid[_ ]request/i.test(first)) {
+				return { ok: false, text: '', error: first };
+			}
+			try {
+				const retry = await callLlm({ config: this.model, messages, tools: [], signal }, meta);
+				return { ok: true, text: retry.text };
+			} catch (err2) {
+				return { ok: false, text: '', error: (err2 as Error)?.message ?? String(err2) };
+			}
+		}
 	}
 
 	// ---------- 编排原语实现 ----------
@@ -607,6 +773,7 @@ export class AgentRunner {
 		parent: AgentInstance,
 		callId: string,
 		tasks: { agentId: string; task: string }[],
+		toolName: string,
 	): ToolResult {
 		const childIds: string[] = [];
 		for (const task of tasks) {
@@ -622,7 +789,7 @@ export class AgentRunner {
 				parentAgentInstanceId: parent.agentInstanceId,
 			});
 			childIds.push(childId);
-			this.childLink.set(childId, { parentAgentInstanceId: parent.agentInstanceId, callId });
+			this.childLink.set(childId, { parentAgentInstanceId: parent.agentInstanceId, callId, toolName });
 		}
 
 		this.groups.set(callId, {
@@ -665,7 +832,7 @@ export class AgentRunner {
 		return best;
 	}
 
-	private primitiveResumePending(parent: AgentInstance, callId: string, requestedId: string): ToolResult {
+	private primitiveResumePending(parent: AgentInstance, callId: string, requestedId: string, toolName: string): ToolResult {
 		const requested = this.findInstance(requestedId);
 		const target = requested && (requested.status === 'pending' || requested.status === 'interrupted')
 			? requested
@@ -678,7 +845,7 @@ export class AgentRunner {
 			return { success: false, content: `子 Agent ${target.agentInstanceId} 正在运行中，无需恢复` };
 		}
 
-		this.childLink.set(target.agentInstanceId, { parentAgentInstanceId: parent.agentInstanceId, callId });
+		this.childLink.set(target.agentInstanceId, { parentAgentInstanceId: parent.agentInstanceId, callId, toolName });
 		this.groups.set(callId, {
 			parentAgentInstanceId: parent.agentInstanceId,
 			childAgentInstanceIds: [target.agentInstanceId],
@@ -700,7 +867,13 @@ export class AgentRunner {
 		};
 	}
 
-	private primitiveResumeCompleted(parent: AgentInstance, callId: string, targetId: string, followUp: string): ToolResult {
+	private primitiveResumeCompleted(
+		parent: AgentInstance,
+		callId: string,
+		targetId: string,
+		followUp: string,
+		toolName: string,
+	): ToolResult {
 		const target = this.findInstance(targetId);
 		if (!target) return { success: false, content: `找不到子实例 ${targetId}` };
 		if (!isTerminal(target.status)) return { success: false, content: `子 Agent ${targetId} 还没结束，不能「重新唤醒」` };
@@ -716,7 +889,7 @@ export class AgentRunner {
 		target.interruptReason = undefined;
 		target.lastUpdatedAt = now();
 
-		this.childLink.set(targetId, { parentAgentInstanceId: parent.agentInstanceId, callId });
+		this.childLink.set(targetId, { parentAgentInstanceId: parent.agentInstanceId, callId, toolName });
 		this.groups.set(callId, {
 			parentAgentInstanceId: parent.agentInstanceId,
 			childAgentInstanceIds: [targetId],
@@ -767,6 +940,7 @@ export class AgentRunner {
 					trigger: 'tool_results',
 				},
 			);
+			this.bumpLlmCalls(asker.agentInstanceId);
 			this.emitEvent(asker, 'system', { kind: 'ask_child', targetAgentInstanceId: targetId, question, answer: result.text });
 			return {
 				success: true,
@@ -817,30 +991,38 @@ export class AgentRunner {
 			instance.pendingCallIds = [];
 			instance.status = 'running';
 			instance.lastUpdatedAt = now();
+
+			let reflection = '';
 			try {
-				const reflection = await this.reflect(instance, summary);
-				instance.messages.push(message({
-					role: 'system',
-					content: reflection || '（反思未产生有效追问，请自行检查是否确实完成）',
-				}));
-				this.emitEvent(instance, 'reflection', { remaining: instance.reflectionsRemaining, prompt: reflection });
-				this.emitStream({
-					type: 'reflection',
-					agentInstanceId: instance.agentInstanceId,
-					remaining: instance.reflectionsRemaining,
-					prompt: reflection,
-				});
+				reflection = await this.reflect(instance, summary);
 			} catch (e) {
+				// 反思请求本身失败：记一笔，但不必为「继续反思」再烧一轮——直接走收尾。
 				instance.messages.push(message({
 					role: 'system',
 					content: `（反思请求失败：${(e as Error).message}）`,
 				}));
 			}
-			this.persist();
-			// ⚠️ 不能在这里直接 maybeReenter：本函数是被 agentLoop await 的，此刻 busy 还握着，
-			// 重入会被 busy 守卫挡掉（表现为「反思完就没动静了」）。把触发类型交回 agentLoop，
-			// 等 finally 释放 busy 后再由调度器重入。
-			return 'reflection';
+
+			this.emitEvent(instance, 'reflection', { remaining: instance.reflectionsRemaining, prompt: reflection });
+			this.emitStream({
+				type: 'reflection',
+				agentInstanceId: instance.agentInstanceId,
+				remaining: instance.reflectionsRemaining,
+				prompt: reflection,
+			});
+
+			// 反思没给出任何「要补做的事」→ 直接收尾。
+			// ⚠️ 早先这里无条件重入，并在没追问时塞一句「（反思未产生有效追问，请自行检查是否确实完成）」
+			// 让模型「再检查一遍」——那等于用一句废话白烧一整轮 LLM（实测每次多花数千 token）。
+			if (reflectionActionable(reflection)) {
+				instance.messages.push(message({ role: 'system', content: reflection }));
+				this.persist();
+				// ⚠️ 不能在这里直接 maybeReenter：本函数是被 agentLoop await 的，此刻 busy 还握着，
+				// 重入会被 busy 守卫挡掉（表现为「反思完就没动静了」）。把触发类型交回 agentLoop，
+				// 等 finally 释放 busy 后再由调度器重入。
+				return 'reflection';
+			}
+			// 没有追问：落到下面的「正式结束」（status 会被重新置为 succeeded）
 		}
 
 		// 正式结束
@@ -875,7 +1057,7 @@ export class AgentRunner {
 	private async reflect(instance: AgentInstance, summary: string): Promise<string> {
 		const def = this.defOf(instance);
 		const append = this.modeConfig.reflectionPromptAppend || def.reflectionPromptAppend || '';
-		const fixed = loadReflectionPrompt();
+		const fixed = loadReflectionPrompt(this.mode.reflectionPromptFile);
 		const prompt = `${fixed}\n\n${append}`.trim();
 
 		const initialSystem = instance.messages.find((m) => m.role === 'system')?.content ?? '';
@@ -901,8 +1083,13 @@ export class AgentRunner {
 				depth: instance.depth,
 				modeId: this.mode.id,
 				trigger: 'reflection',
+				agentInstanceRound: instance.rounds,
 			},
 		);
+		// ⚠️ 反思也是一次真金白银的 LLM 请求，必须计入本实例账本。
+		// 漏掉它的后果是：界面上的「总消耗」比 requestLog 里少一大截（反思经常比正文还长）。
+		instance.tokens = this.mergeTokens(instance.tokens, result.usage);
+		this.bumpLlmCalls(instance.agentInstanceId);
 		return result.text;
 	}
 
@@ -928,10 +1115,21 @@ export class AgentRunner {
 					const summary = group.results.get(id) ?? '(无总结)';
 					return `## [${instance.agentId}] ${instance.agentName}（${instance.status}）\n${summary}`;
 				}).filter(Boolean);
-				this.writeToolResult(parent, link.callId, {
+				const finalResult: ToolResult = {
 					success: true,
 					content: parts.join('\n\n') || '(子 Agent 无输出)',
 					structured: { childAgentInstanceIds: group.childAgentInstanceIds, status: 'done' },
+				};
+				this.writeToolResult(parent, link.callId, finalResult);
+				// delegate / resume_* 是「异步工具」：占位结果在 dispatch 时就发过 tool_end 了，
+				// 这里补发一次终态结果，前端才能把子 Agent 的总结显示在**工具调用输出**里
+				// （不再有「子 Agent 卡片」这种额外 UI）。
+				this.emitStream({
+					type: 'tool_end',
+					agentInstanceId: parent.agentInstanceId,
+					callId: link.callId,
+					toolName: link.toolName,
+					result: finalResult,
 				});
 				parent.pendingCallIds = (parent.pendingCallIds ?? []).filter((id) => id !== link.callId);
 				this.groups.delete(link.callId);

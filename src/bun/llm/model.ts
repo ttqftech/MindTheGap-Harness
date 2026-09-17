@@ -26,18 +26,26 @@ import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions }
 
 // #region 类型
 
+export interface LlmToolCallDelta {
+	id?: string;
+	name?: string;
+	argumentsDelta?: string;
+	index: number;
+}
+
 export interface LlmResponseChunk {
 	/** 文本增量 */
 	textDelta?: string;
+	/** 思考模型的推理增量（DeepSeek thinking 模式） */
+	reasoningDelta?: string;
 	/** 工具调用增量（流式时逐段追加） */
-	toolCallDelta?: {
-		id?: string;
-		name?: string;
-		argumentsDelta?: string;
-		index: number;
-	};
+	toolCallDelta?: LlmToolCallDelta;
+	/** 同一次 delta 里含多条工具调用（DeepSeek 会这样发）——与 toolCallDelta 二选一 */
+	toolCallDeltas?: LlmToolCallDelta[];
 	/** 一次工具调用参数已完整（非流式路径用） */
 	toolCallComplete?: { id: string; name: string; arguments: Record<string, unknown> };
+	/** 本轮的结束原因（流式末块携带） */
+	finishReason?: string;
 	/** 完成标志 */
 	done?: boolean;
 	/** 最终 Token 用量 */
@@ -60,6 +68,11 @@ export interface LlmRequest {
 	tools?: LlmTool[];
 	onChunk?: (chunk: LlmResponseChunk) => void;
 	signal?: AbortSignal;
+	/**
+	 * 要求模型输出结构化内容（目前只有 openai-chat 会落地成 response_format）。
+	 * 其他协议没有等价字段，靠提示词约束——调用方要自己做「解析失败就降级」。
+	 */
+	responseFormat?: Record<string, unknown>;
 }
 
 /** 调用方只需提供元信息；形状 / 用量由 callLlm 自己补齐 */
@@ -125,6 +138,7 @@ async function streamOpenAiChat(
 	tools: LlmTool[],
 	onChunk: (chunk: LlmResponseChunk) => void,
 	signal?: AbortSignal,
+	responseFormat?: Record<string, unknown>,
 ): Promise<LlmCallResult> {
 	/**
 	 * 内部 LlmMessage → OpenAI Chat Completions wire 格式。
@@ -172,9 +186,16 @@ async function streamOpenAiChat(
 	const body: Record<string, unknown> = {
 		model: config.modelId,
 		messages: toOpenAiWireMessages(messages),	// 必须转 wire 格式（tool_call_id 等）
-		stream: false,	// Cottontail ReadableStream 不工作，先非流式（见 docs/日志.md）
+		// ⚠️ 必须开流式 + 带 usage。早先这里写的是 `stream: false`，注释声称
+		// 「Cottontail ReadableStream 不工作，先非流式」——那是早期误判，实测不成立：
+		// 在 cottontail 0.5.0 里 `fetch()` 返回标准 ReadableStream，`getReader()` 能逐块读，
+		// 本地慢速 SSE 探针（artifacts/e2e/probe-stream.mjs）确认分块到达。
+		// 代价是关掉流式后整段文字一次性到达，界面上完全看不到进度。
+		stream: true,
+		stream_options: { include_usage: true },	// 否则流式响应里拿不到 usage
 	};
 	if (tools.length > 0) body.tools = tools;
+	if (responseFormat) body.response_format = responseFormat;
 	if (config.customParams) Object.assign(body, config.customParams);
 
 	const resp = await fetch(url, {
@@ -189,8 +210,21 @@ async function streamOpenAiChat(
 		throw new Error(`OpenAI Chat API error ${resp.status}: ${text}`);
 	}
 
-	const json = await resp.json();
+	// 正常路径：逐块读 SSE，文本增量即时交给 onChunk → runner 转 SSE → 前端逐字渲染
+	if (resp.body && typeof (resp.body as ReadableStream<Uint8Array>).getReader === 'function') {
+		return await parseSseStream(resp.body as ReadableStream<Uint8Array>, parseOpenAiChatDelta, onChunk);
+	}
 
+	// 兜底：运行时没提供 body（实测 cottontail 会提供，留此以防换运行时）
+	const json = await resp.json();
+	return parseOpenAiChatFullResponse(json, onChunk);
+}
+
+/**
+ * 一次性 JSON 响应的解析（非流式兜底路径）。
+ * 与流式路径产出同样的 LlmCallResult，调用方无感。
+ */
+function parseOpenAiChatFullResponse(json: any, onChunk: (chunk: LlmResponseChunk) => void): LlmCallResult {
 	const result: LlmCallResult = { text: '', reasoningContent: '', toolCalls: [], usage: {} };
 
 	const choice = json.choices?.[0];
@@ -247,28 +281,37 @@ function parseOpenAiChatDelta(line: string): LlmResponseChunk | null {
 
 	try {
 		const json = JSON.parse(data);
-		const choice = json.choices?.[0];
-		if (!choice) return null;
-
-		const delta = choice.delta ?? {};
 		const chunk: LlmResponseChunk = {};
 
-		if (delta.content) chunk.textDelta = delta.content;
-		if (delta.tool_calls?.length) {
-			const tc = delta.tool_calls[0];
-			chunk.toolCallDelta = {
-				id: tc.id,
-				name: tc.function?.name,
-				argumentsDelta: tc.function?.arguments,
-				index: tc.index ?? 0,
-			};
-		}
-
+		// ⚠️ 开了 stream_options.include_usage 之后，**最后一个数据块是 `choices: []` + `usage`**。
+		// 早先这里先判断 `if (!choice) return null`，会把带 usage 的末块整个丢掉，
+		// 结果是流式下 token 用量永远是 0（请求日志和界面统计一起失真）。
 		if (json.usage) {
 			chunk.usage = {
 				input: json.usage.prompt_tokens,
 				output: json.usage.completion_tokens,
+				total: json.usage.total_tokens,
 			};
+		}
+
+		const choice = json.choices?.[0];
+		if (!choice) return chunk.usage ? chunk : null;
+
+		const delta = choice.delta ?? {};
+		if (delta.content) chunk.textDelta = delta.content;
+		// 思考模型的推理增量（不接住的话 reasoningContent 落盘永远是空串）
+		if (delta.reasoning_content) chunk.reasoningDelta = delta.reasoning_content;
+		if (choice.finish_reason) chunk.finishReason = choice.finish_reason;
+
+		if (delta.tool_calls?.length) {
+			// 一次 delta 可能带多条 tool_call（并行调用），全部转出去，
+			// 只取 [0] 会导致后续参数被静默丢弃、工具参数解析残缺。
+			chunk.toolCallDeltas = delta.tool_calls.map((tc: any) => ({
+				id: tc.id,
+				name: tc.function?.name,
+				argumentsDelta: tc.function?.arguments,
+				index: tc.index ?? 0,
+			}));
 		}
 
 		return chunk;
@@ -510,8 +553,11 @@ async function parseSseStream(
 			onChunk(chunk);
 
 			if (chunk.textDelta) result.text += chunk.textDelta;
-			if (chunk.toolCallDelta) {
-				const tc = chunk.toolCallDelta;
+			if (chunk.reasoningDelta) result.reasoningContent += chunk.reasoningDelta;
+			if (chunk.finishReason) result.finishReason = chunk.finishReason;
+			// 兼容两种形状：单条 toolCallDelta 与一次多条 toolCallDeltas
+			const deltas = chunk.toolCallDeltas ?? (chunk.toolCallDelta ? [chunk.toolCallDelta] : []);
+			for (const tc of deltas) {
 				const acc = toolCallAccum[tc.index] ?? { args: '' };
 				if (tc.id) acc.id = tc.id;
 				if (tc.name) acc.name = tc.name;
@@ -540,7 +586,7 @@ async function parseSseStream(
  * 日志写在 finally 里：成功 / 报错 / 被 abort 都会留下终态记录。
  */
 export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCallResult> {
-	const { config, messages, tools = [], onChunk = () => {}, signal } = req;
+	const { config, messages, tools = [], onChunk = () => {}, signal, responseFormat } = req;
 
 	const { logId, seq } = allocateLogId(meta.conversationId);
 	const startedAt = Date.now();
@@ -568,7 +614,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		const result = await (async () => {
 			switch (config.apiFormat) {
 				case 'openai-chat':
-					return streamOpenAiChat(config, messages, tools, wrappedOnChunk, signal);
+					return streamOpenAiChat(config, messages, tools, wrappedOnChunk, signal, responseFormat);
 				case 'openai-responses':
 					return streamOpenAiResponses(config, messages, tools, wrappedOnChunk, signal);
 				case 'anthropic':
@@ -581,7 +627,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		finishReason = result.finishReason;
 		usage = result.usage ?? usage;
 		producedToolCallIds = result.toolCalls.map((tc) => tc.id);
-		emitUsage(meta, logId, usage);
+		emitUsage(meta, logId, seq, usage, Date.now() - startedAt, config.modelId);
 		return result;
 	} catch (e) {
 		const err = e as Error & { status?: number; name?: string };
@@ -618,7 +664,10 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 				systemPromptChars: systemText.length,
 				systemPromptHash: systemText ? hashString(systemText) : undefined,
 				totalChars: JSON.stringify(messages).length + JSON.stringify(tools).length,
-				stream: config.apiFormat !== 'openai-chat',
+				// 三种 apiFormat 现在都走 parseSseStream 真流式（openai-chat 曾经是 stream:false，
+				// 所以这里一度写成 `apiFormat !== 'openai-chat'`）。只有运行时拿不到 resp.body
+				// 而走了「一次性 JSON 兜底」时才会不准，实测 cottontail 不会走到那条路。
+				stream: true,
 			},
 			status,
 			usage: Object.keys(usage).length > 0 ? usage : undefined,
@@ -634,17 +683,44 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 	}
 }
 
-/** usage 流事件带上 logId，前端可把「这一次请求花了多少」贴到对应实例的气泡上 */
-let usageEmitter: ((conversationId: string, agentInstanceId: string | undefined, logId: string, usage: TokenUsage) => void) | null = null;
+/** 一次 LLM 请求的用量播报（scope='call' 时携带足够的上下文，前端才能把它显示成「第几轮、谁、干什么」） */
+export interface UsageEmit {
+	conversationId: string;
+	agentInstanceId?: string;
+	logId: string;
+	seq: number;
+	tokens: TokenUsage;
+	purpose: LlmPurpose;
+	agentName?: string;
+	round?: number;
+	depth?: number;
+	durationMs?: number;
+	model?: string;
+}
+
+let usageEmitter: ((e: UsageEmit) => void) | null = null;
 
 export function setUsageEmitter(fn: typeof usageEmitter): void {
 	usageEmitter = fn;
 }
 
-function emitUsage(meta: LlmCallMeta, logId: string, usage: TokenUsage) {
+function emitUsage(meta: LlmCallMeta, logId: string, seq: number, usage: TokenUsage, durationMs: number, model: string) {
 	if (!usageEmitter) return;
+	// 拿不到 usage 就不发：否则前端会多出一条「0 token」的噪声记录
 	if (Object.keys(usage).length === 0) return;
-	usageEmitter(meta.conversationId, meta.agentInstanceId, logId, usage);
+	usageEmitter({
+		conversationId: meta.conversationId,
+		agentInstanceId: meta.agentInstanceId,
+		logId,
+		seq,
+		tokens: usage,
+		purpose: meta.purpose,
+		agentName: meta.agentName,
+		round: meta.agentInstanceRound,
+		depth: meta.depth,
+		durationMs,
+		model,
+	});
 }
 
 /** 供 runner 复用的派生类型 */

@@ -377,6 +377,37 @@ export const actions = {
 			}),
 		);
 	},
+	/**
+	 * 累加一条消息上的 token 用量。
+	 *
+	 * ⚠️ 不能直接用 updateMessage 覆盖 `tokens`：一次用户消息期间会有**很多次** LLM 请求
+	 * （多轮工具调用 + 反思 + 子 Agent），覆盖的话界面上只剩最后一次的数字，
+	 * 而且比真实总量小得多——这正是「总消耗看着不对」的原因。
+	 */
+	addMessageTokens(
+		conversationId: string,
+		messageId: string,
+		tokens: { input?: number; output?: number; inputCached?: number; cached?: number; total?: number },
+	) {
+		setState(
+			'conversations',
+			produce((list) => {
+				const c = list.find((c) => c.id === conversationId);
+				if (!c) return;
+				const msg = c.messages.find((m) => m.id === messageId);
+				if (!msg) return;
+				const prev = msg.tokens ?? {};
+				const cached = tokens.inputCached ?? tokens.cached ?? 0;
+				msg.tokens = {
+					input: (prev.input ?? 0) + (tokens.input ?? 0),
+					output: (prev.output ?? 0) + (tokens.output ?? 0),
+					cached: (prev.cached ?? 0) + cached,
+				};
+				msg.llmCalls = (msg.llmCalls ?? 0) + 1;
+				c.updatedAt = Date.now();
+			}),
+		);
+	},
 	appendMessageBlock(conversationId: string, messageId: string, block: MessageBlock) {
 		setState(
 			'conversations',
@@ -395,6 +426,15 @@ export const actions = {
 						return;
 					}
 				}
+				// 思考增量同样按「同深度连续追加」合并，否则每个 delta 都会新起一个块
+				if (block.type === 'reasoning' && msg.blocks.length > 0) {
+					const last = msg.blocks[msg.blocks.length - 1];
+					if (last.type === 'reasoning' && last.depth === block.depth) {
+						last.content += block.content;
+						c.updatedAt = Date.now();
+						return;
+					}
+				}
 				msg.blocks.push(block);
 				if (block.type === 'text') {
 					msg.content += block.content;
@@ -403,7 +443,19 @@ export const actions = {
 			}),
 		);
 	},
-	patchMessageBlock(conversationId: string, messageId: string, key: string, patch: Partial<MessageBlock>) {
+	/**
+	 * 按 key 更新某个块。
+	 *
+	 * `onlyType`：只更新该类型的块。ask_user 的「提问卡片」和它的工具块共用同一个 callId 作为 key，
+	 * 工具结果到达时如果不加类型过滤，会把卡片的状态也一起改成 success——卡片会瞬间显示成「已回答」。
+	 */
+	patchMessageBlock(
+		conversationId: string,
+		messageId: string,
+		key: string,
+		patch: Partial<MessageBlock>,
+		onlyType?: MessageBlock['type'],
+	) {
 		setState(
 			'conversations',
 			produce((list) => {
@@ -412,7 +464,7 @@ export const actions = {
 				const msg = c.messages.find((m) => m.id === messageId);
 				if (!msg?.blocks) return;
 				for (const b of msg.blocks) {
-					if (b.key === key) Object.assign(b, patch);
+					if (b.key === key && (!onlyType || b.type === onlyType)) Object.assign(b, patch);
 				}
 				c.updatedAt = Date.now();
 			}),

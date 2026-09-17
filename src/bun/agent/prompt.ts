@@ -112,9 +112,13 @@ export function loadBasePromptTemplate(): string {
 	return readPromptsFile('_base.md');
 }
 
-/** prompts/_reflection.md —— 反思问题构造器的固定部分 */
-export function loadReflectionPrompt(): string {
-	return readPromptsFile('_reflection.md');
+/**
+ * prompts/_reflection.md —— 反思问题构造器的固定部分。
+ * 模式可以用 mode.json 的 `reflectionPromptFile` 指向别处
+ * （例如 prompts/daily/_reflection.md 用一套宽松得多的追问口径）。
+ */
+export function loadReflectionPrompt(fileName = '_reflection.md'): string {
+	return readPromptsFile(fileName);
 }
 
 // #endregion
@@ -135,8 +139,8 @@ const TOOL_USAGE: Record<string, string> = {
 	file_delete: '删除文件',
 	file_rename: '重命名 / 移动文件（高风险操作请先 ask_user）',
 	bash: '执行 shell 命令（Windows / cmd.exe 兼容）',
-	web_search: '网络搜索，返回结果列表',
-	web_fetch: '抓取网页正文',
+	web_search: '多引擎网络搜索：合并各引擎候选 → 独立模型按相关性打分 → 直接返回最相关页面的正文',
+	web_fetch: '抓取一个 URL 的正文（先 HTTP 直取，页面是 JS 空壳时自动改用无头浏览器渲染）',
 	task_list_read: '读取当前任务清单',
 	task_list_write: '增删改任务清单',
 	delegate: '把子任务委托给其他 Agent（可一次委托多条，并行执行）',

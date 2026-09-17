@@ -1,0 +1,14 @@
+{
+	"id": "router",
+	"name": "总台",
+	"promptFile": "prompt.md",
+	"reflectionCount": 1,
+	"delegatable": ["env", "weather"],
+	"model": "standard",
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["delegate", "finish", "ask_user"]
+		}
+	}
+}

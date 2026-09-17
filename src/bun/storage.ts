@@ -455,11 +455,23 @@ export function conversationMetas(): ConversationMeta[] {
 	return metas.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+/**
+ * 会话 id：`年月日时分秒-6位随机`，例如 `20260911143400-a1b2c3`。
+ * 纯随机 id 在文件管理器里完全无法按时间排序，加了时间前缀就能直接按目录名排。
+ * 同秒创建多个会话时靠随机后缀 + 下面的重试循环保证唯一。
+ */
+function newConversationId(): string {
+	const d = new Date();
+	const p = (n: number) => String(n).padStart(2, '0');
+	const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+	return `${stamp}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /** 新建会话（需要生成 id 和默认字段），返回可直接改的代理 */
 export function createConversation(params: { folderId?: string; title?: string; modeId?: string } = {}): ServiceConversation {
-	let id = Math.random().toString(36).slice(2, 10);
+	let id = newConversationId();
 	while (slots.has(id) || existsSync(conversationDir(id))) {
-		id = Math.random().toString(36).slice(2, 10);
+		id = newConversationId();
 	}
 	const now = Date.now();
 	const raw: ServiceConversation = {
