@@ -4,9 +4,9 @@
 
 import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
 import styles from './Sidebar.module.css';
-import { state, setState, actions } from '../../store';
-import { requestFolderPath } from '../../localBridge';
-import { getTimeString } from '../../../bun/utils';
+import { state, setState, actions } from '@mainview/store';
+import { requestFolderPath } from '@mainview/localBridge';
+import { getTimeString } from '@shared/utils';
 
 function FolderIcon() {
 	return (
@@ -273,7 +273,7 @@ export default function Sidebar() {
 													}
 													title={tooltipText()}
 												>
-													<span style={{ marginRight: 6 }}>
+													<span style={{ marginRight: "6px" }}>
 														<ChatIcon />
 													</span>
 													<span class={styles['tree-item-title']}>{conv.title}</span>
@@ -295,7 +295,7 @@ export default function Sidebar() {
 										<div
 											style={{
 												padding: "6px 8px",
-												fontSize: 12,
+												fontSize: "12px",
 												color: "var(--fontColorMuted)",
 											}}
 										>

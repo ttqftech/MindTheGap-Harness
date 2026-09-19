@@ -32,7 +32,7 @@ import type {
 	ModelConfig,
 	TokenUsage,
 	ToolResult,
-} from '../../shared/agent';
+} from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveModeConfig } from '../plugins/loader';

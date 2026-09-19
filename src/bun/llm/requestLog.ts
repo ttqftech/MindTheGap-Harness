@@ -13,7 +13,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LlmRequestRecord } from '../../shared/agent';
+import type { LlmRequestRecord } from '@shared/agent';
 import { conversationDir } from '../storage';
 
 // #region 常量

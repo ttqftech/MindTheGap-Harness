@@ -8,8 +8,8 @@
    ========================================================================== */
 
 import { createSignal, onCleanup, onMount, Show } from 'solid-js';
-import { isElectrobunEnv } from '../../rpc';
-import { windowControls } from '../../localBridge';
+import { isElectrobunEnv } from '@mainview/rpc';
+import { windowControls } from '@mainview/localBridge';
 import styles from './TitleBar.module.css';
 
 /** 最小化：一条横线 */

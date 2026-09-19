@@ -194,14 +194,6 @@ const defaultSettings: ServiceSettings = {
 	// v2：模式取代了「子 Agent」作为第一层；modeConfigs 只存「覆盖值」，生效配置 = 插件 defaultSettings ⊕ 它
 	currentModeId: 'code',
 	modeConfigs: {},
-	usage: {
-		timeRange: '7d',
-		showApiRequests: true,
-		showToolCalls: true,
-		showTokensInput: true,
-		showTokensInputCached: true,
-		showTokensOutput: true,
-	},
 	folders: [{ id: 'local', name: '本地', isLocal: true }],
 	mcpServers: [builtinSineServer()],
 	debug: {

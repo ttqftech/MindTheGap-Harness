@@ -1,6 +1,4 @@
-export function getTimeString(date: Date, showMs = true): string {
-	return `${date.getFullYear()}-${(date.getMonth() + 1 + '').padStart(2, '0')}-${(date.getDate() + '').padStart(2, '0')} ${(date.getHours() + '').padStart(2, '0')}:${(date.getMinutes() + '').padStart(2, '0')}:${(date.getSeconds() + '').padStart(2, '0')}${showMs ? '.' + (date.getMilliseconds() + '').padStart(3, '0') : ''}`;
-}
+import { getTimeString } from '../shared/utils';
 
 export function logMsg(...content: any[]): void {
 	console.log(`\x1b[32m${getTimeString(new Date())}\x1b[0m`, ...content);

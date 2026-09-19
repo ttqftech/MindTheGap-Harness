@@ -7,15 +7,15 @@ import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
-import { state, actions } from '../../store';
-import { setTheme, getCurrentThemeMode } from '../../theme/theme';
+import { state, actions } from '@mainview/store';
+import { setTheme, getCurrentThemeMode } from '@mainview/theme/theme';
 import { z } from 'zod';
-import type { ModelProvider } from '../../store';
+import type { ModelProvider } from '@mainview/store';
 import type {
 	ModelProviderModel, McpServerConfig, McpToolInfo, ModeConfigDefaults, LlmRequestRecord, AgentDefinition,
-} from '../../../shared/agent';
-import { confirmMsgbox, alertMsgbox } from '../../ffboxBridge';
-import { testMcpServer, getMode, getRequests, clearRequests } from '../../agentBridge';
+} from '@shared/agent';
+import { confirmMsgbox, alertMsgbox } from '@mainview/ffboxBridge';
+import { testMcpServer, getMode, getRequests, clearRequests } from '@mainview/agentBridge';
 
 /** 把 [{value,label}] 转成 FFBox-UI 的菜单项数组 */
 function toMenuItems(options: readonly { value: string; label: string }[]): MenuItem[] {
@@ -140,7 +140,7 @@ function ModelsTab() {
 	return (
 		<div>
 			<Show when={!editingProvider()}>
-				<div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+				<div style={{ marginBottom: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
 					<div class={styles['setting-group-label']}>已配置的模型提供商</div>
 					<ffbox-button type="primary" onclick={startAdd}>
 						+ 添加提供商
@@ -154,7 +154,7 @@ function ModelsTab() {
 							textAlign: "center",
 							color: "var(--fontColorMuted)",
 							backgroundColor: "hwb(var(--bg95) / 1)",
-							borderRadius: 10,
+							borderRadius: "10px",
 						}}>
 							还没有配置任何模型提供商。点击上方 "添加提供商" 开始。
 						</div>
@@ -165,7 +165,7 @@ function ModelsTab() {
 							<div class={styles['provider-item']}>
 								<div>
 									<div class={styles['provider-item-name']}>{p.name}</div>
-									<div style={{ fontSize: 12, color: "var(--fontColorMuted)", marginTop: 2 }}>
+									<div style={{ fontSize: "12px", color: "var(--fontColorMuted)", marginTop: "2px" }}>
 										{p.models.length} 个模型 · {p.baseUrl}
 									</div>
 								</div>
@@ -307,7 +307,7 @@ function ProviderEditor(props: {
 
 	return (
 		<div>
-			<h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600 }}>
+			<h3 style={{ margin: "0 0 16px", fontSize: "15px", fontWeight: 600 }}>
 				{local.provider.id ? "编辑提供商" : "添加提供商"}
 			</h3>
 
@@ -359,7 +359,7 @@ function ProviderEditor(props: {
 					<ffbox-button onclick={addModel}>+ 添加模型</ffbox-button>
 				</div>
 
-				<div class={styles['setting-group-desc']} style={{ marginBottom: 8 }}>
+				<div class={styles['setting-group-desc']} style={{ marginBottom: "8px" }}>
 					每个模型可独立配置 ID、名称、角色和自定义参数。新添加的模型请填写 ID 和显示名称后保存。
 				</div>
 
@@ -373,10 +373,10 @@ function ProviderEditor(props: {
 								<div style={{
 									padding: "12px",
 									backgroundColor: "hwb(var(--bg95) / 1)",
-									borderRadius: 8,
+									borderRadius: "8px",
 									border: "1px solid var(--borderLight)",
 								}}>
-									<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: 8 }}>
+									<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
 										<div style={{ flex: 1, display: "flex", gap: "8px" }}>
 											<ffbox-normal-input
 												class={styles['ffbox-input']}
@@ -410,7 +410,7 @@ function ProviderEditor(props: {
 										</ffbox-button>
 									</div>
 									<div>
-										<div style={{ fontSize: 11, color: "var(--fontColorMuted)", marginBottom: 4 }}>
+										<div style={{ fontSize: "11px", color: "var(--fontColorMuted)", marginBottom: "4px" }}>
 											自定义参数（JSON，合并到该模型的每次请求）
 										</div>
 										<textarea
@@ -423,10 +423,10 @@ function ProviderEditor(props: {
 											onblur={() => validateModelJson(mIdx)}
 											placeholder='{"temperature": 0.7}'
 											rows={2}
-											style={{ fontSize: 12 }}
+											style={{ fontSize: "12px" }}
 										/>
 										<Show when={jsonErr()}>
-											<div style={{ fontSize: 11, color: "var(--error)", marginTop: 2 }}>
+											<div style={{ fontSize: "11px", color: "var(--error)", marginTop: "2px" }}>
 												⚠️ {jsonErr()}
 											</div>
 										</Show>
@@ -454,13 +454,13 @@ function ProviderEditor(props: {
 					placeholder='{"temperature": 0.7}'
 				/>
 				<Show when={props.jsonError}>
-					<div style={{ fontSize: 12, color: "var(--error)", marginTop: 4 }}>
+					<div style={{ fontSize: "12px", color: "var(--error)", marginTop: "4px" }}>
 						⚠️ {props.jsonError}
 					</div>
 				</Show>
 			</div>
 
-			<div style={{ display: "flex", gap: "10px", marginTop: 24 }}>
+			<div style={{ display: "flex", gap: "10px", marginTop: "24px" }}>
 				<ffbox-button type="primary" onclick={doSave}>保存</ffbox-button>
 				<ffbox-button type="danger" onclick={props.onCancel}>取消</ffbox-button>
 			</div>
@@ -619,7 +619,7 @@ function UsageTab() {
 				<div style={{
 					padding: "12px",
 					backgroundColor: "hwb(var(--bg95) / 1)",
-					borderRadius: 10,
+					borderRadius: "10px",
 					border: "1px solid var(--borderLight)",
 				}}>
 					<div innerHTML={chartSvg()}></div>
@@ -643,15 +643,15 @@ function DashboardItem(props: {
 			gap: "12px",
 			padding: "10px 14px",
 			backgroundColor: "hwb(var(--bg95) / 1)",
-			borderRadius: 10,
+			borderRadius: "10px",
 			border: "1px solid var(--borderLight)",
 			opacity: props.enabled ? 1 : 0.5,
 			transition: "opacity 0.15s",
 		}}>
-			<span style={{ fontSize: 20 }}>{props.icon}</span>
+			<span style={{ fontSize: "20px" }}>{props.icon}</span>
 			<div style={{ flex: 1 }}>
-				<div style={{ fontSize: 12, color: "var(--fontColorMuted)" }}>{props.label}</div>
-				<div style={{ fontSize: 18, fontWeight: 600, color: "var(--fontColor)" }}>{props.value}</div>
+				<div style={{ fontSize: "12px", color: "var(--fontColorMuted)" }}>{props.label}</div>
+				<div style={{ fontSize: "18px", fontWeight: 600, color: "var(--fontColor)" }}>{props.value}</div>
 			</div>
 			{/* 原来这里手搓了一个 toggle，改用 FFBox-UI 的 ffbox-switch */}
 			<ffbox-switch
@@ -997,9 +997,9 @@ function McpTab() {
 	return (
 		<div>
 			<Show when={!editing()}>
-				<div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+				<div style={{ marginBottom: "16px", display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
 					<div class={styles['setting-group-label']}>已接入的 MCP 服务器</div>
-					<div style={{ display: 'flex', gap: 8 }}>
+					<div style={{ display: 'flex', gap: "8px" }}>
 						<ffbox-button onclick={() => void actions.refreshMcpStatus()}>刷新状态</ffbox-button>
 						<ffbox-button type="primary" onclick={startAdd}>+ 添加服务器</ffbox-button>
 					</div>
@@ -1016,7 +1016,7 @@ function McpTab() {
 							textAlign: 'center',
 							color: 'var(--fontColorMuted)',
 							backgroundColor: 'hwb(var(--bg95) / 1)',
-							borderRadius: 10,
+							borderRadius: "10px",
 						}}>
 							还没有接入任何 MCP 服务器。点击上方 "添加服务器" 开始。
 						</div>
@@ -1123,7 +1123,7 @@ function McpEditor(props: {
 
 	return (
 		<div>
-			<h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
+			<h3 style={{ margin: '0 0 16px', fontSize: "15px", fontWeight: 600 }}>
 				{local.server.id ? '编辑 MCP 服务器' : '添加 MCP 服务器'}
 			</h3>
 
@@ -1203,7 +1203,7 @@ function McpEditor(props: {
 			</Show>
 
 			<div class={styles['setting-group']}>
-				<div style={{ display: 'flex', gap: 10 }}>
+				<div style={{ display: 'flex', gap: "10px" }}>
 					<ffbox-button onclick={() => { flush(); props.onChange(JSON.parse(JSON.stringify(local.server))); props.onTest(); }}>
 						{props.testing ? '测试中…' : '测试连接'}
 					</ffbox-button>
@@ -1227,7 +1227,7 @@ function McpEditor(props: {
 				</Show>
 			</div>
 
-			<div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+			<div style={{ display: 'flex', gap: "10px", marginTop: "24px" }}>
 				<ffbox-button type="primary" onclick={() => { flush(); props.onSave(); }}>保存</ffbox-button>
 				<ffbox-button type="danger" onclick={props.onCancel}>取消</ffbox-button>
 			</div>

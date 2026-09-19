@@ -6,24 +6,7 @@
    所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
    ========================================================================== */
 
-import type {
-	AgentRunRequest,
-	AgentCtx,
-	AgentInstance,
-	AgentStreamEvent,
-	ConversationMeta,
-	ServiceConversation,
-	ServiceSettings,
-	ModelProvider,
-	ModeSummary,
-	ModeConfigDefaults,
-	UsageStats,
-	Folder,
-	McpServerConfig,
-	McpServerStatus,
-	McpToolInfo,
-	LlmRequestRecord,
-} from '../shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, ModeSummary, ModeConfigDefaults, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord } from '@shared/agent';
 
 const HTTP_PORT = 18999;
 const HTTP_BASE = `http://localhost:${HTTP_PORT}`;
@@ -310,29 +293,6 @@ export async function reloadPlugins(): Promise<{ ok: boolean; modes?: string[]; 
 		return await httpFetch('/api/plugins/reload', { method: 'POST' });
 	} catch (e: any) {
 		return { ok: false, errors: [{ level: 'error', message: e?.message ?? String(e) }] };
-	}
-}
-
-/* ---------- 设置 — 用量 ---------- */
-
-export async function getUsage(): Promise<UsageStats | null> {
-	try {
-		return await httpFetch<UsageStats>('/api/settings/usage');
-	} catch {
-		return null;
-	}
-}
-
-export async function setUsage(usage: UsageStats): Promise<boolean> {
-	try {
-		await httpFetch('/api/settings/usage', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(usage),
-		});
-		return true;
-	} catch {
-		return false;
 	}
 }
 

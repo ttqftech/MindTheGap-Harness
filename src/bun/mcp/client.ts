@@ -19,7 +19,7 @@
    ========================================================================== */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { McpServerConfig } from '../../shared/agent';
+import type { McpServerConfig } from '@shared/agent';
 import { logMsg } from '../utils';
 
 /** 我们声称支持的协议版本。选一个兼容性最广的。 */

@@ -1,0 +1,16 @@
+{
+	// 前后端共享的 tsconfig 基座（参考 FFBox config/tsconfig.base.json）
+	// ⚠️ 不再自己声明 baseUrl / paths —— 直接 extends 根 tsconfig.json 继承。
+	//    TS 的 paths 相对 baseUrl 解析，而 extends 继承的 baseUrl 按其来源文件（根）解析
+	//    （相对路径一律相对"它们来源的那个配置文件"），所以根的 paths（devkit 展开 + 项目 alias）
+	//    在 config/ 下的子项目里解析结果与根完全一致，paths 只需声明一份。
+	//    当初没走「extends .hutch/devkit/tsconfig.json」是因为两个坑：
+	//    ① 它的 baseUrl 指向 .hutch/devkit 目录，会把我们自己的 alias 全部带偏；
+	//    ② paths 是整体替换而非合并，覆盖 baseUrl 后 devkit 的 paths 仍要重写一遍。
+	//    根 tsconfig 保留 baseUrl "." 的原因见根文件注释（hutch/bun build 兼容）。
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		// composite 使子项目可被根 tsconfig 以 references 聚合，IDE 据此按前后端分配类型检查
+		"composite": true
+	}
+}

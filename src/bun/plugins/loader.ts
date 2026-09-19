@@ -25,7 +25,7 @@ import type {
 	ModeConfigDefaults,
 	ModeDefinition,
 	PluginManifest,
-} from '../../shared/agent';
+} from '@shared/agent';
 
 // #region 类型
 
@@ -78,7 +78,7 @@ export function resolveUserPluginsDir(): string {
 	return join(homedir(), '.mindthegap-harness', 'plugins');
 }
 
-/** prompts/ 目录（模板文件所在），找不到返回 null */
+/** 寻找 prompts/ 目录（模板文件所在），找不到返回 null */
 export function resolvePromptsDir(): string | null {
 	const base = findUp(join('prompts', '_base.md'));
 	return base ? join(base, 'prompts') : null;

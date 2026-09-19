@@ -1,0 +1,32 @@
+{
+	// 前端（mainview / WebView2 + Solid.js）类型检查
+	"extends": "./tsconfig.base.json",
+	"include": [
+		"../src/mainview/**/*",
+		"../src/shared/**/*",
+		"../src/types/**/*",
+		// FFBox-UI 真实类型：composite 要求 paths 可达文件必须在项目文件列表内，否则报 TS6307
+		"../vendor/ffbox-ui/dist/esm/**/*.d.ts",
+		"../env.d.ts",
+		// devkit 前端 SDK：electrobun/view → api/browser/；browser 实际只依赖 shared/rpc 与 shared/warren
+		// （只收 *.ts 不收 *.js，避免把 node 型逻辑文件拉进前端项目）
+		"../.hutch/devkit/api/browser/**/*.ts",
+		"../.hutch/devkit/api/shared/rpc.ts",
+		"../.hutch/devkit/api/shared/warren/**/*.ts"
+	],
+	"exclude": [
+		"../.hutch/devkit/**/*.test.*",
+		"../.hutch/devkit/**/__tests__/**"
+	],
+	"compilerOptions": {
+		// jsx / jsxImportSource 已由根 tsconfig 经 base 继承（preserve + solid-js），这里不再重复
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"types": ["vite/client"],
+		// composite 项目需显式 rootDir；env.d.ts 在项目根，所以 rootDir 取到项目根
+		"rootDir": "..",
+		// tsc -b 的 emit 产物隔离到 build/（已被 gitignore），避免污染 src/
+		"outDir": "../build/tsc-mainview",
+		"jsx": "preserve",
+		"jsxImportSource": "solid-js",
+	}
+}

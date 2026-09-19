@@ -5,16 +5,19 @@
 	"description": "MindTheGap-Harness — AI Coding 桌面应用",
 	"packageManager": "pnpm@8.15.9",
 	"scripts": {
-		"build:fe": "vite build",
-		"dev:fe": "vite --port 5173",
-		"typecheck": "tsc --noEmit",
-		"test": "playwright test"
+		"build:fe": "vite build --config config/vite.mainview.ts",
+		"dev:fe": "vite --port 5173 --config config/vite.mainview.ts",
+		"typecheck": "tsc -b config/tsconfig.bun.json config/tsconfig.mainview.json",
+		"test": "playwright test --config config/playwright.config.ts"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.62.1",
 		"@types/bun": "latest",
 		"@types/node": "^22.20.2",
 		"concurrently": "^9.1.0",
+		"csstype": "^3.2.3",
+		"lit": "^3.3.3",
+		"lit-html": "^3.3.3",
 		"playwright": "^1.62.1",
 		"typescript": "^5.7.2",
 		"vite": "^6.0.3",

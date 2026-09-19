@@ -9,9 +9,9 @@
    ========================================================================== */
 
 import { For, Show } from "solid-js";
-import { getActiveConversation } from "../../store";
+import { getActiveConversation } from "@mainview/store";
 import styles from './DiagramView.module.css';
-import type { AgentCtx, AgentEvent, AgentInstance } from "../../../shared/agent";
+import type { AgentCtx, AgentEvent, AgentInstance } from "@shared/agent";
 
 /** 事件类型 → 颜色映射 */
 const EVENT_COLORS: Record<string, string> = {

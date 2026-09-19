@@ -2,47 +2,31 @@
    全局状态管理（Solid.js store）
 
    重构后：
-   - 后端设置（providers, agentConfigs, usage, folders, conversations）→ Agent Service HTTP
-   - 前端设置（themeMode, ui state）→ localStorage
+   - 后端设置（providers, agentConfigs, folders, conversations）→ Agent Service HTTP
+   - 前端设置（themeMode, ui state, usage）→ localStorage
    - 会话列表从后端获取，切换时从后端拉完整数据
    - SSE patch 更新保持前后端尽量同步
    - AppMode → AgentName, ModeConfig → AgentConfig, modeConfigs → agentConfigs
    ========================================================================== */
 
 import { createStore, produce } from 'solid-js/store';
-import { localSettings, isElectrobunEnv } from '../localBridge';
-import * as agentBridge from '../agentBridge';
-import type {
-	AgentCtx,
-	ConversationMeta,
-	ServiceConversation,
-	Message,
-	MessageBlock,
-	MessageRole,
-	ModelProvider,
-	ModelProviderModel,
-	ModeConfigDefaults,
-	ModeSummary,
-	UsageStats,
-	Folder,
-	McpServerConfig,
-	McpServerStatus,
-} from '../../shared/agent';
+import { localSettings, isElectrobunEnv } from '@mainview/localBridge';
+import * as agentBridge from '@mainview/agentBridge';
+import type { AgentCtx, ConversationMeta, Message, MessageBlock, ModelProvider, ModeConfigDefaults, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
 
-/* ---------- 转发共享类型（UI 侧统一从 store 引入，避免到处写 ../../shared/agent） ---------- */
+// 转发共享类型（UI 侧统一从 store 引入，避免到处写相对路径）
+export type { Message, MessageBlock, MessageRole, ModelProvider, ModelProviderModel, ModeSummary, ModeConfigDefaults, AgentStreamEvent } from '@shared/agent';
 
-export type {
-	Message,
-	MessageBlock,
-	MessageRole,
-	ModelProvider,
-	ModelProviderModel,
-	ModeSummary,
-	ModeConfigDefaults,
-	AgentStreamEvent,
-} from '../../shared/agent';
+// #region 前端扩展类型
 
-/* ---------- 前端扩展类型（UITask 模式） ---------- */
+export interface UsageStats {
+	timeRange: '4h' | '1d' | 'today' | '7d' | '30d';
+	showApiRequests: boolean;
+	showToolCalls: boolean;
+	showTokensInput: boolean;
+	showTokensInputCached: boolean;
+	showTokensOutput: boolean;
+}
 
 export type UIConversation = ConversationMeta & {
 	messages: Message[];
@@ -71,23 +55,20 @@ export type AppState = {
 	providers: ModelProvider[];
 	currentStandardModel: { providerId: string; modelId: string } | null;
 	currentEconomyModel: { providerId: string; modelId: string } | null;
-	/** 当前模式 id（取代 v1 的 currentAgentName） */
 	currentModeId: string;
-	/** 插件提供的全部模式（聚合自 GET /api/modes） */
-	modes: ModeSummary[];
-	/** 各模式的配置覆盖（生效配置 = 插件 defaultSettings ⊕ 它） */
-	modeConfigs: Record<string, ModeConfigDefaults>;
-	/** 插件加载错误 / 被覆盖标记（设置页展示用） */
+	modes: ModeSummary[];	// 插件提供的全部模式（聚合自 GET /api/modes）
+	modeConfigs: Record<string, ModeConfigDefaults>;	// 各模式的配置覆盖（生效配置 = 插件 defaultSettings ⊕ 它）
+	// 插件加载错误 / 被覆盖标记（设置页展示用）
 	pluginErrors: { level: 'error' | 'warn'; pluginId?: string; modeId?: string; agentId?: string; message: string }[];
 	overriddenModes: string[];
-	usage: UsageStats;
-	/** MCP 服务器配置（持久化在后端 settings.json） */
-	mcpServers: McpServerConfig[];
-	/** MCP 运行态（后端内存维护，不持久化） */
-	mcpStatus: McpServerStatus[];
+	usage: UsageStats;	// 设置页用量统计（TODO 收归到设置页本身，不直接存储在 AppState 中）
+	mcpServers: McpServerConfig[];	// MCP 服务器配置（持久化在后端 settings.json）
+	mcpStatus: McpServerStatus[];	// MCP 运行态（后端内存维护，不持久化）
 };
 
-/* ---------- 初始状态 ---------- */
+// #endregion
+
+// #region 初始状态、store
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -139,12 +120,13 @@ export const defaultState: AppState = {
 	mcpStatus: [],
 };
 
-/* ---------- Store ---------- */
-
 export const [state, setState] = createStore<AppState>(defaultState);
 
-/* ---------- 前端设置持久化（localStorage） ---------- */
+// #endregion
 
+// #region 前端设置持久化（localStorage）
+
+// TODO 我认为只有 themeMode 是需要持久化的，其他设置项（如 sidebarWidth、sidebarCollapsed、viewMode 等）都不用落盘
 function saveLocalSettings() {
 	localSettings.set('ui', {
 		sidebarWidth: state.ui.sidebarWidth,
@@ -152,21 +134,29 @@ function saveLocalSettings() {
 		viewMode: state.ui.viewMode,
 	});
 	localSettings.set('themeMode', state.themeMode);
+	localSettings.set('usage', state.usage);	// TODO 收归
 }
 
 function loadLocalSettings() {
 	const theme = localSettings.get<'light' | 'dark' | 'system'>('themeMode', defaultState.themeMode);
 	setState('themeMode', theme);
 
+	// TODO 不用本地持久化 ui 设置项
 	const ui = localSettings.get<Partial<UIState>>('ui', {});
 	setState('ui', {
 		...defaultState.ui,
 		...ui,
 		settingsOpen: false,
 	});
+
+	// TODO 收归
+	const usage = localSettings.get<Partial<UsageStats>>('usage', {});
+	setState('usage', { ...defaultState.usage, ...usage });
 }
 
-/* ---------- 后端数据同步 ---------- */
+// #endregion
+
+// #region 后端数据同步
 
 const SAVE_DEBOUNCE_MS = 500;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -179,6 +169,7 @@ function scheduleSaveBackend() {
 }
 
 async function saveBackendSettings() {
+	console.log('[Store] Harness 设置正在保存到 Agent Service ');
 	await agentBridge.setProviders(state.providers);
 	await agentBridge.setCurrentModel({
 		standard: state.currentStandardModel,
@@ -186,21 +177,19 @@ async function saveBackendSettings() {
 	});
 	await agentBridge.setCurrentMode(state.currentModeId);
 	await agentBridge.setModeConfigs(state.modeConfigs);
-	await agentBridge.setUsage(state.usage);
 	await agentBridge.setFolders(state.folders);
 	await agentBridge.setMcpServers(state.mcpServers);
 }
 
 async function loadBackendState(): Promise<void> {
-	console.log('[Store] 从 Agent Service 加载后端状态...');
+	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, modeConfigs, currentMode, usage, folders, conversations, mcpServers] = await Promise.all([
+	const [providers, currentModel, modes, modeConfigs, currentMode, folders, conversations, mcpServers] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getModes(),
 		agentBridge.getModeConfigs(),
 		agentBridge.getCurrentMode(),
-		agentBridge.getUsage(),
 		agentBridge.getFolders(),
 		agentBridge.getConversations(),
 		agentBridge.getMcpServers(),
@@ -219,13 +208,12 @@ async function loadBackendState(): Promise<void> {
 	} else if (modes.length > 0) {
 		setState('currentModeId', modes[0].id);
 	}
-	if (usage) setState('usage', usage);
 	if (folders.length > 0) setState('folders', folders);
 	setState('mcpServers', mcpServers);
 
 	if (conversations.length > 0) {
-		const uiConvs: UIConversation[] = conversations.map((m) => ({
-			...m,
+		const uiConvs: UIConversation[] = conversations.map((meta) => ({
+			...meta,
 			messages: [],
 			isStreaming: false,
 		}));
@@ -243,17 +231,19 @@ export async function loadConversationMessages(conversationId: string): Promise<
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (c) {
-					c.messages = full.messages;
-					c.agentCtx = full.agentCtx;
+				const conversation = list.find((c) => c.id === conversationId);
+				if (conversation) {
+					conversation.messages = full.messages;
+					conversation.agentCtx = full.agentCtx;
 				}
 			}),
 		);
 	}
 }
 
-/* ---------- Actions ---------- */
+// #endregion
+
+// #region Actions
 
 export const actions = {
 	setThemeMode(mode: 'light' | 'dark' | 'system') {
@@ -278,10 +268,10 @@ export const actions = {
 		setState('folders', (prev) => prev.filter((f) => f.id !== id));
 		setState(
 			'conversations',
-			(prev) => prev.map((c) =>
-				c.folderId === id
-					? { ...c, folderId: 'local', updatedAt: Date.now() }
-					: c,
+			(prev) => prev.map((conversation) =>
+				conversation.folderId === id
+					? { ...conversation, folderId: 'local', updatedAt: Date.now() }
+					: conversation,
 			),
 		);
 		scheduleSaveBackend();
@@ -311,10 +301,10 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === id);
-				if (c) {
-					c.title = title;
-					c.updatedAt = Date.now();
+				const conversation = list.find((c) => c.id === id);
+				if (conversation) {
+					conversation.title = title;
+					conversation.updatedAt = Date.now();
 				}
 			}),
 		);
@@ -324,10 +314,10 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === id);
-				if (c) {
-					c.folderId = folderId;
-					c.updatedAt = Date.now();
+				const conversation = list.find((c) => c.id === id);
+				if (conversation) {
+					conversation.folderId = folderId;
+					conversation.updatedAt = Date.now();
 				}
 			}),
 		);
@@ -337,14 +327,14 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (c) {
-					c.messages.push({
+				const conversation = list.find((c) => c.id === conversationId);
+				if (conversation) {
+					conversation.messages.push({
 						...message,
 						id: uid(),
 						createdAt: Date.now(),
 					});
-					c.updatedAt = Date.now();
+					conversation.updatedAt = Date.now();
 				}
 			}),
 		);
@@ -353,12 +343,12 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (!c) return;
-				const msg = c.messages.find((m) => m.id === messageId);
+				const conversation = list.find((c) => c.id === conversationId);
+				if (!conversation) return;
+				const msg = conversation.messages.find((m) => m.id === messageId);
 				if (msg) {
 					msg.content += chunk;
-					c.updatedAt = Date.now();
+					conversation.updatedAt = Date.now();
 				}
 			}),
 		);
@@ -367,12 +357,12 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (!c) return;
-				const msg = c.messages.find((m) => m.id === messageId);
+				const conversation = list.find((c) => c.id === conversationId);
+				if (!conversation) return;
+				const msg = conversation.messages.find((m) => m.id === messageId);
 				if (msg) {
 					Object.assign(msg, patch);
-					c.updatedAt = Date.now();
+					conversation.updatedAt = Date.now();
 				}
 			}),
 		);
@@ -392,9 +382,9 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (!c) return;
-				const msg = c.messages.find((m) => m.id === messageId);
+				const conversation = list.find((c) => c.id === conversationId);
+				if (!conversation) return;
+				const msg = conversation.messages.find((m) => m.id === messageId);
 				if (!msg) return;
 				const prev = msg.tokens ?? {};
 				const cached = tokens.inputCached ?? tokens.cached ?? 0;
@@ -404,7 +394,7 @@ export const actions = {
 					cached: (prev.cached ?? 0) + cached,
 				};
 				msg.llmCalls = (msg.llmCalls ?? 0) + 1;
-				c.updatedAt = Date.now();
+				conversation.updatedAt = Date.now();
 			}),
 		);
 	},
@@ -412,9 +402,9 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (!c) return;
-				const msg = c.messages.find((m) => m.id === messageId);
+				const conversation = list.find((c) => c.id === conversationId);
+				if (!conversation) return;
+				const msg = conversation.messages.find((m) => m.id === messageId);
 				if (!msg) return;
 				if (!msg.blocks) msg.blocks = [];
 				if (block.type === 'text' && msg.blocks.length > 0) {
@@ -422,7 +412,7 @@ export const actions = {
 					if (last.type === 'text' && last.depth === block.depth) {
 						last.content += block.content;
 						msg.content += block.content;
-						c.updatedAt = Date.now();
+						conversation.updatedAt = Date.now();
 						return;
 					}
 				}
@@ -431,7 +421,7 @@ export const actions = {
 					const last = msg.blocks[msg.blocks.length - 1];
 					if (last.type === 'reasoning' && last.depth === block.depth) {
 						last.content += block.content;
-						c.updatedAt = Date.now();
+						conversation.updatedAt = Date.now();
 						return;
 					}
 				}
@@ -439,7 +429,7 @@ export const actions = {
 				if (block.type === 'text') {
 					msg.content += block.content;
 				}
-				c.updatedAt = Date.now();
+				conversation.updatedAt = Date.now();
 			}),
 		);
 	},
@@ -459,14 +449,14 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (!c) return;
-				const msg = c.messages.find((m) => m.id === messageId);
+				const conversation = list.find((c) => c.id === conversationId);
+				if (!conversation) return;
+				const msg = conversation.messages.find((m) => m.id === messageId);
 				if (!msg?.blocks) return;
 				for (const b of msg.blocks) {
 					if (b.key === key && (!onlyType || b.type === onlyType)) Object.assign(b, patch);
 				}
-				c.updatedAt = Date.now();
+				conversation.updatedAt = Date.now();
 			}),
 		);
 	},
@@ -474,10 +464,10 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (c) {
-					c.agentCtx = ctx;
-					c.updatedAt = Date.now();
+				const conversation = list.find((c) => c.id === conversationId);
+				if (conversation) {
+					conversation.agentCtx = ctx;
+					conversation.updatedAt = Date.now();
 				}
 			}),
 		);
@@ -486,8 +476,8 @@ export const actions = {
 		setState(
 			'conversations',
 			produce((list) => {
-				const c = list.find((c) => c.id === conversationId);
-				if (c) c.isStreaming = isStreaming;
+				const conversation = list.find((c) => c.id === conversationId);
+				if (conversation) conversation.isStreaming = isStreaming;
 			}),
 		);
 	},
@@ -658,11 +648,13 @@ export const actions = {
 
 	setUsage<K extends keyof UsageStats>(key: K, value: UsageStats[K]) {
 		setState('usage', key, value as any);
-		scheduleSaveBackend();
+		saveLocalSettings();
 	},
 };
 
-/* ---------- Selectors ---------- */
+// #endregion
+
+// #region Selectors
 
 export function getActiveConversation(): UIConversation | null {
 	if (!state.activeConversationId) return null;
@@ -682,7 +674,9 @@ export function currentModeName(): string {
 	return state.modes.find((m) => m.id === state.currentModeId)?.name ?? state.currentModeId;
 }
 
-/* ---------- 应用启动入口 ---------- */
+// #endregion
+
+// #region Actions
 
 export async function initApp() {
 	loadLocalSettings();
@@ -692,3 +686,5 @@ export async function initApp() {
 
 	console.log(`[App] 运行环境: ${isElectrobunEnv() ? 'electrobun' : '浏览器'}`);
 }
+
+// #endregion

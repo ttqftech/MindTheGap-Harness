@@ -20,7 +20,7 @@ import type {
 	LlmPurpose,
 	LlmTrigger,
 	LlmRequestRecord,
-} from '../../shared/agent';
+} from '@shared/agent';
 import { safeParseJson } from '../utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 

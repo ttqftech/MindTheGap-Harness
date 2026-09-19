@@ -1,0 +1,31 @@
+{
+	// 后端（Cottontail 主进程 + Agent Service）类型检查
+	"extends": "./tsconfig.base.json",
+	"include": [
+		"../src/bun/**/*",
+		"../src/shared/**/*",
+		// electrobun paths 指向 .hutch/devkit 源码；composite 项目要求 program 内所有文件都在文件列表里，必须把实际可达的 devkit 文件纳入 include（否则 TS6059/TS6307）：
+		//   · sdks/main + config：主 SDK 及其配置类型
+		//   · shared：被 sdks/main 与自身引用
+		//   · preload/.generated：native.ts 引用的生成产物（自包含单文件）
+		//   · package.json：electrobun-version.ts 读取 devkit 版本号
+		"../.hutch/devkit/api/sdks/main/**/*",
+		"../.hutch/devkit/api/shared/**/*",
+		"../.hutch/devkit/api/config/**/*",
+		"../.hutch/devkit/api/preload/.generated/**/*",
+		"../.hutch/devkit/package.json"
+	],
+	"exclude": [
+		// devkit 自带大量 *.test.* 与 __tests__（含 import 'bun:test' 的），无生产代码引用它们，排除后不进 program
+		"../.hutch/devkit/**/*.test.*",
+		"../.hutch/devkit/**/__tests__/**"
+	],
+	"compilerOptions": {
+		// Cottontail 同时提供 node 与部分 bun 能力（win32.ts 用 bun:ffi），两者类型都要
+		"types": ["node", "bun"],
+		// composite 项目需显式 rootDir，且要覆盖到 .hutch（devkit 在项目根下），否则 devkit 文件报 TS6059
+		"rootDir": "..",
+		// tsc -b 的 emit 产物隔离到 build/（已被 gitignore），避免污染 src/
+		"outDir": "../build/tsc-bun"
+	}
+}

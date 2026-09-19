@@ -5,8 +5,12 @@
    所有 Agent 相关操作走 HTTP + SSE（agentBridge）。
    文件操作、appData、Agent 运行全部移除。
 
-   窗口控制存在的原因：主窗口为无边框（titleBarStyle: 'hidden'），
+   窗口控制存在的原因：主窗口为无边框（titleBarStyle: 'hiddenInset'），
    标题栏与三大金刚键由前端 TitleBar 自绘，只能通过 RPC 驱动原生窗口。
+
+   ⚠️ devkit 的 BaseRPCRequestsSchema 要求每个 request 的 params 是必填字段
+   （{ params: unknown; response: unknown }），所以无参请求写成 params: undefined，
+   而不是 params? 可选——可选会被 ElectrobunRPCSchema 约束直接拒绝（TS2344）。
    ========================================================================== */
 
 export type RpcResult<T> =
@@ -17,14 +21,14 @@ export interface AppRPC {
     bun: {
         requests: {
             dialogOpen: {
-                params?: {
+                params: {
                     filters?: { name: string; extensions: string[] }[];
                     multiple?: boolean;
                 };
                 response: RpcResult<string[]>;
             };
             dialogSave: {
-                params?: {
+                params: {
                     filters?: { name: string; extensions: string[] }[];
                     defaultPath?: string;
                 };
@@ -39,7 +43,7 @@ export interface AppRPC {
                 response: RpcResult<void>;
             };
             envInfo: {
-                params?: undefined;
+                params: undefined;
                 response: RpcResult<{
                     platform: string;
                     arch: string;
@@ -49,21 +53,21 @@ export interface AppRPC {
                 }>;
             };
             windowMinimize: {
-                params?: undefined;
+                params: undefined;
                 response: RpcResult<void>;
             };
             /** 在最大化 / 还原之间切换，返回切换后的状态 */
             windowToggleMaximize: {
-                params?: undefined;
+                params: undefined;
                 response: RpcResult<boolean>;
             };
             /** 走 requestClose（可被 beforeRemoveHooks 拦截），而不是直接销毁窗口 */
             windowClose: {
-                params?: undefined;
+                params: undefined;
                 response: RpcResult<void>;
             };
             windowIsMaximized: {
-                params?: undefined;
+                params: undefined;
                 response: RpcResult<boolean>;
             };
         };

@@ -478,19 +478,6 @@ export function startHttpServer() {
 				return;
 			}
 
-			// 设置 — 用量（纯 UI 偏好，真实统计走 requests/stats）
-			if (req.method === 'GET' && path === '/api/settings/usage') {
-				sendJson(res, 200, settings.usage);
-				return;
-			}
-
-			if (req.method === 'PUT' && path === '/api/settings/usage') {
-				const body = await readBody(req);
-				settings.usage = JSON.parse(body || '{}');
-				sendJson(res, 200, { ok: true });
-				return;
-			}
-
 			// 设置 — MCP 服务器（配置持久化）
 			if (req.method === 'GET' && path === '/api/settings/mcp-servers') {
 				sendJson(res, 200, settings.mcpServers);

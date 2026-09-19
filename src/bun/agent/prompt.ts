@@ -14,25 +14,18 @@
    ========================================================================== */
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type {
-	AgentDefinition,
-	AgentInstance,
-	ModeConfigDefaults,
-	ModeDefinition,
-} from '../../shared/agent';
+import nodePath from 'node:path';
+import type { AgentDefinition, AgentInstance, ModeConfigDefaults, ModeDefinition } from '@shared/agent';
 import { resolvePromptsDir } from '../plugins/loader';
 
 // #region 模板引擎（60 行）
-
-type Scope = Record<string, unknown>;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
 	return v !== null && typeof v === 'object';
 }
 
 /** 支持 `a.b` 逐级取值；`.x` 表示当前循环项 */
-function lookupVar(scope: Scope, key: string): unknown {
+function lookupVar(scope: Record<string, unknown>, key: string): unknown {
 	if (key === '.') return scope['.'];
 	const parts = key.split('.');
 	let cur: unknown = scope;
@@ -53,25 +46,38 @@ function truthy(v: unknown): boolean {
 }
 
 /** 渲染模板。支持 {{var}} / {{#if}} / {{#each}}（不支持嵌套同类型段，模板里也没用到） */
-export function renderTemplate(template: string, scope: Scope): string {
-	let out = template.replace(
+export function renderTemplate(template: string, scope: Record<string, unknown>): string {
+	let out = template;
+	
+	// 匹配 {{#each key}}...{{/each}} 语法：key 为迭代变量名，body 为循环体模板
+	out = out.replace(
 		/\{\{#each\s+([\w.]+)\s*\}\}([\s\S]*?)\{\{\/each\}\}/g,
 		(_m, key: string, body: string) => {
-			const list = lookupVar(scope, key);
-			if (!Array.isArray(list)) return '';
+			const list = lookupVar(scope, key);	// 从作用域中查找 key 对应的数组
+			if (!Array.isArray(list)) return '';	// 若非数组则跳过，输出空串
 			return list
 				.map((item) =>
-					renderTemplate(body, isRecord(item) ? { ...scope, '.': item, ...item } : { ...scope, '.': item }),
+					// 递归渲染循环体：若 item 为对象则展开其属性到作用域（同时用 '.' 指向当前项），否则仅绑定 '.' 到当前项
+					renderTemplate(
+						body,
+						isRecord(item)
+							? { ...scope, '.': item, ...item }
+							: { ...scope, '.': item },
+					),
 				)
 				.join('');
 		},
 	);
 
+	// 匹配 {{#if var}}...{{/if}} 语法：var 为条件变量名，body 为条件体模板
 	out = out.replace(
 		/\{\{#if\s+([\w.]+)\s*\}\}([\s\S]*?)\{\{\/if\}\}/g,
-		(_m, key: string, body: string) => (truthy(lookupVar(scope, key)) ? renderTemplate(body, scope) : ''),
+		(_m, key: string, body: string) => (
+			truthy(lookupVar(scope, key)) ? renderTemplate(body, scope) : ''
+		),
 	);
 
+	// 匹配 {{var}} 语法：var 为变量名，输出其值（空串）
 	out = out.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, key: string) => {
 		const v = lookupVar(scope, key);
 		return v === undefined || v === null ? '' : String(v);
@@ -84,27 +90,21 @@ export function renderTemplate(template: string, scope: Scope): string {
 
 // #region 基座文件
 
+// 缓存 prompts/ 目录下的文件内容，避免重复读取
 const basePromptCache = new Map<string, string>();
 
 function readPromptsFile(name: string): string {
 	const dir = resolvePromptsDir();
 	if (!dir) return '';
-	const path = join(dir, name);
+	const path = nodePath.join(dir, name);
 	const cached = basePromptCache.get(path);
 	if (cached !== undefined) return cached;
 	let text = '';
 	try {
 		text = readFileSync(path, 'utf-8');
-	} catch {
-		text = '';
-	}
+	} catch {}
 	basePromptCache.set(path, text);
 	return text;
-}
-
-/** 插件重载 / 文件变更后清缓存 */
-export function clearPromptCache(): void {
-	basePromptCache.clear();
 }
 
 /** prompts/_base.md 的原始内容（未替换变量） */
@@ -114,8 +114,7 @@ export function loadBasePromptTemplate(): string {
 
 /**
  * prompts/_reflection.md —— 反思问题构造器的固定部分。
- * 模式可以用 mode.json 的 `reflectionPromptFile` 指向别处
- * （例如 prompts/daily/_reflection.md 用一套宽松得多的追问口径）。
+ * 模式可以用 mode.json 的 `reflectionPromptFile` 指向别处（例如 prompts/daily/_reflection.md 用一套宽松得多的追问口径）。
  */
 export function loadReflectionPrompt(fileName = '_reflection.md'): string {
 	return readPromptsFile(fileName);

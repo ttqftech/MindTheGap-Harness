@@ -16,7 +16,7 @@ import type {
 	McpServerStatus,
 	McpToolInfo,
 	ToolResult,
-} from '../../shared/agent';
+} from '@shared/agent';
 import { createMcpClient, type McpClientLike, type McpCallToolResult } from './client';
 import { setDynamicTools, clearDynamicTools } from '../agent/tools';
 import type { AgentTool } from '../agent/tools';

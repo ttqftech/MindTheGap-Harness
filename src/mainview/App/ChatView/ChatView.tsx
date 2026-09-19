@@ -11,13 +11,13 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
 import styles from './ChatView.module.css';
-import { state as appState, actions, getActiveConversation, getProviderById, currentModeName } from '../../store';
-import type { Message, MessageBlock } from '../../store';
-import type { ModelConfig } from '../../../shared/agent';
-import { runAgent, cancelAgent, subscribeStream, saveConversationData, getTaskList, getCtx } from '../../agentBridge';
-import type { AgentStreamEvent, ToolResult } from '../../../shared/agent';
-import { requestFolderPath } from '../../localBridge';
-import { showMenu, alertMsgbox } from '../../ffboxBridge';
+import { state as appState, actions, getActiveConversation, getProviderById, currentModeName } from '@mainview/store';
+import type { Message, MessageBlock } from '@mainview/store';
+import type { ModelConfig } from '@shared/agent';
+import { runAgent, cancelAgent, subscribeStream, saveConversationData, getTaskList, getCtx } from '@mainview/agentBridge';
+import type { AgentStreamEvent, ToolResult } from '@shared/agent';
+import { requestFolderPath } from '@mainview/localBridge';
+import { showMenu, alertMsgbox } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
 
 function UserIcon() {
@@ -317,7 +317,7 @@ export default function ChatView() {
 			onSelect: (_e, value) => {
 				actions.setCurrentModeId(value);
 				const conv = getActiveConversation();
-				if (conv) void import('../../agentBridge').then((b) => b.updateConversation(conv.id, { modeId: value }));
+				if (conv) void import('@mainview/agentBridge').then((b) => b.updateConversation(conv.id, { modeId: value }));
 			},
 		});
 	};

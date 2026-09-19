@@ -22,7 +22,7 @@ import { execSync } from 'node:child_process';
 import type {
 	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool, ModeConfigDefaults,
 	ModeDefinition, ToolResult,
-} from '../../shared/agent';
+} from '@shared/agent';
 import { fetchMany, fetchUrl, type FetchFormat, type RenderPolicy } from './web/fetch';
 import { searchEngines } from './web/engines';
 import { rankCandidates, type RankInput } from './web/rank';

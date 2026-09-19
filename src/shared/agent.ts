@@ -484,7 +484,7 @@ export type MessageBlock =
 export interface Message {
 	id: string;
 	role: MessageRole;
-	content: string;
+	content: string;	// 存放简单文本内容。具体内容在 blocks 中，因为一轮 llm 调用可以有很多东西，比如思考、工具调用……
 	createdAt: number;
 	agentName?: string;
 	modeId?: string;
@@ -582,16 +582,6 @@ export interface ModelProviderModel {
 	customParams?: Record<string, unknown>;
 }
 
-/** 用量统计设置（纯 UI 偏好；真实统计从 requestLog 聚合） */
-export interface UsageStats {
-	timeRange: '4h' | '1d' | 'today' | '7d' | '30d';
-	showApiRequests: boolean;
-	showToolCalls: boolean;
-	showTokensInput: boolean;
-	showTokensInputCached: boolean;
-	showTokensOutput: boolean;
-}
-
 /** 调试配置 */
 export interface DebugSettings {
 	requestLog: RequestLogConfig;
@@ -606,7 +596,6 @@ export interface ServiceSettings {
 	currentModeId: string;
 	/** 各模式的配置覆盖（defaultSettings ⊕ 它 = 生效配置） */
 	modeConfigs: Record<string, ModeConfigDefaults>;
-	usage: UsageStats;
 	folders: Folder[];
 	mcpServers: McpServerConfig[];
 	debug: DebugSettings;

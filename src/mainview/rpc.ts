@@ -72,7 +72,9 @@ interface RpcApi {
 let _rpc: RpcApi | null = null;
 
 function initRealRpc(): RpcApi {
-	const ev = new Electroview<AppRPC>({
+	// Electroview<T extends RPCWithTransport>：T 由 config.rpc 推断（含 setTransport），
+	// 不能把 schema 当泛型实参——AppRPC 没有 setTransport，会报 TS2344
+	const ev = new Electroview({
 		rpc: Electroview.defineRPC<AppRPC>({
 			handlers: {
 				requests: {},
@@ -83,9 +85,10 @@ function initRealRpc(): RpcApi {
 
 	console.log('[RPC] Electroview 已连接');
 
+	const rpc = ev.rpc!;
 	return {
-		request: ev.rpc.request as unknown as RpcApi['request'],
-		send: ev.rpc.send as unknown as RpcApi['send'],
+		request: rpc.request as unknown as RpcApi['request'],
+		send: rpc.send as unknown as RpcApi['send'],
 	};
 }
 
