@@ -20,7 +20,7 @@ import {
 import { resolve, dirname, join, isAbsolute, relative, extname } from 'node:path';
 import { execSync } from 'node:child_process';
 import type {
-	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool, ModeConfigDefaults,
+	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool,
 	ModeDefinition, ToolResult,
 } from '@shared/agent';
 import { fetchMany, fetchUrl, type FetchFormat, type RenderPolicy } from './web/fetch';
@@ -179,22 +179,17 @@ function mcpToolsFor(policy: 'none' | 'all' | string[]): AgentTool[] {
 
 /**
  * MCP 策略解析优先级：
- * agent.ability.mcp（最具体）> modeConfig.includeMcp（明示 true/false）> mode.mcp > none
+ * agent.ability.mcp（最具体）> mode.mcp > none
+ *
+ * （曾经中间还有一层 modeConfig.includeMcp，那是「settings 覆盖 mode.json」时代的产物；
+ *   现在模式配置就是 mode.json 本身，includeMcp 的语义等价于 mode.mcp: 'all' | 'none'。）
  */
 export function resolveMcpPolicy(
 	def: AgentDefinition,
 	mode: ModeDefinition,
-	modeConfig: ModeConfigDefaults,
 ): 'none' | 'all' | string[] {
 	if (def.ability.mcp) return def.ability.mcp;
-	if (modeConfig.includeMcp === true) return 'all';
-	if (modeConfig.includeMcp === false) return 'none';
 	return mode.mcp ?? 'none';
-}
-
-/** 该模式在「空」模式下是否把 MCP 放进提示词（与工具表保持一致） */
-export function modeIncludesMcp(modeConfig: ModeConfigDefaults): boolean {
-	return modeConfig.includeMcp === true;
 }
 
 /**
@@ -207,7 +202,6 @@ export function getToolsForAgentInstance(
 	agentInstance: AgentInstance,
 	def: AgentDefinition,
 	mode: ModeDefinition,
-	modeConfig: ModeConfigDefaults,
 ): AgentTool[] {
 	const allow = def.ability.tools?.allow;
 	const deny = new Set(def.ability.tools?.deny ?? []);
@@ -223,7 +217,7 @@ export function getToolsForAgentInstance(
 		return true;
 	});
 
-	const mcpPolicy = resolveMcpPolicy(def, mode, modeConfig);
+	const mcpPolicy = resolveMcpPolicy(def, mode);
 	return [...builtin, ...mcpToolsFor(mcpPolicy)];
 }
 

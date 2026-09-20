@@ -2,7 +2,8 @@
    提示词拼接器 — MindTheGap-Harness
 
    代码里唯一允许出现的提示词逻辑是「拼接」，不是「内容」。
-   内容全部来自：prompts/_base.md、prompts/_reflection.md、各 agent 的 prompt.md。
+   内容全部来自：settings.basePrompt（基座）、插件目录下的 reflection.md（反思）、
+   各 agent 的 prompt.md（身份）。
 
    拼接顺序见 docs/Agent架构-v2设计.md §5。空段自动跳过；
    若最终结果为空白串，则不下发 system message（这是「空」模式的准确落地方式）。
@@ -13,10 +14,7 @@
      {{#each list}} ... {{/each}}  循环段（{{.}} 取当前项，对象项可直接取字段）
    ========================================================================== */
 
-import { readFileSync } from 'node:fs';
-import nodePath from 'node:path';
-import type { AgentDefinition, AgentInstance, ModeConfigDefaults, ModeDefinition } from '@shared/agent';
-import { resolvePromptsDir } from '../plugins/loader';
+import type { AgentDefinition, AgentInstance, ModeDefinition } from '@shared/agent';
 
 // #region 模板引擎（60 行）
 
@@ -88,40 +86,6 @@ export function renderTemplate(template: string, scope: Record<string, unknown>)
 
 // #endregion
 
-// #region 基座文件
-
-// 缓存 prompts/ 目录下的文件内容，避免重复读取
-const basePromptCache = new Map<string, string>();
-
-function readPromptsFile(name: string): string {
-	const dir = resolvePromptsDir();
-	if (!dir) return '';
-	const path = nodePath.join(dir, name);
-	const cached = basePromptCache.get(path);
-	if (cached !== undefined) return cached;
-	let text = '';
-	try {
-		text = readFileSync(path, 'utf-8');
-	} catch {}
-	basePromptCache.set(path, text);
-	return text;
-}
-
-/** prompts/_base.md 的原始内容（未替换变量） */
-export function loadBasePromptTemplate(): string {
-	return readPromptsFile('_base.md');
-}
-
-/**
- * prompts/_reflection.md —— 反思问题构造器的固定部分。
- * 模式可以用 mode.json 的 `reflectionPromptFile` 指向别处（例如 prompts/daily/_reflection.md 用一套宽松得多的追问口径）。
- */
-export function loadReflectionPrompt(fileName = '_reflection.md'): string {
-	return readPromptsFile(fileName);
-}
-
-// #endregion
-
 // #region 工具的「人话」说明
 
 /**
@@ -168,7 +132,8 @@ export interface PromptContext {
 	agentInstance: AgentInstance;
 	def: AgentDefinition;
 	mode: ModeDefinition;
-	modeConfig: ModeConfigDefaults;
+	/** 基座提示词（settings.basePrompt，由调用方传入；空串 = 不注入基座） */
+	basePrompt: string;
 	runningDir: string;
 	/** 该实例实际可见的工具（已按白名单过滤） */
 	tools: PromptToolInfo[];
@@ -211,17 +176,21 @@ function nowLabel(): string {
 	}
 }
 
-/** 第 1 段：基座（含运行环境 / 通用原则 / 风险控制 / 输出约定） */
-function renderBase(ctx: PromptContext): string {
-	if (!ctx.mode.injectBasePrompt) return '';
-	const tpl = loadBasePromptTemplate();
-	if (!tpl.trim()) return '';
-	return renderTemplate(tpl, {
+function buildTemplateScope(ctx: PromptContext): Record<string, unknown> {
+	return {
 		platform: platformLabel(),
 		shell: shellLabel(),
 		time: nowLabel(),
 		runningDir: ctx.runningDir || '(未指定)',
-	});
+	};
+}
+
+/** 第 1 段：基座（含运行环境 / 通用原则 / 风险控制 / 输出约定），内容是 settings.basePrompt */
+function renderBase(ctx: PromptContext): string {
+	if (!ctx.mode.injectBasePrompt) return '';
+	const tpl = ctx.basePrompt ?? '';
+	if (!tpl.trim()) return '';
+	return renderTemplate(tpl, buildTemplateScope(ctx));
 }
 
 /** 第 4 段：委托规则 */
@@ -402,9 +371,11 @@ export function assembleSystemPrompt(ctx: PromptContext): string {
 		(ctx.def.delegatable ?? []).length === 0;
 	if (trulyEmpty) return '';
 
+	const scope = buildTemplateScope(ctx);
+
 	const sections: string[] = [
 		renderBase(ctx),
-		ctx.def.prompt.trim(),
+		renderTemplate(ctx.def.prompt.trim(), scope),
 		renderParentTask(ctx),
 		renderDelegation(ctx),
 		ctx.depthExhausted ? renderDepthExhausted(ctx) : '',

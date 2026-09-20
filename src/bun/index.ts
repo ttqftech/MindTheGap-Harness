@@ -99,7 +99,7 @@ await loadSettings();
 // 流式推送通过 SSE（EventSource），不再需要 RPC send.agentStream
 // 内部会先 await loadSettings() 把设置读进内存，再开始监听端口
 logMsg('[main] 正在启动 HTTP Server');
-void startHttpServer();
+void startHttpServer({ channel: channel ?? 'unknown' });
 
 // 启动后自动连接所有已启用的 MCP 服务器
 void (async () => {

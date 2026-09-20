@@ -27,7 +27,6 @@ import type {
 	AgentStreamEvent,
 	LlmMessage,
 	LlmTrigger,
-	ModeConfigDefaults,
 	ModeDefinition,
 	ModelConfig,
 	TokenUsage,
@@ -35,10 +34,11 @@ import type {
 } from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
-import { getMode, isLoaded, listModes, loadAllPlugins, resolveModeConfig } from '../plugins/loader';
-import { conversations, ensureConversationDir, settings, snapshot } from '../storage';
+import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
+import { conversations, ensureConversationDir, settings } from '../storage';
 import { logMsg } from '../utils';
-import { assembleSystemPrompt, loadReflectionPrompt } from './prompt';
+import { DEFAULT_BASE_PROMPT } from './defaultPrompts';
+import { assembleSystemPrompt } from './prompt';
 import {
 	executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools,
 	type AgentTool, type TaskListOp, type ToolContext, type ToolLlmRequest, type ToolLlmResult,
@@ -95,7 +95,7 @@ function renderTaskList(items: { done: boolean; item: string }[]): string {
 /**
  * 反思输出里是否含「真正要补做的事」。
  *
- * 宽松口径的反思提示词（见 prompts/daily/_reflection.md）允许模型直接回「无」——
+ * 宽松口径的反思提示词（见 plugins/MTG-builtin/daily/reflection.md）允许模型直接回「无」——
  * 那不是一个可执行的追问，若当成追问去重入，就又白烧一轮。所以除了空串，
  * 还要认几种「明确表示无需补做」的短语（限短文本，避免误伤真正的追问）。
  */
@@ -117,7 +117,6 @@ export interface RunnerOptions {
 export class AgentRunner {
 	readonly conversationId: string;
 	private mode: ModeDefinition;
-	private modeConfig: ModeConfigDefaults;
 	private model: ModelConfig;
 	private runningDir: string;
 	private ctx: AgentCtx;
@@ -139,13 +138,11 @@ export class AgentRunner {
 	constructor(params: {
 		request: AgentRunRequest;
 		mode: ModeDefinition;
-		modeConfig: ModeConfigDefaults;
 		ctx: AgentCtx;
 		options?: RunnerOptions;
 	}) {
 		this.conversationId = params.request.conversationId;
 		this.mode = params.mode;
-		this.modeConfig = params.modeConfig;
 		this.model = params.request.model;
 		this.runningDir = params.request.runningDir || process.cwd();
 		this.ctx = params.ctx;
@@ -279,12 +276,11 @@ export class AgentRunner {
 	// ---------- 实例管理 ----------
 
 	private limits() {
-		const defaults = this.mode.defaultSettings.limits ?? {};
-		const overrides = this.modeConfig.limits ?? {};
+		const limits = this.mode.limits ?? {};
 		return {
-			totalRounds: overrides.totalRounds ?? defaults.totalRounds ?? 200,
-			agentInstanceRounds: overrides.agentInstanceRounds ?? defaults.agentInstanceRounds ?? 50,
-			warnAtRemaining: overrides.warnAtRemaining ?? defaults.warnAtRemaining ?? 3,
+			totalRounds: limits.totalRounds ?? 200,
+			agentInstanceRounds: limits.agentInstanceRounds ?? 50,
+			warnAtRemaining: limits.warnAtRemaining ?? 3,
 		};
 	}
 
@@ -401,7 +397,7 @@ export class AgentRunner {
 			}
 
 			const def = this.defOf(instance);
-			const tools = getToolsForAgentInstance(instance, def, this.mode, this.modeConfig);
+			const tools = getToolsForAgentInstance(instance, def, this.mode);
 			const systemPrompt = this.buildSystemPrompt(instance, tools);
 
 			// 最终 prompt 为空 → 不下发 system message（「空」模式的准确落地方式）
@@ -1056,9 +1052,8 @@ export class AgentRunner {
 	/** 反思轮：额外一次 LLM 请求，输入 = 该实例的初始 system 提示词 + 本次总结 */
 	private async reflect(instance: AgentInstance, summary: string): Promise<string> {
 		const def = this.defOf(instance);
-		const append = this.modeConfig.reflectionPromptAppend || def.reflectionPromptAppend || '';
-		const fixed = loadReflectionPrompt(this.mode.reflectionPromptFile);
-		const prompt = `${fixed}\n\n${append}`.trim();
+		// 反思口径按 agent 级 > 模式级 > 内置默认 解析（见 plugins/loader.resolveReflectionPrompt）
+		const prompt = resolveReflectionPrompt(this.mode, def).text;
 
 		const initialSystem = instance.messages.find((m) => m.role === 'system')?.content ?? '';
 		const result = await callLlm(
@@ -1220,7 +1215,7 @@ export class AgentRunner {
 			agentInstance: instance,
 			def,
 			mode: this.mode,
-			modeConfig: this.modeConfig,
+			basePrompt: settings.basePrompt ?? DEFAULT_BASE_PROMPT,
 			runningDir: this.runningDir,
 			tools: tools.map((t) => ({ name: t.name, description: t.description })),
 			parentPrompt: instance.task,
@@ -1315,9 +1310,6 @@ export function createRunner(request: AgentRunRequest, options: RunnerOptions = 
 		return { error: `模式不存在: ${request.modeId}。可用模式：${available}` };
 	}
 
-	const overrides = (settings.modeConfigs ?? {})[request.modeId] as Partial<ModeConfigDefaults> | undefined;
-	const modeConfig = resolveModeConfig(mode, snapshot(overrides));
-
 	const conv = conversations[request.conversationId];
 	if (!conv) return { error: `会话不存在: ${request.conversationId}` };
 	conv.modeId = mode.id;
@@ -1333,7 +1325,7 @@ export function createRunner(request: AgentRunRequest, options: RunnerOptions = 
 	ctx.modeId = mode.id;
 
 	return {
-		runner: new AgentRunner({ request, mode, modeConfig, ctx, options }),
+		runner: new AgentRunner({ request, mode, ctx, options }),
 	};
 }
 

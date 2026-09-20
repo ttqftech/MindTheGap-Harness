@@ -17,21 +17,26 @@ import type {
 	AgentRunRequest,
 	AgentStreamEvent,
 	McpServerConfig,
-	ModeConfigDefaults,
+	ModeDefinition,
 	ModeSummary,
 } from '../shared/agent';
 import { createRunner, ensurePluginsLoaded, type AgentRunner } from './agent/runner';
+import { DEFAULT_BASE_PROMPT } from './agent/defaultPrompts';
 import { getBuiltinToolNames } from './agent/tools';
 import { setUsageEmitter } from './llm/model';
 import {
 	clearRequests, readRequestStats, readRequests, setRequestLogOptions,
 } from './llm/requestLog';
-import { getLoadErrors, listModes, listPlugins, loadAllPlugins, resolveModeConfig } from './plugins/loader';
+import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
 import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, snapshot } from './storage';
+import type { ServiceHealth } from '../shared/buildInfo';
 import { logMsg } from './utils';
 
 export const HTTP_PORT = 18999;
+
+/** 本服务启动时间（ISO UTC）：health 里用来区分「刚起的进程」和「跑了两天的旧进程」 */
+const SERVICE_STARTED_AT = new Date().toISOString();
 
 const sseClients = new Map<string, Set<ServerResponse>>();
 
@@ -40,6 +45,22 @@ const activeRunners = new Map<string, AgentRunner>();
 
 /** 上次插件加载结果里「被用户插件覆盖」的 mode id */
 let overriddenModeIds: string[] = [];
+
+/** electrobun 发布通道，由 startHttpServer 的调用方注入（本文件不引 electrobun，便于独立运行） */
+let serviceChannel = 'unknown';
+
+/** 组装 /api/health 的返回体：构建信息 + 运行时信息 */
+function healthInfo(): ServiceHealth {
+	return {
+		ok: true,
+		service: 'mindthegap-agent',
+		port: HTTP_PORT,
+		pid: process.pid,
+		channel: serviceChannel,
+		startedAt: SERVICE_STARTED_AT,
+		build: buildInfo,
+	};
+}
 
 function setCors(res: ServerResponse) {
 	res.setHeader('Access-Control-Allow-Origin', '*');
@@ -93,29 +114,34 @@ function reloadPlugins(): { plugins: number; modes: string[]; errors: unknown[];
 	};
 }
 
-/** 聚合所有插件 → ModeSummary[]（含当前生效配置） */
+/** 模式定义 → 对外摘要（含 mode.json 源码，设置页的编辑器直接改它） */
+function toModeSummary(mode: ModeDefinition): ModeSummary {
+	return {
+		id: mode.id,
+		name: mode.name,
+		description: mode.description,
+		pluginId: mode.pluginId,
+		pluginName: mode.pluginName,
+		rootAgent: mode.rootAgent,
+		agents: Object.values(mode.agents).map((a) => ({
+			id: a.id,
+			name: a.name,
+			delegatable: a.delegatable ?? [],
+		})),
+		maxDepth: mode.maxDepth,
+		ui: mode.ui,
+		// 模式配置就是 mode.json 顶层的这几个字段，不再有 settings 覆盖层
+		limits: mode.limits,
+		modeJson: mode.modeJsonText,
+		modeJsonPath: mode.modeJsonPath,
+		reflectionPromptSource: mode.reflectionPromptPath ?? '(内置默认)',
+		overridden: overriddenModeIds.includes(mode.id),
+	};
+}
+
+/** 聚合所有插件 → ModeSummary[] */
 function buildModeSummaries(): ModeSummary[] {
-	return listModes().map((mode) => {
-		const overrides = (settings.modeConfigs ?? {})[mode.id] as Partial<ModeConfigDefaults> | undefined;
-		return {
-			id: mode.id,
-			name: mode.name,
-			description: mode.description,
-			pluginId: mode.pluginId,
-			pluginName: mode.pluginName,
-			rootAgent: mode.rootAgent,
-			agents: Object.values(mode.agents).map((a) => ({
-				id: a.id,
-				name: a.name,
-				delegatable: a.delegatable ?? [],
-			})),
-			maxDepth: mode.maxDepth,
-			ui: mode.ui,
-			config: resolveModeConfig(mode, snapshot(overrides)),
-			settingsSchema: mode.settingsSchema,
-			overridden: overriddenModeIds.includes(mode.id),
-		};
-	});
+	return listModes().map((mode) => toModeSummary(mode));
 }
 
 // #endregion
@@ -195,7 +221,13 @@ function setTaskList(conversationId: string, taskList: string): { ok: boolean; e
 
 // #endregion
 
-export function startHttpServer() {
+/**
+ * 启动 Agent HTTP 服务。
+ * @param options.channel electrobun 发布通道（dev / canary / stable），仅用于 health 自报，默认 'unknown'
+ */
+export function startHttpServer(options: { channel?: string } = {}) {
+	serviceChannel = options.channel ?? 'unknown';
+
 	const server = createServer(async (req, res) => {
 		setCors(res);
 
@@ -209,9 +241,10 @@ export function startHttpServer() {
 		const path = url.pathname;
 
 		try {
-			// 健康检查
+			// 健康检查 —— 返回构建信息 + 运行时信息，而不是干巴巴一个 ok：
+			// 端口被旧进程占着时，旧进程同样会回 ok，只有 gitCommit / buildTime / pid 能拆穿它
 			if (req.method === 'GET' && path === '/api/health') {
-				sendJson(res, 200, { ok: true, service: 'mindthegap-agent', port: HTTP_PORT });
+				sendJson(res, 200, healthInfo());
 				return;
 			}
 
@@ -241,12 +274,30 @@ export function startHttpServer() {
 					sendJson(res, 404, { ok: false, error: `模式不存在: ${id}` });
 					return;
 				}
-				const overrides = (settings.modeConfigs ?? {})[mode.id] as Partial<ModeConfigDefaults> | undefined;
+				// 整份返回（含 mode.json 源码），设置页据此渲染源码编辑器
 				sendJson(res, 200, {
 					...mode,
-					config: resolveModeConfig(mode, snapshot(overrides)),
-					overridden: overriddenModeIds.includes(mode.id),
+					...toModeSummary(mode),
 				});
+				return;
+			}
+
+			// 保存 mode.json（设置页源码编辑器）—— 只有校验通过才落盘
+			if (req.method === 'PUT' && path.startsWith('/api/modes/')) {
+				const id = decodeURIComponent(path.slice('/api/modes/'.length));
+				const body = await readBody(req);
+				const { json } = JSON.parse(body || '{}') as { json?: string };
+				if (typeof json !== 'string') {
+					sendJson(res, 400, { ok: false, error: '请求体需要 { json: "<mode.json 的文本内容>" }' });
+					return;
+				}
+				const result = saveModeJson(id, json);
+				if (!result.ok) {
+					sendJson(res, 400, { ok: false, error: result.error });
+					return;
+				}
+				logMsg(`[HttpServer] 已保存 mode.json：${id}`);
+				sendJson(res, 200, { ok: true, mode: result.mode ? toModeSummary(result.mode) : null });
 				return;
 			}
 
@@ -455,15 +506,33 @@ export function startHttpServer() {
 				return;
 			}
 
-			// 模式配置覆盖（唯一配置入口，需求 11）
-			if (req.method === 'GET' && path === '/api/settings/mode-configs') {
-				sendJson(res, 200, settings.modeConfigs ?? {});
+			// 模式配置覆盖层已下线：mode.json 是模式配置的唯一来源，改配置直接 PUT /api/modes/:id
+			if (path === '/api/settings/mode-configs') {
+				sendJson(res, 410, {
+					ok: false,
+					error: 'mode-configs 已下线：模式配置就是插件目录里的 mode.json，请用 PUT /api/modes/:id 保存它',
+				});
 				return;
 			}
 
-			if (req.method === 'PUT' && path === '/api/settings/mode-configs') {
+			// 设置 — 基座提示词（system prompt 第 1 段）
+			if (req.method === 'GET' && path === '/api/settings/base-prompt') {
+				// 一并给出代码里硬编码的默认值，前端「恢复默认」不需要自己再抄一份
+				sendJson(res, 200, {
+					basePrompt: settings.basePrompt ?? DEFAULT_BASE_PROMPT,
+					defaultBasePrompt: DEFAULT_BASE_PROMPT,
+				});
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/base-prompt') {
 				const body = await readBody(req);
-				settings.modeConfigs = JSON.parse(body || '{}');
+				const { basePrompt } = JSON.parse(body || '{}') as { basePrompt?: string };
+				if (typeof basePrompt !== 'string') {
+					sendJson(res, 400, { ok: false, error: '请求体需要 { basePrompt: "<markdown 文本>" }' });
+					return;
+				}
+				settings.basePrompt = basePrompt;
 				sendJson(res, 200, { ok: true });
 				return;
 			}

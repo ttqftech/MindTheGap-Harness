@@ -56,25 +56,26 @@ export interface AgentDefinition {
 	taskListInject: boolean;
 	/** 反思轮数初始值，默认 0 = 不反思（见设计 §7.9） */
 	reflectionCount?: number;
-	/** 追加到「反思问题构造器」提示词的自定义内容 */
-	reflectionPromptAppend?: string;
+	/**
+	 * Agent 级反思提示词文件名（相对本 agent 目录，默认 `reflection.md`）。
+	 * 该文件存在时，本 Agent 的反思轮**整份替换**模式级的反思提示词，不做拼接。
+	 */
+	reflectionPromptFile?: string;
+	/** 由加载器读入的 Agent 级反思提示词内容（没有文件时为空串） */
+	reflectionPrompt?: string;
 }
 
-/** <modeId>/mode.json 里声明、可被 settings.modeConfigs 覆盖的默认配置 */
-export interface ModeConfigDefaults {
-	limits?: {
-		totalRounds?: number;		// 一次 run 的总循环上限，默认 200
-		agentInstanceRounds?: number;	// 单实例循环上限，默认 50
-		warnAtRemaining?: number;	// 剩余多少次时开始注入告警提示词，默认 3
-	};
-	/** 空模式：是否把 MCP 放入（默认 false） */
-	includeMcp?: boolean;
-	/** 追加到反思问题构造器的提示词（覆盖 agent 级 reflectionPromptAppend） */
-	reflectionPromptAppend?: string;
-	[key: string]: unknown;
+/**
+ * 循环预算 —— mode.json 顶层 `limits`。
+ * 三个字段都可不写，兜底值（200 / 50 / 3）在 runner.limits() 里。
+ */
+export interface ModeLimits {
+	totalRounds?: number;			// 一次 run 的总循环上限
+	agentInstanceRounds?: number;	// 单实例循环上限
+	warnAtRemaining?: number;		// 剩余多少次时开始注入告警提示词
 }
 
-/** <modeId>/mode.json */
+/** <modeId>/mode.json —— 模式配置的唯一来源（没有 settings 覆盖层，设置页直接编辑这个文件） */
 export interface ModeDefinition {
 	id: string;				// 'code' | 'empty'
 	name: string;				// '编码' | '空'
@@ -83,29 +84,31 @@ export interface ModeDefinition {
 	agents: Record<string, AgentDefinition>;
 	/** 最大嵌套深度（根实例 depth = 0）。达到后 delegate 工具不再展示给模型 */
 	maxDepth: number;
-	/** 是否注入 prompts/_base.md 基座（'空'模式设 false，得到真正的空提示词） */
+	/** 是否注入基座提示词（settings.basePrompt，'空'模式设 false 得到真正的空提示词） */
 	injectBasePrompt: boolean;
 	/** 任务清单：功能开关 + 是否可写。提示词注入由 agent 级 taskListInject 决定 */
 	taskList?: { enabled: boolean; writable: boolean };
 	/** 该模式默认的 MCP 策略（可被 agent 级 ability.mcp 覆盖） */
 	mcp?: 'none' | 'all' | string[];
-	/**
-	 * 反思问题构造器的提示词文件（相对 prompts/ 目录）。
-	 * 缺省用 `_reflection.md`（严格审阅者口径）；轻量模式可以指向自己的宽松版本。
-	 */
-	reflectionPromptFile?: string;
-	/** 循环预算默认值（可被 settings.modeConfigs[modeId].limits 覆盖） */
-	defaultSettings: ModeConfigDefaults;
-	/** 该模式对外暴露的可配置项（设置页 JSON 编辑器据此渲染说明） */
-	settingsSchema?: Record<string, unknown>;
+	/** 循环预算（缺省时用 runner 里的默认值） */
+	limits?: ModeLimits;
 	ui?: { icon?: string; accent?: string };
+	/**
+	 * 模式级反思提示词（`<modeId>/reflection.md` → 内置默认 逐级回退，
+	 * agent 级 reflection.md 存在时整份替换它）。下面两个字段由加载器填充。
+	 */
+	reflectionPrompt?: string;
+	reflectionPromptPath?: string;
+	/** mode.json 的源码文本与绝对路径（设置页直接编辑这份 JSON） */
+	modeJsonText?: string;
+	modeJsonPath?: string;
 	/** ↓ 由加载器填充 */
 	pluginId: string;
 	pluginName: string;
 	pluginDir: string;
 }
 
-/** 对外聚合（GET /api/modes 返回，含当前生效配置） */
+/** 对外聚合（GET /api/modes 返回） */
 export interface ModeSummary {
 	id: string;
 	name: string;
@@ -116,9 +119,13 @@ export interface ModeSummary {
 	agents: { id: string; name: string; delegatable: string[] }[];
 	maxDepth: number;
 	ui?: ModeDefinition['ui'];
-	/** 当前生效配置（defaultSettings ⊕ settings.modeConfigs[id] 深合并） */
-	config: ModeConfigDefaults;
-	settingsSchema?: Record<string, unknown>;
+	/** mode.json 顶层字段（就是生效配置，没有覆盖层） */
+	limits?: ModeLimits;
+	/** mode.json 源码文本 / 路径 —— 设置页的编辑器直接编辑它 */
+	modeJson?: string;
+	modeJsonPath?: string;
+	/** 反思提示词来源（绝对路径；内置默认时为 '(内置默认)'），供设置页只读展示 */
+	reflectionPromptSource?: string;
 	/** 是否被用户插件覆盖了同名内置模式 */
 	overridden?: boolean;
 }
@@ -594,8 +601,11 @@ export interface ServiceSettings {
 	currentEconomyModel: { providerId: string; modelId: string } | null;
 	/** 当前模式 id（取代 v1 的 currentAgentName） */
 	currentModeId: string;
-	/** 各模式的配置覆盖（defaultSettings ⊕ 它 = 生效配置） */
-	modeConfigs: Record<string, ModeConfigDefaults>;
+	/**
+	 * 基座提示词（system prompt 第 1 段）。所有模式共享，由设置页的「提示词」面板编辑。
+	 * 首次加载时若 settings.json 里没有这个字段，代码会把硬编码的默认值写进去并落盘。
+	 */
+	basePrompt: string;
 	folders: Folder[];
 	mcpServers: McpServerConfig[];
 	debug: DebugSettings;

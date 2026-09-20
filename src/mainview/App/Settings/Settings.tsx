@@ -1,6 +1,7 @@
 /* ==========================================================================
-   设置面板 — 五个 Tab：通用 / 模型 / 用量 / 插件·模式 / MCP
-   （v2：原「模式配置」Tab 换成「插件 / 模式」，成为模式配置的唯一入口）
+   设置面板 — 六个 Tab：通用 / 模型 / 提示词 / 用量 / 插件·模式 / MCP
+   （v2：原「模式配置」Tab 换成「插件 / 模式」，模式配置就是插件目录里的 mode.json，
+     面板直接编辑该文件的源码；基座提示词独立成「提示词」Tab，存后端 settings.basePrompt）
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
@@ -12,10 +13,27 @@ import { setTheme, getCurrentThemeMode } from '@mainview/theme/theme';
 import { z } from 'zod';
 import type { ModelProvider } from '@mainview/store';
 import type {
-	ModelProviderModel, McpServerConfig, McpToolInfo, ModeConfigDefaults, LlmRequestRecord, AgentDefinition,
+	ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition,
 } from '@shared/agent';
 import { confirmMsgbox, alertMsgbox } from '@mainview/ffboxBridge';
-import { testMcpServer, getMode, getRequests, clearRequests } from '@mainview/agentBridge';
+import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/agentBridge';
+
+/** ISO 8601（UTC）→ 本地时间；构建信息里的时间统一存 UTC，只在展示时转换 */
+function formatTime(iso: string): string {
+	if (!iso) return '—';
+	const d = new Date(iso);
+	return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** 构建信息的一行「键 → 值」 */
+function InfoRow(props: { label: string; value: string }) {
+	return (
+		<div class={styles['info-row']}>
+			<span class={styles['info-key']}>{props.label}</span>
+			<span class={`${styles['info-value']} ${styles.mono}`}>{props.value}</span>
+		</div>
+	);
+}
 
 /** 把 [{value,label}] 转成 FFBox-UI 的菜单项数组 */
 function toMenuItems(options: readonly { value: string; label: string }[]): MenuItem[] {
@@ -76,6 +94,39 @@ function GeneralTab() {
 					prop:readonly={true}
 					prop:disabled={true}
 				/>
+			</div>
+
+			{/* 构建信息：前端是打包时注入的常量，后端是 Agent Service 自报的（GET /api/health）。
+			    两边不一致 = 前端/后端没一起重编；后端显示旧提交 = 18999 端口上还跑着旧进程。 */}
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>构建信息</div>
+				<div class={styles['setting-group-desc']}>
+					提交号带 * 表示构建时工作区有未提交改动
+				</div>
+				<div class={styles['info-list']}>
+					<InfoRow
+						label="前端"
+						value={`${buildInfo.gitCommit} · ${buildInfo.isDev ? '开发' : '生产'} · ${formatTime(buildInfo.buildTime)}`}
+					/>
+					<Show
+						when={state.serviceHealth}
+						fallback={<InfoRow label="后端" value="未连接（Agent Service 不可达）" />}
+					>
+						<InfoRow
+							label="后端"
+							value={`${state.serviceHealth?.build.gitCommit} · ${state.serviceHealth?.build.isDev ? '开发' : '生产'} · ${formatTime(state.serviceHealth?.build.buildTime ?? '')}`}
+						/>
+						<InfoRow label="通道" value={state.serviceHealth?.channel ?? 'unknown'} />
+						<InfoRow label="进程" value={`pid ${state.serviceHealth?.pid} · 端口 ${state.serviceHealth?.port}`} />
+						<InfoRow label="服务启动" value={formatTime(state.serviceHealth?.startedAt ?? '')} />
+					</Show>
+					<button
+						class={styles['btn-secondary']}
+						onclick={() => void actions.refreshServiceHealth()}
+					>
+						刷新
+					</button>
+				</div>
 			</div>
 		</div>
 	);
@@ -665,50 +716,114 @@ function DashboardItem(props: {
 /* ---------- 插件 / 模式 Tab ----------
    这是模式配置的**唯一入口**（需求 11）：
    - 插件列表（内置 / 用户、被覆盖标记、重新加载）
-   - 每个模式的配置 JSON 编辑器（limits / includeMcp / reflectionPromptAppend）
+   - 选中模式的 **mode.json 源码编辑器**（直接改插件目录里的那个文件，合法才允许保存）
    - 只读展示该模式的 Agent（名字 / 工具白名单 / 可委托目标 / 反思轮数）
    - 只读展示当前会话的 LLM 请求日志（§8.7）
    -------------------------------------------------------------------------- */
 
-/** 当前模式生效配置的编辑器 */
-function ModeConfigEditor(props: { modeId: string }) {
-	const overrides = () => (state.modeConfigs[props.modeId] ?? {});
+/** 模式配置 = 该模式的 mode.json 源码，直接编辑并写回插件目录 */
+function ModeJsonEditor(props: { modeId: string }) {
 	const [jsonText, setJsonText] = createSignal('');
+	const [savedText, setSavedText] = createSignal('');
+	const [jsonPath, setJsonPath] = createSignal('');
+	const [reflectionSource, setReflectionSource] = createSignal('');
+	const [error, setError] = createSignal('');
+	const [saving, setSaving] = createSignal(false);
+
+	const load = async () => {
+		setError('');
+		const detail = await getMode(props.modeId) as {
+			modeJson?: string;
+			modeJsonPath?: string;
+			reflectionPromptSource?: string;
+		} | null;
+		const text = detail?.modeJson ?? '';
+		setJsonText(text);
+		setSavedText(text);
+		setJsonPath(detail?.modeJsonPath ?? '');
+		setReflectionSource(detail?.reflectionPromptSource ?? '');
+	};
 
 	createEffect(() => {
-		setJsonText(JSON.stringify(overrides(), null, 2));
+		props.modeId;
+		void load();
 	});
 
-	const handleSave = () => {
+	/** 本地校验：只在「JSON 能解析成对象」时才允许点保存（后端还会再做一遍语义校验） */
+	const validate = (text: string): string => {
+		if (!text.trim()) return '内容为空';
 		try {
-			const parsed = JSON.parse(jsonText() || '{}') as ModeConfigDefaults;
-			actions.setModeConfig(props.modeId, parsed);
-			void alertMsgbox('已保存', `模式「${props.modeId}」的配置覆盖已更新。`, '好的');
-		} catch {
-			void alertMsgbox('保存失败', 'JSON 格式错误，请检查后重试。');
+			const parsed = JSON.parse(text);
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '顶层必须是一个 JSON 对象';
+		} catch (e) {
+			return `JSON 解析失败：${(e as Error).message}`;
 		}
+		return '';
+	};
+
+	const dirty = () => jsonText() !== savedText();
+
+	const handleSave = async () => {
+		const localError = validate(jsonText());
+		if (localError) {
+			setError(localError);
+			return;
+		}
+		setSaving(true);
+		const result = await saveModeJson(props.modeId, jsonText());
+		setSaving(false);
+		if (!result.ok) {
+			const message = result.error ?? '保存失败';
+			setError(message);
+			void alertMsgbox('保存失败', `${message}\n\n（文件未被修改）`);
+			return;
+		}
+		setError('');
+		setSavedText(jsonText());
+		await actions.refreshModes();
+		void alertMsgbox('已保存', `mode.json 已写入：\n${jsonPath()}`, '好的');
 	};
 
 	return (
 		<div class={styles['setting-group']}>
-			<div class={styles['setting-group-label']}>配置覆盖（JSON）</div>
+			<div class={styles['setting-group-label']}>
+				mode.json（直接编辑插件文件）
+				<span style={{ 'margin-left': '10px' }}>
+					<ffbox-button type="primary" prop:disabled={!!validate(jsonText()) || !dirty() || saving()} onclick={() => void handleSave()}>
+						{saving() ? '保存中…' : '保存'}
+					</ffbox-button>
+					<ffbox-button style={{ 'margin-left': '6px' }} onclick={() => void load()}>放弃修改</ffbox-button>
+				</span>
+			</div>
 			<div class={styles['setting-group-desc']}>
-				这里只写**覆盖值**；生效配置 = 插件 mode.json 的 defaultSettings ⊕ 这里的 JSON。
+				该模式的全部配置就是这一个文件（<code>{jsonPath() || '…'}</code>），保存即写回插件目录并重新加载插件。
 				<br />
-				可用字段：<code>limits.totalRounds</code> / <code>limits.agentInstanceRounds</code> /{' '}
-				<code>limits.warnAtRemaining</code> / <code>includeMcp</code> / <code>reflectionPromptAppend</code>。
+				字段：<code>rootAgent</code>（根 Agent）· <code>maxDepth</code>（最大委托深度）·
+				<code>injectBasePrompt</code>（是否注入基座提示词，见「提示词」面板）·
+				<code>taskList</code>（任务清单开关 / 是否可写）· <code>mcp</code>（<code>none</code> /{' '}
+				<code>all</code> / 服务器 id 数组）·
+				<code>limits.totalRounds</code> / <code>limits.agentInstanceRounds</code> /{' '}
+				<code>limits.warnAtRemaining</code>（循环预算，缺省 200 / 50 / 3）· <code>ui</code>（图标 / 配色）。
 				<br />
-				留 <code>{'{}'}</code> 表示完全使用插件默认值。
+				反思提示词不在这个文件里：读 <code>&lt;模式&gt;/reflection.md</code> →{' '}
+				<code>&lt;Agent&gt;/reflection.md</code>（Agent 级存在即整份替换，都没有时用代码内置默认）。
+				模式级来源：<code>{reflectionSource() || '…'}</code>
 			</div>
 			<textarea
-				class={styles['json-textarea']}
+				class={`${styles['json-textarea']}${error() ? ` ${styles.error}` : ''}`}
+				style={{ 'font-family': 'ui-monospace, Consolas, monospace' }}
 				value={jsonText()}
-				oninput={(e) => setJsonText(e.currentTarget.value)}
-				rows={8}
+				oninput={(e) => {
+					setJsonText(e.currentTarget.value);
+					setError(validate(e.currentTarget.value));
+				}}
+				rows={16}
 			/>
-			<ffbox-button type="primary" style={{ 'margin-top': '8px' }} onclick={handleSave}>
-				保存
-			</ffbox-button>
+			<Show when={error()}>
+				<div style={{ 'font-size': '12px', color: 'var(--error)', 'margin-top': '4px' }}>
+					⚠️ {error()}　（修好之前无法保存）
+				</div>
+			</Show>
 		</div>
 	);
 }
@@ -747,6 +862,11 @@ function AgentsReadonly(props: { modeId: string }) {
 						<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>
 							可委托：{def.delegatable?.length ? def.delegatable.join(', ') : '—'} ｜ 反思轮数：{def.reflectionCount ?? 0} ｜
 							任务清单注入：{def.taskListInject ? '是' : '否'}
+						</div>
+						<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>
+							反思提示词：{def.reflectionPrompt?.trim()
+								? `自带 ${def.reflectionPromptFile ?? 'reflection.md'}（整份替换模式级）`
+								: '跟随模式级 / 内置默认'}
 						</div>
 					</div>
 				)}
@@ -901,13 +1021,90 @@ function PluginModeTab() {
 				</div>
 			</div>
 
-			<ModeConfigEditor modeId={selectedModeId()} />
+			<ModeJsonEditor modeId={selectedModeId()} />
 			<AgentsReadonly modeId={selectedModeId()} />
 			<RequestLogReadonly />
 		</div>
 	);
 }
 
+
+/* ---------- 提示词 Tab ----------
+   基座提示词是后端设置的一部分（settings.basePrompt），所有模式共享。
+   它支持四个运行时变量：{{platform}} / {{shell}} / {{time}} / {{runningDir}}。
+   settings.json 里没有这个字段时，后端会把代码里硬编码的默认值写进去。
+   -------------------------------------------------------------------------- */
+
+const BASE_PROMPT_VARS = [
+	{ name: '{{platform}}', desc: '操作系统（Windows / macOS / Linux）' },
+	{ name: '{{shell}}', desc: 'shell 名称（cmd.exe / /bin/sh）' },
+	{ name: '{{time}}', desc: '当前时间（东八区）' },
+	{ name: '{{runningDir}}', desc: '工作目录' },
+];
+
+function PromptTab() {
+	// 本地草稿：只在点「保存」时才写后端，避免每敲一个字就落盘
+	const [draft, setDraft] = createSignal(state.basePrompt);
+	const [saving, setSaving] = createSignal(false);
+
+	// 后端值变化（首次加载 / 别处保存）时同步草稿
+	createEffect(() => setDraft(state.basePrompt));
+
+	const dirty = () => draft() !== state.basePrompt;
+
+	const handleSave = async () => {
+		setSaving(true);
+		const ok = await actions.saveBasePrompt(draft());
+		setSaving(false);
+		if (!ok) {
+			void alertMsgbox('保存失败', '基座提示词未能写入后端设置，请检查 Agent Service 是否在运行。');
+			return;
+		}
+		void alertMsgbox('已保存', '基座提示词已写入 settings.json，下一轮对话生效。', '好的');
+	};
+
+	return (
+		<div>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>基座提示词（system prompt 第 1 段）</div>
+				<div class={styles['setting-group-desc']}>
+					所有模式共享这段提示词；模式在 mode.json 里用 <code>injectBasePrompt: false</code> 可以整个不注入（「空」模式就是这么做的）。
+					<br />
+					支持四个变量，运行时替换：<For each={BASE_PROMPT_VARS}>{(v) => (
+						<>
+							<code>{v.name}</code>（{v.desc}）{' '}
+						</>
+					)}</For>
+				</div>
+				<textarea
+					class={styles['json-textarea']}
+					style={{ 'font-family': 'ui-monospace, Consolas, monospace', 'min-height': '360px' }}
+					value={draft()}
+					oninput={(e) => setDraft(e.currentTarget.value)}
+				/>
+				<div style={{ display: 'flex', gap: '10px', 'margin-top': '10px' }}>
+					<ffbox-button type="primary" prop:disabled={saving() || !dirty()} onclick={() => void handleSave()}>
+						{saving() ? '保存中…' : '保存'}
+					</ffbox-button>
+					<ffbox-button prop:disabled={!dirty()} onclick={() => setDraft(state.basePrompt)}>放弃修改</ffbox-button>
+					<ffbox-button
+						onclick={() => {
+							if (!state.defaultBasePrompt) return;
+							setDraft(state.defaultBasePrompt);
+						}}
+					>
+						恢复代码内置默认
+					</ffbox-button>
+				</div>
+				<Show when={dirty()}>
+					<div style={{ 'font-size': '12px', color: 'var(--fontColorDim)', 'margin-top': '6px' }}>
+						有未保存的修改。
+					</div>
+				</Show>
+			</div>
+		</div>
+	);
+}
 
 /* ---------- MCP Tab ---------- */
 
@@ -1237,11 +1434,12 @@ function McpEditor(props: {
 
 /* ---------- 设置面板主体 ---------- */
 
-type TabId = '通用' | '模型' | '用量' | '插件 / 模式' | 'MCP';
+type TabId = '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 
 const TABS: Array<{ id: TabId; label: string; icon: string }> = [
 	{ id: '通用', label: '通用', icon: '⚙️' },
 	{ id: '模型', label: '模型', icon: '🧠' },
+	{ id: '提示词', label: '提示词', icon: '📝' },
 	{ id: '用量', label: '用量', icon: '📊' },
 	{ id: '插件 / 模式', label: '插件 / 模式', icon: '🧩' },
 	{ id: 'MCP', label: 'MCP', icon: '🔌' },
@@ -1282,6 +1480,7 @@ export default function Settings() {
 
 						{state.ui.activeSettingsTab === "通用" && <GeneralTab />}
 						{state.ui.activeSettingsTab === "模型" && <ModelsTab />}
+						{state.ui.activeSettingsTab === "提示词" && <PromptTab />}
 						{state.ui.activeSettingsTab === "用量" && <UsageTab />}
 						{state.ui.activeSettingsTab === "插件 / 模式" && <PluginModeTab />}
 						{state.ui.activeSettingsTab === "MCP" && <McpTab />}

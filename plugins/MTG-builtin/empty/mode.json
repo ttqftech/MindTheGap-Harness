@@ -7,6 +7,5 @@
 	"injectBasePrompt": false,
 	"taskList": { "enabled": false, "writable": false },
 	"mcp": "none",
-	"defaultSettings": { "includeMcp": false },
 	"ui": { "icon": "⬜", "accent": "gray" }
 }

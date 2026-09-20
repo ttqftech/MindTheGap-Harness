@@ -2,8 +2,12 @@ import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 import { resolve } from "node:path";
 import { electrobunViteAliases } from "../.hutch/devkit/api/config/electrobun-vite";
+import { buildDefine } from "./build-info.mjs";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+	// 构建信息注入：与主进程共用 config/build-info.mjs，两边看到的一致。
+	// vite dev server（serve）算开发构建，vite build 算生产构建。
+	define: buildDefine(command === "serve"),
 	plugins: [solid()],
 	resolve: {
 		alias: [
@@ -28,4 +32,4 @@ export default defineConfig({
 		port: 5173,
 		strictPort: true,
 	},
-});
+}));

@@ -6,7 +6,8 @@
    所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
    ========================================================================== */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, ModeSummary, ModeConfigDefaults, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord } from '@shared/agent';
+import type { ServiceHealth } from '@shared/buildInfo';
 
 const HTTP_PORT = 18999;
 const HTTP_BASE = `http://localhost:${HTTP_PORT}`;
@@ -22,15 +23,20 @@ async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 /* ---------- 健康检查 ---------- */
 
-export async function health(): Promise<boolean> {
+/**
+ * 探活并取回服务自报的构建信息。
+ * 服务不可达返回 null（而不是吞掉细节的 false），调用方据此区分「后端没起来」与「起来了但版本不对」。
+ */
+export async function health(): Promise<ServiceHealth | null> {
 	try {
 		const ctrl = new AbortController();
 		const timer = setTimeout(() => ctrl.abort(), 1500);
 		const resp = await fetch(`${HTTP_BASE}/api/health`, { signal: ctrl.signal });
 		clearTimeout(timer);
-		return resp.ok;
+		if (!resp.ok) return null;
+		return (await resp.json()) as ServiceHealth;
 	} catch {
-		return false;
+		return null;
 	}
 }
 
@@ -210,7 +216,7 @@ export async function setCurrentModel(params: { standard?: ServiceSettings['curr
 
 /* ---------- 设置 — 模式（取代 v1 的 Agent 配置） ---------- */
 
-/** 聚合所有插件 → 模式列表（含当前生效配置） */
+/** 聚合所有插件 → 模式列表（含各自的 mode.json 源码） */
 export async function getModes(): Promise<ModeSummary[]> {
 	try {
 		return await httpFetch<ModeSummary[]>('/api/modes');
@@ -227,20 +233,38 @@ export async function getMode(id: string): Promise<Record<string, unknown> | nul
 	}
 }
 
-export async function getModeConfigs(): Promise<Record<string, ModeConfigDefaults>> {
+/**
+ * 保存某个模式的 mode.json（设置页源码编辑器）。
+ * 成功时才写入磁盘；校验不过后端会返回 error（并且不会留下半个坏文件）。
+ */
+export async function saveModeJson(id: string, json: string): Promise<{ ok: boolean; error?: string }> {
 	try {
-		return await httpFetch<Record<string, ModeConfigDefaults>>('/api/settings/mode-configs');
-	} catch {
-		return {};
+		return await httpFetch(`/api/modes/${encodeURIComponent(id)}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ json }),
+		});
+	} catch (e: any) {
+		return { ok: false, error: e?.message };
 	}
 }
 
-export async function setModeConfigs(configs: Record<string, ModeConfigDefaults>): Promise<boolean> {
+/** 基座提示词（system prompt 第 1 段）+ 代码里硬编码的默认值（供「恢复默认」用） */
+export async function getBasePrompt(): Promise<{ basePrompt: string; defaultBasePrompt: string }> {
 	try {
-		await httpFetch('/api/settings/mode-configs', {
+		const resp = await httpFetch<{ basePrompt: string; defaultBasePrompt: string }>('/api/settings/base-prompt');
+		return { basePrompt: resp.basePrompt ?? '', defaultBasePrompt: resp.defaultBasePrompt ?? '' };
+	} catch {
+		return { basePrompt: '', defaultBasePrompt: '' };
+	}
+}
+
+export async function setBasePrompt(basePrompt: string): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/base-prompt', {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(configs),
+			body: JSON.stringify({ basePrompt }),
 		});
 		return true;
 	} catch {

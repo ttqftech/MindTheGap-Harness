@@ -298,6 +298,29 @@
     margin-top: 6px;
 }
 
+/* 构建 / 运行信息（通用 Tab）：键值对列表 */
+.info-list {
+    font-size: 12px;
+    line-height: 1.9;
+}
+
+.info-row {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+}
+
+.info-key {
+    flex: 0 0 84px;
+    color: var(--fontColorMuted);
+}
+
+.info-value {
+    flex: 1;
+    min-width: 0;
+    word-break: break-all;
+}
+
 @media (max-width: 768px) {
     .settings-panel {
         flex-direction: column;

@@ -2,20 +2,21 @@
    全局状态管理（Solid.js store）
 
    重构后：
-   - 后端设置（providers, agentConfigs, folders, conversations）→ Agent Service HTTP
+   - 后端设置（providers, basePrompt, folders, conversations）→ Agent Service HTTP
    - 前端设置（themeMode, ui state, usage）→ localStorage
    - 会话列表从后端获取，切换时从后端拉完整数据
    - SSE patch 更新保持前后端尽量同步
-   - AppMode → AgentName, ModeConfig → AgentConfig, modeConfigs → agentConfigs
+   - 模式配置不再进 store：它就是插件目录里的 mode.json，设置页直接编辑该文件
    ========================================================================== */
 
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/localBridge';
 import * as agentBridge from '@mainview/agentBridge';
-import type { AgentCtx, ConversationMeta, Message, MessageBlock, ModelProvider, ModeConfigDefaults, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, Message, MessageBlock, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
+import type { ServiceHealth } from '@shared/buildInfo';
 
 // 转发共享类型（UI 侧统一从 store 引入，避免到处写相对路径）
-export type { Message, MessageBlock, MessageRole, ModelProvider, ModelProviderModel, ModeSummary, ModeConfigDefaults, AgentStreamEvent } from '@shared/agent';
+export type { Message, MessageBlock, MessageRole, ModelProvider, ModelProviderModel, ModeSummary, AgentStreamEvent } from '@shared/agent';
 
 // #region 前端扩展类型
 
@@ -42,7 +43,7 @@ export type UIState = {
 	sidebarWidth: number;
 	sidebarCollapsed: boolean;
 	settingsOpen: boolean;
-	activeSettingsTab: '通用' | '模型' | '用量' | '插件 / 模式' | 'MCP';
+	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 	viewMode: ViewMode;
 };
 
@@ -57,7 +58,12 @@ export type AppState = {
 	currentEconomyModel: { providerId: string; modelId: string } | null;
 	currentModeId: string;
 	modes: ModeSummary[];	// 插件提供的全部模式（聚合自 GET /api/modes）
-	modeConfigs: Record<string, ModeConfigDefaults>;	// 各模式的配置覆盖（生效配置 = 插件 defaultSettings ⊕ 它）
+	/** 基座提示词（system prompt 第 1 段），后端 settings.basePrompt 的镜像 */
+	basePrompt: string;
+	/** 代码里硬编码的默认基座提示词（设置页「恢复默认」用，只读） */
+	defaultBasePrompt: string;
+	/** Agent Service 自报的构建 / 运行信息（GET /api/health）；服务不可达时为 null */
+	serviceHealth: ServiceHealth | null;
 	// 插件加载错误 / 被覆盖标记（设置页展示用）
 	pluginErrors: { level: 'error' | 'warn'; pluginId?: string; modeId?: string; agentId?: string; message: string }[];
 	overriddenModes: string[];
@@ -105,7 +111,9 @@ export const defaultState: AppState = {
 	currentEconomyModel: null,
 	currentModeId: 'code',
 	modes: [],
-	modeConfigs: {},
+	basePrompt: '',
+	defaultBasePrompt: '',
+	serviceHealth: null,
 	pluginErrors: [],
 	overriddenModes: [],
 	usage: {
@@ -176,7 +184,7 @@ async function saveBackendSettings() {
 		economy: state.currentEconomyModel,
 	});
 	await agentBridge.setCurrentMode(state.currentModeId);
-	await agentBridge.setModeConfigs(state.modeConfigs);
+	await agentBridge.setBasePrompt(state.basePrompt);
 	await agentBridge.setFolders(state.folders);
 	await agentBridge.setMcpServers(state.mcpServers);
 }
@@ -184,15 +192,16 @@ async function saveBackendSettings() {
 async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, modeConfigs, currentMode, folders, conversations, mcpServers] = await Promise.all([
+	const [providers, currentModel, modes, currentMode, folders, conversations, mcpServers, basePrompt, serviceHealth] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getModes(),
-		agentBridge.getModeConfigs(),
 		agentBridge.getCurrentMode(),
 		agentBridge.getFolders(),
 		agentBridge.getConversations(),
 		agentBridge.getMcpServers(),
+		agentBridge.getBasePrompt(),
+		agentBridge.health(),
 	]);
 
 	if (providers.length > 0) setState('providers', providers);
@@ -201,7 +210,9 @@ async function loadBackendState(): Promise<void> {
 		if (currentModel.economy) setState('currentEconomyModel', currentModel.economy);
 	}
 	setState('modes', modes);
-	setState('modeConfigs', modeConfigs);
+	if (basePrompt.basePrompt) setState('basePrompt', basePrompt.basePrompt);
+	setState('defaultBasePrompt', basePrompt.defaultBasePrompt);
+	setState('serviceHealth', serviceHealth);
 	// 当前模式以「插件真的提供了这个模式」为准，否则退回第一个可用模式
 	if (currentMode && modes.some((m) => m.id === currentMode)) {
 		setState('currentModeId', currentMode);
@@ -561,10 +572,13 @@ export const actions = {
 		setState('currentModeId', modeId);
 		scheduleSaveBackend();
 	},
-	/** 覆盖某个模式的配置（设置页 JSON 编辑器，唯一配置入口） */
-	setModeConfig(modeId: string, config: ModeConfigDefaults) {
-		setState('modeConfigs', (prev) => ({ ...prev, [modeId]: config }));
-		scheduleSaveBackend();
+	/**
+	 * 基座提示词（设置页「提示词」面板）。
+	 * 立刻落盘，不走 500ms 防抖——用户点完保存可能马上关面板；失败时由调用方弹窗提示。
+	 */
+	async saveBasePrompt(text: string) {
+		setState('basePrompt', text);
+		return agentBridge.setBasePrompt(text);
 	},
 	/** 重新加载插件并刷新模式列表 */
 	async reloadPlugins() {
@@ -582,6 +596,12 @@ export const actions = {
 		setState('pluginErrors', plugins.errors);
 		setState('overriddenModes', plugins.overridden);
 		return modes;
+	},
+	/** 从后端重新取一次构建 / 运行信息（设置页「通用」面板手动刷新用） */
+	async refreshServiceHealth() {
+		const info = await agentBridge.health();
+		setState('serviceHealth', info);
+		return info;
 	},
 	/** 回答 ask_user 提问卡片 */
 	async answerToolCall(conversationId: string, toolCallId: string, result: string) {

@@ -24,6 +24,7 @@ import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, McpServerConfig } from '../shared/agent';
+import { DEFAULT_BASE_PROMPT } from './agent/defaultPrompts';
 
 // #region 路径 & 文件读写
 
@@ -191,9 +192,10 @@ const defaultSettings: ServiceSettings = {
 	providers: [],
 	currentStandardModel: null,
 	currentEconomyModel: null,
-	// v2：模式取代了「子 Agent」作为第一层；modeConfigs 只存「覆盖值」，生效配置 = 插件 defaultSettings ⊕ 它
 	currentModeId: 'code',
-	modeConfigs: {},
+	// 基座提示词是后端设置的一部分（设置页有专门面板编辑它）。
+	// 这里是硬编码默认值的来源：settings.json 里没有这个字段时，加载阶段会把它写进去并落盘。
+	basePrompt: DEFAULT_BASE_PROMPT,
 	folders: [{ id: 'local', name: '本地', isLocal: true }],
 	mcpServers: [builtinSineServer()],
 	debug: {
@@ -201,10 +203,11 @@ const defaultSettings: ServiceSettings = {
 	},
 };
 
-/** v1 遗留字段（只用于一次性迁移，迁移后不再写回） */
+/** 只读的遗留字段（读到即丢弃，不再写回） */
 interface LegacySettings {
-	agentConfigs?: unknown;
-	currentAgentName?: unknown;
+	agentConfigs?: unknown;			// v1：按 Agent 名索引的配置
+	currentAgentName?: unknown;		// v1：当前 Agent 名
+	modeConfigs?: unknown;			// v2 早期的「模式配置覆盖层」，已随 mode.json 展平下线
 }
 
 /**
@@ -236,15 +239,31 @@ async function doLoadSettings(): Promise<void> {
 	}
 
 	// v1 → v2 迁移：agentConfigs / currentAgentName 一律丢弃，落到新的模式字段上（幂等）
+	let needFlush = false;
 	if (raw.currentAgentName !== undefined || raw.agentConfigs !== undefined) {
 		(settingsRaw as unknown as Record<string, unknown>).currentModeId =
 			(settingsRaw as unknown as Record<string, unknown>).currentModeId ?? 'code';
-		(settingsRaw as unknown as Record<string, unknown>).modeConfigs =
-			(settingsRaw as unknown as Record<string, unknown>).modeConfigs ?? {};
-		// 迁移结果立即落盘一次，避免每次启动都走迁移分支
+		needFlush = true;
+		console.log('[Storage] 检测到 v1 设置（agentConfigs / currentAgentName），已丢弃并落到 currentModeId');
+	}
+
+	// 模式配置已改为「mode.json 是唯一来源」，旧的覆盖层读到即丢弃（下次落盘时自然消失）
+	if (raw.modeConfigs !== undefined) {
+		needFlush = true;
+		console.log('[Storage] 检测到已下线的 modeConfigs 覆盖层，已丢弃（模式配置现在只认插件 mode.json）');
+	}
+
+	// 基座提示词：老版本 settings.json 里没有这个字段 → 把代码里硬编码的默认值写进去
+	if (!settingsRaw.basePrompt || !settingsRaw.basePrompt.trim()) {
+		settingsRaw.basePrompt = DEFAULT_BASE_PROMPT;
+		needFlush = true;
+		console.log('[Storage] basePrompt 缺失，已写入硬编码的默认基座提示词');
+	}
+
+	// 迁移结果立即落盘一次，避免每次启动都走迁移分支
+	if (needFlush) {
 		settingsDirty = true;
 		flushSettings();
-		console.log('[Storage] 检测到 v1 设置（agentConfigs / currentAgentName），已迁移为 currentModeId + modeConfigs');
 	}
 
 	settingsLoaded = true;
@@ -285,7 +304,7 @@ export function flushSettings() {
  * 全局设置。像普通对象一样读写即可（先 await loadSettings() 再用）：
  *   settings.providers                    // 读（内存缓存，无 IO）
  *   settings.providers = [...]            // 写（700ms 防抖落盘）
- *   settings.modeConfigs.code = {...}     // 深层写也会触发落盘
+ *   settings.basePrompt = '...'           // 深层/顶层写都会触发落盘
  */
 export const settings: ServiceSettings = deepProxy(settingsRaw, scheduleSettingsSave, new WeakMap());
 
