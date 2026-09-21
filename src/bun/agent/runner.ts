@@ -37,8 +37,7 @@ import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
 import { conversations, ensureConversationDir, settings } from '../storage';
 import { logMsg } from '../utils';
-import { DEFAULT_BASE_PROMPT } from './defaultPrompts';
-import { assembleSystemPrompt } from './prompt';
+import { renderSystemPrompt } from './prompt';
 import {
 	executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools,
 	type AgentTool, type TaskListOp, type ToolContext, type ToolLlmRequest, type ToolLlmResult,
@@ -1211,12 +1210,13 @@ export class AgentRunner {
 		const warn = totalLeft <= limits.warnAtRemaining || agentInstanceLeft <= limits.warnAtRemaining;
 		const exhausted = totalLeft <= 0 || agentInstanceLeft <= 0;
 
-		return assembleSystemPrompt({
+		return renderSystemPrompt({
 			agentInstance: instance,
 			def,
 			mode: this.mode,
-			basePrompt: settings.basePrompt ?? DEFAULT_BASE_PROMPT,
+			basePrompt: settings.basePrompt ?? '',
 			runningDir: this.runningDir,
+			conversationDir: ensureConversationDir(this.conversationId),
 			tools: tools.map((t) => ({ name: t.name, description: t.description })),
 			parentPrompt: instance.task,
 			childAgentInstances: children,

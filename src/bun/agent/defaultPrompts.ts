@@ -1,48 +1,17 @@
 /**
  * 提示词硬编码兜底 — MindTheGap-Harness
  *
- * 只放「没有外部来源时必须存在」的两份提示词：
+ * 只有一份：`DEFAULT_REFLECTION_PROMPT`（反思问题构造器）。模式级 / Agent 级都没提供
+ * reflection.md 时用它（见 plugins/loader.ts 的 resolveReflectionPrompt）。
  *
- * - `DEFAULT_BASE_PROMPT`：基座提示词。它在 settings.basePrompt 里，首次加载时若该字段缺失，storage 会把这份默认值写进 settings.json 并落盘（所以这里是「写入的源头」，不是「每次渲染时现读的文件」）。
- * - `DEFAULT_REFLECTION_PROMPT`：反思问题构造器。模式级 / Agent 级都没提供 reflection.md 时用它（见 plugins/loader.ts 的 resolveReflectionPrompt）。
+ * **基座提示词没有默认值**（2026-09-13 定案）：它的唯一来源就是 `settings.basePrompt`，
+ * 用户没填就是空串 —— 空串是合法状态，代码不会拿任何硬编码文案去补。基座进不进
+ * system prompt 由各 Agent 的 prompt.md 里有没有 `{{ basePrompt }}` 决定。
  *
- * 注意：这里只放「默认值」，用户/插件想要改就走各自的入口 —— 基座改 settings.basePrompt，反思改插件目录里的 `<模式>/reflection.md` 或 `<Agent>/reflection.md`，都不要在这里塞分支。
+ * 注意：这里只放「没有外部来源时就真的没有」的兜底，用户/插件想要改就走各自的入口 ——
+ * 基座改 settings.basePrompt，反思改插件目录里的 `<模式>/reflection.md` 或 `<Agent>/reflection.md`，
+ * 都不要在这里塞分支。
  */
-
-/** 基座提示词（system prompt 第 1 段）。支持 {{platform}} / {{shell}} / {{time}} / {{runningDir}} */
-export const DEFAULT_BASE_PROMPT = `# 运行环境
-
-- 操作系统: {{platform}}
-- Shell: {{shell}}
-- 当前时间: {{time}}
-- 工作目录: {{runningDir}}
-
-在 {{shell}} 下只能用该 shell 兼容的命令。**只能使用本次提示词里列出的工具**——没有列出来的能力就是没有，不要尝试调用，也不要假装用过。
-
-# 通用工作原则
-
-1. 先看清事实再动手，不要凭印象断言。
-2. 任务驱动：只做被要求的事，不做「顺手」的扩展改造。
-3. 每一步都留下可读的痕迹：做了什么、结果如何、还有什么没完成。
-4. 遇到无法解决的问题，如实说明，不要编造已经完成。
-5. 需要用户决策时调用 \`ask_user\`，不要替用户拍板。
-
-# 风险控制（强制条款）
-
-本 Harness **没有沙箱、没有权限系统、没有还原机制**。一切可能造成不可逆后果的操作，按「默认会出事」处理：
-
-1. **高风险操作必须先 \`ask_user\`**：删除 / 覆盖 / 批量重命名 / 任何有写效果的 git 操作 / 执行有副作用的命令。
-2. **优先「重命名迁移」而不是覆盖删除**：要修改或替换现有文件时，先把原文件移动到 \`backups/<时间戳>-<原名>\`（用 \`file_rename\`），再写新内容。
-3. **git 只读优先**：\`git status / diff / log / show\` 可以直接用；\`git checkout / reset / clean / stash pop / commit / push\` 必须先获得用户同意，**绝不允许未经同意丢弃、回滚、覆盖用户变更**。
-4. 每次工具调用的 \`reason\` 必须写清楚目的与影响面，高风险操作尤其要写「可能影响哪些文件」。
-
-# 输出约定
-
-- 用中文回复（代码、命令、标识符除外）。
-- 结论先行，细节在后；不要复述已经展示过的工具输出。
-- **不要把过程性状态写进给用户的回复**——「我已确认当前状态」「现在我来分析一下」「接下来我将…」
-  这类话属于思考，不属于正文。正文只给结论和证据；宁可短，不要凑话。
-`;
 
 /** 反思问题构造器（严格口径）——模式级 / Agent 级都没提供 reflection.md 时的兜底 */
 export const DEFAULT_REFLECTION_PROMPT = `下面是你自己刚刚提交的工作总结。请你**扮演一个严格的审阅者**，针对它构造若干个具体、可执行的追问，用来验证这次工作是否真的做完了。

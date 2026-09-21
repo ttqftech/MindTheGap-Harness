@@ -24,7 +24,6 @@ import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, McpServerConfig } from '../shared/agent';
-import { DEFAULT_BASE_PROMPT } from './agent/defaultPrompts';
 
 // #region 路径 & 文件读写
 
@@ -193,9 +192,9 @@ const defaultSettings: ServiceSettings = {
 	currentStandardModel: null,
 	currentEconomyModel: null,
 	currentModeId: 'code',
-	// 基座提示词是后端设置的一部分（设置页有专门面板编辑它）。
-	// 这里是硬编码默认值的来源：settings.json 里没有这个字段时，加载阶段会把它写进去并落盘。
-	basePrompt: DEFAULT_BASE_PROMPT,
+	// 基座提示词没有默认值：唯一来源是 settings.basePrompt，没填就是空串（空串是合法状态）。
+	// 这里列出来只是为了让缺字段的老 settings.json 补上一个空键，免得读侧到处判 undefined。
+	basePrompt: '',
 	folders: [{ id: 'local', name: '本地', isLocal: true }],
 	mcpServers: [builtinSineServer()],
 	debug: {
@@ -253,12 +252,8 @@ async function doLoadSettings(): Promise<void> {
 		console.log('[Storage] 检测到已下线的 modeConfigs 覆盖层，已丢弃（模式配置现在只认插件 mode.json）');
 	}
 
-	// 基座提示词：老版本 settings.json 里没有这个字段 → 把代码里硬编码的默认值写进去
-	if (!settingsRaw.basePrompt || !settingsRaw.basePrompt.trim()) {
-		settingsRaw.basePrompt = DEFAULT_BASE_PROMPT;
-		needFlush = true;
-		console.log('[Storage] basePrompt 缺失，已写入硬编码的默认基座提示词');
-	}
+	// 基座提示词没有任何「缺失就补默认值」的逻辑：没填就是空串（用户可以在设置页清空），
+	// 空串是合法状态。缺字段时上面那个默认值补齐循环会补一个空串进来。
 
 	// 迁移结果立即落盘一次，避免每次启动都走迁移分支
 	if (needFlush) {

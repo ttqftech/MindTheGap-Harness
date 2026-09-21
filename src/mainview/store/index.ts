@@ -58,10 +58,8 @@ export type AppState = {
 	currentEconomyModel: { providerId: string; modelId: string } | null;
 	currentModeId: string;
 	modes: ModeSummary[];	// 插件提供的全部模式（聚合自 GET /api/modes）
-	/** 基座提示词（system prompt 第 1 段），后端 settings.basePrompt 的镜像 */
+	/** 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌），后端 settings.basePrompt 的镜像。没有默认值，没填就是空串 */
 	basePrompt: string;
-	/** 代码里硬编码的默认基座提示词（设置页「恢复默认」用，只读） */
-	defaultBasePrompt: string;
 	/** Agent Service 自报的构建 / 运行信息（GET /api/health）；服务不可达时为 null */
 	serviceHealth: ServiceHealth | null;
 	// 插件加载错误 / 被覆盖标记（设置页展示用）
@@ -112,7 +110,6 @@ export const defaultState: AppState = {
 	currentModeId: 'code',
 	modes: [],
 	basePrompt: '',
-	defaultBasePrompt: '',
 	serviceHealth: null,
 	pluginErrors: [],
 	overriddenModes: [],
@@ -210,8 +207,8 @@ async function loadBackendState(): Promise<void> {
 		if (currentModel.economy) setState('currentEconomyModel', currentModel.economy);
 	}
 	setState('modes', modes);
-	if (basePrompt.basePrompt) setState('basePrompt', basePrompt.basePrompt);
-	setState('defaultBasePrompt', basePrompt.defaultBasePrompt);
+	// 空串是合法状态（用户可以把基座清空），所以无条件同步
+	setState('basePrompt', basePrompt.basePrompt);
 	setState('serviceHealth', serviceHealth);
 	// 当前模式以「插件真的提供了这个模式」为准，否则退回第一个可用模式
 	if (currentMode && modes.some((m) => m.id === currentMode)) {

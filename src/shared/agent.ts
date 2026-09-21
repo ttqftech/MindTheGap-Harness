@@ -1,23 +1,21 @@
-/* ==========================================================================
-   Agent 层共享类型定义 — MindTheGap-Harness（v2 架构）
+/**
+ * Agent 层共享类型定义 — MindTheGap-Harness（v2 架构）
+ *
+ * 三层：插件 Plugin → 模式 Mode → Agent 定义 AgentDefinition；
+ * 运行时产出一棵 AgentInstance 树。
+ *
+ * 与 v1 的差异（详见 docs/Agent架构-v2设计.md）：
+ * - `AgentName` 字面量联合类型删除，一切 id 都是 string（能力全部外置到数据文件）
+ * - `AgentWorkInfo` → `AgentInstance`（携完整消息历史）
+ * - `workId` → `agentInstanceId`，`ctx.works` → `ctx.agentInstances`
+ * - 新增 `finish` 完成工具、`reflectionCount` 反思、`ask_user` 客户端工具、循环预算
+ * - 新增 §8 LLM 层请求日志类型（LlmRequestRecord / LlmPurpose / LlmTrigger）
+ *
+ * 注意：UI 侧的 `Message` / `MessageBlock`（前端渲染用的投影）保留不变，
+ * 它由 Runner 在跑的过程中同步产出，和 ctx.agentInstances 一起落在同一个 ctx.json 里。
+ */
 
-   三层：插件 Plugin → 模式 Mode → Agent 定义 AgentDefinition；
-   运行时产出一棵 AgentInstance 树。
-
-   与 v1 的差异（详见 docs/Agent架构-v2设计.md）：
-   - `AgentName` 字面量联合类型删除，一切 id 都是 string（能力全部外置到数据文件）
-   - `AgentWorkInfo` → `AgentInstance`（携完整消息历史）
-   - `workId` → `agentInstanceId`，`ctx.works` → `ctx.agentInstances`
-   - 新增 `finish` 完成工具、`reflectionCount` 反思、`ask_user` 客户端工具、循环预算
-   - 新增 §8 LLM 层请求日志类型（LlmRequestRecord / LlmPurpose / LlmTrigger）
-
-   注意：UI 侧的 `Message` / `MessageBlock`（前端渲染用的投影）保留不变，
-   它由 Runner 在跑的过程中同步产出，和 ctx.agentInstances 一起落在同一个 ctx.json 里。
-   ========================================================================== */
-
-/* ==========================================================================
-   1. 插件 / 模式 / Agent 定义（磁盘数据模型）
-   ========================================================================== */
+// #region 1. 插件 / 模式 / Agent 定义（磁盘数据模型）
 
 /** plugins/<pluginId>/plugin.json */
 export interface PluginManifest {
@@ -52,8 +50,6 @@ export interface AgentDefinition {
 	delegatable?: string[];
 	/** 模型槽位 */
 	model?: 'standard' | 'economy';
-	/** 任务清单在提示词层面是否注入（不影响工具层面是否可用） */
-	taskListInject: boolean;
 	/** 反思轮数初始值，默认 0 = 不反思（见设计 §7.9） */
 	reflectionCount?: number;
 	/**
@@ -84,9 +80,7 @@ export interface ModeDefinition {
 	agents: Record<string, AgentDefinition>;
 	/** 最大嵌套深度（根实例 depth = 0）。达到后 delegate 工具不再展示给模型 */
 	maxDepth: number;
-	/** 是否注入基座提示词（settings.basePrompt，'空'模式设 false 得到真正的空提示词） */
-	injectBasePrompt: boolean;
-	/** 任务清单：功能开关 + 是否可写。提示词注入由 agent 级 taskListInject 决定 */
+	/** 任务清单：功能开关 + 是否可写（工具层面）。提示词里要不要内嵌，由该 Agent 的 prompt.md 自己决定 */
 	taskList?: { enabled: boolean; writable: boolean };
 	/** 该模式默认的 MCP 策略（可被 agent 级 ability.mcp 覆盖） */
 	mcp?: 'none' | 'all' | string[];
@@ -130,9 +124,9 @@ export interface ModeSummary {
 	overridden?: boolean;
 }
 
-/* ==========================================================================
-   2. LLM 消息（前后端 / llm 层共用，AgentInstanceMessage 基于它扩展）
-   ========================================================================== */
+// #endregion
+
+// #region 2. LLM 消息（前后端 / llm 层共用，AgentInstanceMessage 基于它扩展）
 
 export type LlmRole = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -161,9 +155,9 @@ export interface LlmTool {
 	};
 }
 
-/* ==========================================================================
-   3. 运行时实例树
-   ========================================================================== */
+// #endregion
+
+// #region 3. 运行时实例树
 
 export type AgentInstanceStatus =
 	| 'running'			// 正在模型输出 / 正在跑工具 / 即将重入 agentLoop
@@ -238,9 +232,9 @@ export interface AgentCtx {
 	updatedAt: number;
 }
 
-/* ==========================================================================
-   4. 事件与流式
-   ========================================================================== */
+// #endregion
+
+// #region 4. 事件与流式
 
 export type AgentEventType =
 	| 'user_message' | 'assistant_message'
@@ -300,9 +294,9 @@ export type AgentStreamEvent =
 	| { type: 'error'; agentInstanceId?: string; message: string }
 	| { type: 'done'; summary: string };
 
-/* ==========================================================================
-   5. Token 用量 / 模型
-   ========================================================================== */
+// #endregion
+
+// #region 5. Token 用量 / 模型
 
 export interface TokenUsage {
 	input?: number;
@@ -322,9 +316,9 @@ export interface ModelConfig {
 	customParams?: Record<string, unknown>;
 }
 
-/* ==========================================================================
-   6. 请求 / 响应
-   ========================================================================== */
+// #endregion
+
+// #region 6. 请求 / 响应
 
 /** 发送给 Agent 的请求 */
 export interface AgentRunRequest {
@@ -351,9 +345,9 @@ export interface AgentAnswerRequest {
 	result: string;
 }
 
-/* ==========================================================================
-   7. LLM 层请求日志（§8）
-   ========================================================================== */
+// #endregion
+
+// #region 7. LLM 层请求日志（§8）
 
 export type LlmPurpose =
 	| 'agent_loop'		// 实例主循环（含重入）
@@ -426,12 +420,9 @@ export interface RequestLogConfig {
 	dumpPayload: boolean;
 }
 
-/* ==========================================================================
-   8. UI 侧数据模型（会话 & 消息）
+// #endregion
 
-   messages 是「给前端看的投影」，由 Runner 边跑边写；
-   agentCtx 是 agent 层的唯一真相。两者同存于 conversations/<id>/ctx.json。
-   ========================================================================== */
+// #region 8. UI 侧数据模型（会话 & 消息）
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
@@ -525,9 +516,9 @@ export interface Folder {
 	isLocal?: boolean;
 }
 
-/* ==========================================================================
-   9. MCP（Model Context Protocol）
-   ========================================================================== */
+// #endregion
+
+// #region 9. MCP（Model Context Protocol）
 
 /** MCP 传输方式 */
 export type McpTransport = 'stdio' | 'http';
@@ -567,9 +558,9 @@ export interface McpServerStatus {
 	tools: McpToolInfo[];
 }
 
-/* ==========================================================================
-   10. 设置
-   ========================================================================== */
+// #endregion
+
+// #region 10. 设置
 
 /** 模型提供商（完整配置） */
 export interface ModelProvider {
@@ -602,8 +593,10 @@ export interface ServiceSettings {
 	/** 当前模式 id（取代 v1 的 currentAgentName） */
 	currentModeId: string;
 	/**
-	 * 基座提示词（system prompt 第 1 段）。所有模式共享，由设置页的「提示词」面板编辑。
-	 * 首次加载时若 settings.json 里没有这个字段，代码会把硬编码的默认值写进去并落盘。
+	 * 基座提示词。所有模式共享，由设置页的「提示词」面板编辑。
+	 * **不自动拼进 system prompt**：要不要内嵌由各 Agent 的 prompt.md 里有没有 `{{ basePrompt }}` 决定；
+	 * 内嵌时会按当前作用域再渲染一遍（所以这里可以写 `{{platform}}` 之类的变量）。
+	 * **没有默认值**：没填就是空串，空串是合法状态（等于不提供基座），代码不会拿任何硬编码文案去补。
 	 */
 	basePrompt: string;
 	folders: Folder[];
@@ -617,3 +610,5 @@ export interface ServiceAppState {
 	conversationMeta: ConversationMeta[];
 	activeConversationId: string | null;
 }
+
+// #endregion

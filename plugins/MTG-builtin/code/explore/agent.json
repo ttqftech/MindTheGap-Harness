@@ -2,7 +2,6 @@
 	"id": "explore",
 	"name": "探索",
 	"promptFile": "prompt.md",
-	"taskListInject": false,
 	"reflectionCount": 0,
 	"ability": {
 		"mcp": "none",

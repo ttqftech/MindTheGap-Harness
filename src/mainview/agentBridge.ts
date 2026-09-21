@@ -249,13 +249,13 @@ export async function saveModeJson(id: string, json: string): Promise<{ ok: bool
 	}
 }
 
-/** 基座提示词（system prompt 第 1 段）+ 代码里硬编码的默认值（供「恢复默认」用） */
-export async function getBasePrompt(): Promise<{ basePrompt: string; defaultBasePrompt: string }> {
+/** 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌）。没有默认值，没填就是空串 */
+export async function getBasePrompt(): Promise<{ basePrompt: string }> {
 	try {
-		const resp = await httpFetch<{ basePrompt: string; defaultBasePrompt: string }>('/api/settings/base-prompt');
-		return { basePrompt: resp.basePrompt ?? '', defaultBasePrompt: resp.defaultBasePrompt ?? '' };
+		const resp = await httpFetch<{ basePrompt: string }>('/api/settings/base-prompt');
+		return { basePrompt: resp.basePrompt ?? '' };
 	} catch {
-		return { basePrompt: '', defaultBasePrompt: '' };
+		return { basePrompt: '' };
 	}
 }
 

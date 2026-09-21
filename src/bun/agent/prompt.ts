@@ -1,38 +1,167 @@
 /* ==========================================================================
-   提示词拼接器 — MindTheGap-Harness
+   提示词模板渲染器 — MindTheGap-Harness
 
-   代码里唯一允许出现的提示词逻辑是「拼接」，不是「内容」。
-   内容全部来自：settings.basePrompt（基座）、插件目录下的 reflection.md（反思）、
-   各 agent 的 prompt.md（身份）。
+   代码里既没有「提示词内容」，也没有「拼接顺序」：
+   每个 Agent 的 `prompt.md` **本身就是**这份 system prompt 的模板 ——写什么、放在哪、要不要放，全部由模板里的占位符决定。
 
-   拼接顺序见 docs/Agent架构-v2设计.md §5。空段自动跳过；
-   若最终结果为空白串，则不下发 system message（这是「空」模式的准确落地方式）。
+   本文件只做两件事：
+     1. `buildPromptScope(ctx)` —— 把运行时状态整理成变量（唯一的作用域出口）；
+     2. `renderTemplate()`      —— 渲染模板。
 
    模板语法（自写，零依赖）：
-     {{var}}                       变量替换，未定义 → 空串
-     {{#if var}} ... {{/if}}       条件段
-     {{#each list}} ... {{/each}}  循环段（{{.}} 取当前项，对象项可直接取字段）
+
+     {{var}} / {{a.b}} / {{.}}          变量替换，未定义 → 空串
+     {{#if var}} … {{else}} … {{/if}}   条件段
+     {{#each list}} … {{else}} … {{/each}}  循环段（对象项可直接写字段名，{{.}} 是当前项）
+     {{! 单行说明 }}                     注释，不进入输出
+     {{!-- 整块说明 --}}                 块注释，**体内可以写 {{ 花括号 }}**（写模板说明用这个）
+
+   标签内允许空格（`{{ #if x }}` ≡ `{{#if x}}`），段可以任意层级嵌套。
    ========================================================================== */
 
+import { join } from 'node:path';
 import type { AgentDefinition, AgentInstance, ModeDefinition } from '@shared/agent';
 
-// #region 模板引擎（60 行）
+// #region 模板引擎
+
+interface TemplateTextNode {
+	kind: 'text';
+	value: string;
+}
+
+interface TemplateVarNode {
+	kind: 'var';
+	key: string;
+}
+
+interface TemplateSectionNode {
+	kind: 'section';
+	/** if = 条件段；each = 循环段 */
+	mode: 'if' | 'each';
+	key: string;
+	body: TemplateNode[];
+	alt: TemplateNode[] | null;
+}
+
+type TemplateNode = TemplateTextNode | TemplateVarNode | TemplateSectionNode;
+
+/** 解析中的段：inAlt 表示「已经过了 {{else}}」 */
+interface TemplateFrame {
+	node: TemplateSectionNode;
+	inAlt: boolean;
+}
+
+/** 标签体里不允许出现花括号；md 里要写 `{{` 字面量时请用块注释包起来 */
+const TAG_PATTERN = /\{\{([^{}]*)\}\}/g;
+
+const COMMENT_OPEN = '{{!--';
+const COMMENT_CLOSE = '--}}';
+
+/**
+ * 剥掉块注释 `{{!-- … --}}`（在解析标签之前做，所以体内可以随便写花括号）。
+ *
+ * 用「配平扫描」而不是正则：注释里再写一对 `{{!-- … --}}`（写语法示例时很自然）不会提前结束。
+ * 唯一会吃掉正文的写法是**注释里落了孤立的 `--}}`** —— 那之后的内容会被当成注释直到文件结尾。
+ */
+function stripBlockComments(template: string): string {
+	let out = '';
+	let cursor = 0;
+	for (;;) {
+		const start = template.indexOf(COMMENT_OPEN, cursor);
+		if (start < 0) return out + template.slice(cursor);
+		out += template.slice(cursor, start);
+		let depth = 1;
+		let scan = start + COMMENT_OPEN.length;
+		while (depth > 0) {
+			const nextOpen = template.indexOf(COMMENT_OPEN, scan);
+			const nextClose = template.indexOf(COMMENT_CLOSE, scan);
+			if (nextClose < 0) {
+				scan = template.length;			// 没闭合：一直吃到结尾
+				break;
+			}
+			if (nextOpen >= 0 && nextOpen < nextClose) {
+				depth += 1;
+				scan = nextOpen + COMMENT_OPEN.length;
+				continue;
+			}
+			depth -= 1;
+			scan = nextClose + COMMENT_CLOSE.length;
+		}
+		cursor = scan;
+	}
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
 	return v !== null && typeof v === 'object';
 }
 
-/** 支持 `a.b` 逐级取值；`.x` 表示当前循环项 */
+/**
+ * 解析成节点树。
+ * md 写坏了（段没闭合、多余的结束标签）不抛错：未闭合的段按已解析的内容收尾。
+ */
+function parseTemplate(template: string): TemplateNode[] {
+	const root: TemplateNode[] = [];
+	const stack: TemplateFrame[] = [];
+
+	const append = (node: TemplateNode): void => {
+		const frame = stack[stack.length - 1];
+		if (!frame) {
+			root.push(node);
+			return;
+		}
+		if (frame.inAlt) {
+			if (!frame.node.alt) frame.node.alt = [];
+			frame.node.alt.push(node);
+			return;
+		}
+		frame.node.body.push(node);
+	};
+
+	const tagRe = new RegExp(TAG_PATTERN.source, 'g');
+	let cursor = 0;
+	let match: RegExpExecArray | null;
+	while ((match = tagRe.exec(template))) {
+		if (match.index > cursor) append({ kind: 'text', value: template.slice(cursor, match.index) });
+		cursor = match.index + match[0].length;
+
+		const tag = match[1].trim();
+		if (!tag || tag.startsWith('!')) continue;				// 空标签 / 注释
+		if (tag === 'else') {
+			const frame = stack[stack.length - 1];
+			if (frame) frame.inAlt = true;
+			continue;
+		}
+		if (tag.startsWith('/')) {						// 段结束
+			const frame = stack.pop();
+			if (frame) append(frame.node);
+			continue;
+		}
+		if (tag.startsWith('#')) {						// 段开始：{{#if x}} / {{#each x}}
+			const key = tag.replace(/^#(?:each|if)\s*/, '').trim();
+			stack.push({
+				node: { kind: 'section', mode: tag.startsWith('#each') ? 'each' : 'if', key, body: [], alt: null },
+				inAlt: false,
+			});
+			continue;
+		}
+		append({ kind: 'var', key: tag });
+	}
+	if (cursor < template.length) append({ kind: 'text', value: template.slice(cursor) });
+
+	while (stack.length > 0) {
+		const frame = stack.pop() as TemplateFrame;
+		append(frame.node);
+	}
+	return root;
+}
+
+/** 支持 `a.b` 逐级取值；`.` 表示当前循环项 */
 function lookupVar(scope: Record<string, unknown>, key: string): unknown {
 	if (key === '.') return scope['.'];
-	const parts = key.split('.');
 	let cur: unknown = scope;
-	for (const part of parts) {
-		if (isRecord(cur)) {
-			cur = cur[part];
-		} else {
-			return undefined;
-		}
+	for (const part of key.split('.')) {
+		if (!isRecord(cur)) return undefined;
+		cur = cur[part];
 	}
 	return cur;
 }
@@ -43,53 +172,86 @@ function truthy(v: unknown): boolean {
 	return true;
 }
 
-/** 渲染模板。支持 {{var}} / {{#if}} / {{#each}}（不支持嵌套同类型段，模板里也没用到） */
-export function renderTemplate(template: string, scope: Record<string, unknown>): string {
-	let out = template;
-	
-	// 匹配 {{#each key}}...{{/each}} 语法：key 为迭代变量名，body 为循环体模板
-	out = out.replace(
-		/\{\{#each\s+([\w.]+)\s*\}\}([\s\S]*?)\{\{\/each\}\}/g,
-		(_m, key: string, body: string) => {
-			const list = lookupVar(scope, key);	// 从作用域中查找 key 对应的数组
-			if (!Array.isArray(list)) return '';	// 若非数组则跳过，输出空串
-			return list
-				.map((item) =>
-					// 递归渲染循环体：若 item 为对象则展开其属性到作用域（同时用 '.' 指向当前项），否则仅绑定 '.' 到当前项
-					renderTemplate(
-						body,
-						isRecord(item)
-							? { ...scope, '.': item, ...item }
-							: { ...scope, '.': item },
-					),
-				)
-				.join('');
-		},
-	);
+function stringify(v: unknown): string {
+	if (v === undefined || v === null) return '';
+	if (Array.isArray(v)) return v.map(stringify).filter(Boolean).join('\n');
+	if (isRecord(v)) return JSON.stringify(v);
+	return String(v);
+}
 
-	// 匹配 {{#if var}}...{{/if}} 语法：var 为条件变量名，body 为条件体模板
-	out = out.replace(
-		/\{\{#if\s+([\w.]+)\s*\}\}([\s\S]*?)\{\{\/if\}\}/g,
-		(_m, key: string, body: string) => (
-			truthy(lookupVar(scope, key)) ? renderTemplate(body, scope) : ''
-		),
-	);
+/** 循环项的局部作用域：对象项把字段摊平，同时用 `.` 指向整项 */
+function itemScope(scope: Record<string, unknown>, item: unknown): Record<string, unknown> {
+	return isRecord(item) ? { ...scope, '.': item, ...item } : { ...scope, '.': item };
+}
 
-	// 匹配 {{var}} 语法：var 为变量名，输出其值（空串）
-	out = out.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, key: string) => {
-		const v = lookupVar(scope, key);
-		return v === undefined || v === null ? '' : String(v);
-	});
-
+function renderNodes(nodes: TemplateNode[], scope: Record<string, unknown>): string {
+	let out = '';
+	for (const node of nodes) {
+		if (node.kind === 'text') {
+			out += node.value;
+			continue;
+		}
+		if (node.kind === 'var') {
+			out += stringify(lookupVar(scope, node.key));
+			continue;
+		}
+		const value = lookupVar(scope, node.key);
+		if (node.mode === 'if') {
+			if (truthy(value)) out += renderNodes(node.body, scope);
+			else if (node.alt) out += renderNodes(node.alt, scope);
+			continue;
+		}
+		if (Array.isArray(value) && value.length > 0) {
+			for (const item of value) out += renderNodes(node.body, itemScope(scope, item));
+		} else if (node.alt) {
+			out += renderNodes(node.alt, scope);
+		}
+	}
 	return out;
+}
+
+/** 渲染模板（模板解析不缓存：每轮 agentLoop 只有个位数 KB，开销可忽略） */
+export function renderTemplate(template: string, scope: Record<string, unknown>): string {
+	return renderNodes(parseTemplate(stripBlockComments(template)), scope);
 }
 
 // #endregion
 
-// #region 工具的「人话」说明
+// #region 作用域
+
+export interface PromptToolInfo {
+	name: string;
+	description: string;
+}
+
+export interface PromptContext {
+	agentInstance: AgentInstance;
+	def: AgentDefinition;
+	mode: ModeDefinition;
+	/** 基座提示词（settings.basePrompt，由调用方传入；模板里不写 `{{ basePrompt }}` 就不进入 system prompt） */
+	basePrompt: string;
+	runningDir: string;
+	/** 会话目录（workspace / docs / backups 的根）。缺省时对应变量为空串 */
+	conversationDir?: string;
+	/** 该实例实际可见的工具（已按白名单过滤） */
+	tools: PromptToolInfo[];
+	/** 父 Agent 传入的提示词（task + 可能的 followUp） */
+	parentPrompt?: string;
+	/** 该实例的完整子实例名册（有子时才有） */
+	childAgentInstances?: AgentInstance[];
+	/** 尚未完成的子实例 */
+	unfinishedAgentInstances?: AgentInstance[];
+	/** 循环预算剩余 */
+	budget?: { totalLeft: number; agentInstanceLeft: number; warn: boolean; exhausted: boolean };
+	/** 委托是否已达最大深度 */
+	depthExhausted?: boolean;
+	taskList?: string;
+	/** MCP 外部工具说明（按策略过滤后的） */
+	mcpSection?: string;
+}
 
 /**
- * 工具用途标签：拼接器输出的是用途分组说明，不是 JSON Schema 的复制品。
+ * 工具清单里的「人话说明」：模板输出的是一行用途，不是 JSON Schema 的复制品。
  * 未登记的工具（MCP / 动态源）退回自己的 description。
  */
 const TOOL_USAGE: Record<string, string> = {
@@ -114,49 +276,6 @@ const TOOL_USAGE: Record<string, string> = {
 	ask_user: '向用户提问并等待回答（会暂停你的进程，用户回答后继续）',
 };
 
-function toolUsageLine(name: string, description: string): string {
-	const label = TOOL_USAGE[name] ?? description;
-	return `- \`${name}\`：${label}`;
-}
-
-// #endregion
-
-// #region 拼接上下文
-
-export interface PromptToolInfo {
-	name: string;
-	description: string;
-}
-
-export interface PromptContext {
-	agentInstance: AgentInstance;
-	def: AgentDefinition;
-	mode: ModeDefinition;
-	/** 基座提示词（settings.basePrompt，由调用方传入；空串 = 不注入基座） */
-	basePrompt: string;
-	runningDir: string;
-	/** 该实例实际可见的工具（已按白名单过滤） */
-	tools: PromptToolInfo[];
-	/** 父 Agent 传入的提示词（task + 可能的 followUp） */
-	parentPrompt?: string;
-	/** 该实例的完整子实例名册（有子时才有） */
-	childAgentInstances?: AgentInstance[];
-	/** 尚未完成的子实例 */
-	unfinishedAgentInstances?: AgentInstance[];
-	/** 循环预算剩余 */
-	budget?: { totalLeft: number; agentInstanceLeft: number; warn: boolean; exhausted: boolean };
-	/** 委托是否已达最大深度 */
-	depthExhausted?: boolean;
-	taskList?: string;
-	/** MCP 外部工具说明（按策略过滤后的） */
-	mcpSection?: string;
-	/** 已耗尽的强制收尾指令是否要立刻注入（下一轮直接收尾） */
-}
-
-// #endregion
-
-// #region 各段落
-
 function platformLabel(): string {
 	const p = process.platform;
 	if (p === 'win32') return 'Windows';
@@ -176,166 +295,6 @@ function nowLabel(): string {
 	}
 }
 
-function buildTemplateScope(ctx: PromptContext): Record<string, unknown> {
-	return {
-		platform: platformLabel(),
-		shell: shellLabel(),
-		time: nowLabel(),
-		runningDir: ctx.runningDir || '(未指定)',
-	};
-}
-
-/** 第 1 段：基座（含运行环境 / 通用原则 / 风险控制 / 输出约定），内容是 settings.basePrompt */
-function renderBase(ctx: PromptContext): string {
-	if (!ctx.mode.injectBasePrompt) return '';
-	const tpl = ctx.basePrompt ?? '';
-	if (!tpl.trim()) return '';
-	return renderTemplate(tpl, buildTemplateScope(ctx));
-}
-
-/** 第 4 段：委托规则 */
-function renderDelegation(ctx: PromptContext): string {
-	const delegatable = (ctx.def.delegatable ?? []).filter((id) => ctx.mode.agents[id]);
-	if (delegatable.length === 0) return '';
-	const list = delegatable
-		.map((id) => `- \`${id}\`（${ctx.mode.agents[id].name}）`)
-		.join('\n');
-	return `# 你可以委托的 Agent
-
-${list}
-
-委托规则：
-
-- 用 \`delegate\` 工具，参数是 \`tasks: [{ agentId, task }]\`，一次可以提交多条（并行执行）。
-- 委托的 \`task\` 必须**自包含**：子 Agent 看不到用户的原话，也看不到你的思考过程。
-- 并行的子任务必须彼此独立，不要让两个子 Agent 改同一个文件。
-- 委托不会阻塞你：子 Agent 跑完之前你会进入等待，跑完后你被自动唤醒。
-- 当前深度 ${ctx.agentInstance.depth} / 最大深度 ${ctx.mode.maxDepth}。`;
-}
-
-/**
- * 该实例手里有没有 `finish`。
- * 根实例（如 `intent`）按设计不给 `finish`——它走「不再调用工具即结束」的隐式路径；
- * 完成约定必须跟着实际工具集走，否则模型会去找一个不存在的工具。
- */
-function hasFinishTool(ctx: PromptContext): boolean {
-	return ctx.tools.some((t) => t.name === 'finish');
-}
-
-/** 第 5 段：委托已达上限 */
-function renderDepthExhausted(ctx: PromptContext): string {
-	const tail = hasFinishTool(ctx)
-		? '确实做不完的部分，明确写进 `finish` 的总结里报告未完成的内容与原因。'
-		: '确实做不完的部分，直接写进你的正文总结，说明未完成的内容与原因，然后结束本轮。';
-	return `# 委托已达上限
-
-你已经到达最大委托深度，**不能再委托任何子 Agent**。
-
-必须在本实例的能力范围内自行完成本次工作；${tail}`;
-}
-
-/** 第 6 段：完成约定 */
-function renderFinishConvention(ctx: PromptContext): string {
-	if (!hasFinishTool(ctx)) {
-		return `# 完成约定
-
-- 你没有 \`finish\` 工具：干完活（或确认无法继续）时，**把总结直接写在正文里，并且不再调用任何工具** —— 本轮就此结束。
-- 总结里要写：做了什么 / 改动了哪些文件 / 怎么验证的 / 还有什么没完成 / 需要上级决策的事项。
-- 需要用户拍板的事就调用 \`ask_user\` 提问，不要替用户决定。`;
-	}
-	return `# 完成约定
-
-- 干完活（或确认无法继续）时，调用 \`finish\` 工具提交总结，而不是直接把结论写在正文里。
-- 总结里要写：做了什么 / 改动了哪些文件 / 怎么验证的 / 还有什么没完成 / 需要上级决策的事项。
-- 调用 \`finish\` 之后你这一轮就结束了，不会再有新的输入（除非被父 Agent 重新唤醒）。`;
-}
-
-/** 第 7 段：可用工具说明 */
-function renderTools(ctx: PromptContext): string {
-	if (ctx.tools.length === 0) return '';
-	const lines = ctx.tools.map((t) => toolUsageLine(t.name, t.description)).join('\n');
-	return `# 你可以使用的工具
-
-${lines}`;
-}
-
-/** 第 8 段：工具调用理由要求 */
-function renderReasonRequirement(ctx: PromptContext): string {
-	if (ctx.tools.length === 0) return '';
-	if (ctx.def.ability.requireReason === false) return '';
-	return `# 调用理由
-
-每次调用工具都**必须**填 \`reason\` 字段，说明这次调用要做什么。它会展示在界面上给用户看。
-
-- 说明「要做什么 + 为什么」，不要写「执行工具」这种废话。
-- 高风险操作（删除 / 覆盖 / 批量改名 / 有写效果的 git 命令）要在 reason 里写清影响面，并先调用 \`ask_user\` 获得用户同意。`;
-}
-
-/** 第 11 段：子实例名册 */
-function renderChildRoster(ctx: PromptContext): string {
-	const children = ctx.childAgentInstances ?? [];
-	if (children.length === 0) return '';
-	const lines = children
-		.map((c) => `- [${c.agentId}] \`${c.agentInstanceId}\`（${c.agentName}）状态=${statusLabel(c.status)}｜任务：${oneLine(c.task)}`)
-		.join('\n');
-	return `# 你的子 Agent
-
-${lines}`;
-}
-
-/** 第 12 段：尚未完成的子 Agent */
-function renderUnfinished(ctx: PromptContext): string {
-	const list = ctx.unfinishedAgentInstances ?? [];
-	if (list.length === 0) return '';
-	const lines = list
-		.map((c) => `- [${c.agentId}] \`${c.agentInstanceId}\`（${c.agentName}）状态=${statusLabel(c.status)}${c.interruptReason ? `｜原因：${c.interruptReason}` : ''}｜任务：${oneLine(c.task)}`)
-		.join('\n');
-	return `# 尚未完成的子 Agent
-
-${lines}
-
-你可以用 \`resume_pending_child\` 让它接着干（一次只恢复一个：从直接子实例里挑最深的那个未完成实例）。
-已经完成但需要它继续做别的事，用 \`resume_completed_child\` 并附上补充任务。
-**不要对同一个子 Agent 反复 resume**——那会造成恢复风暴。`;
-}
-
-/** 第 13 段：循环预算 */
-function renderBudget(ctx: PromptContext): string {
-	const b = ctx.budget;
-	if (!b) return '';
-	const endNoun = hasFinishTool(ctx) ? '用 `finish` 输出' : '在正文里给出';
-	if (b.exhausted) {
-		return `# 循环预算已耗尽
-
-总预算与本实例预算都已用尽。**立刻停止一切探索**，${endNoun}当前结论、已完成的部分和未完成项（连同原因）。`;
-	}
-	if (!b.warn) {
-		return `# 循环预算
-
-剩余轮数：总预算 ${b.totalLeft}，本实例 ${b.agentInstanceLeft}。`;
-	}
-	return `# 循环预算即将耗尽
-
-剩余轮数：总预算 ${b.totalLeft}，本实例 ${b.agentInstanceLeft}。
-
-请**尽快收敛**：停止扩展性探索，把当前进展整理成可交付的结论，${hasFinishTool(ctx) ? '必要时用 `finish` 交还。' : '然后结束本轮。'}`;
-}
-
-/** 第 10 段：任务清单 */
-function renderTaskList(ctx: PromptContext): string {
-	if (!ctx.def.taskListInject) return '';
-	const list = (ctx.taskList ?? '').trim();
-	if (!list) return '';
-	return `# 任务清单（当前）
-
-${list}`;
-}
-
-/** 第 14 段：后台任务（占位 —— 本版不实现，恒为空，保留段落位置避免以后加功能时改结构） */
-function renderBackgroundTasks(_ctx: PromptContext): string {
-	return '';
-}
-
 function statusLabel(status: AgentInstance['status']): string {
 	switch (status) {
 		case 'running': return '运行中';
@@ -353,60 +312,160 @@ function oneLine(text?: string): string {
 	return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
 }
 
+/** 子实例在模板里的形状（名册 / 未完成清单共用） */
+function childEntry(agentInstance: AgentInstance): Record<string, unknown> {
+	return {
+		agentInstanceId: agentInstance.agentInstanceId,
+		agentId: agentInstance.agentId,
+		agentName: agentInstance.agentName,
+		depth: agentInstance.depth,
+		status: agentInstance.status,
+		statusLabel: statusLabel(agentInstance.status),
+		taskLine: oneLine(agentInstance.task),
+		interruptReason: agentInstance.interruptReason ?? '',
+	};
+}
+
+/** 会话目录下的几个固定子目录（模板里可以直接给 md 用绝对路径） */
+function conversationDirs(conversationDir: string): Record<string, string> {
+	if (!conversationDir) return { conversationDir: '', workspaceDir: '', docsDir: '', backupsDir: '', tmpDir: '' };
+	return {
+		conversationDir,
+		workspaceDir: join(conversationDir, 'workspace'),
+		docsDir: join(conversationDir, 'workspace', 'docs'),
+		backupsDir: join(conversationDir, 'workspace', 'backups'),
+		tmpDir: join(conversationDir, 'workspace', 'tmp'),
+	};
+}
+
+/**
+ * 模板里可见的**全部**变量 —— 这是提示词与运行时之间唯一的接口。
+ * 加变量只改这里，md 里用不用由模板作者决定。
+ *
+ * | 变量 | 说明 |
+ * | --- | --- |
+ * | `agentId` `agentName` `agentInstanceId` | 本实例是谁 |
+ * | `modeId` `modeName` `depth` `maxDepth` | 所处模式与层级 |
+ * | `isRoot` `isSubAgent` `parentAgentInstanceId` | 树上位置（根实例没有父任务） |
+ * | `platform` `shell` `time` `runningDir` | 运行环境 |
+ * | `conversationDir` `workspaceDir` `docsDir` `backupsDir` `tmpDir` | 会话目录（由调用方传入，缺省为空串） |
+ * | `basePrompt` | 基座提示词正文（**模板里不写这个占位符就不会出现在 system prompt 里**） |
+ * | `parentPrompt` `hasParentPrompt` | 父 Agent 下发的任务 |
+ * | `tools` `hasTools` `hasTool` | 工具清单（`hasTool.finish` / `hasTool.delegate` …） |
+ * | `delegatableAgents` `canDelegate` `depthExhausted` | 委托能力 |
+ * | `taskList` `hasTaskList` `taskListEnabled` | 任务清单 |
+ * | `children` `hasChildren` | 子实例名册 |
+ * | `unfinished` `hasUnfinished` | 尚未完成的子实例（含 `interruptReason`） |
+ * | `hasBudget` `budgetTotalLeft` `budgetAgentInstanceLeft` `budgetWarn` `budgetExhausted` | 循环预算 |
+ * | `mcpSection` `hasMcp` | MCP 外部工具说明 |
+ * | `backgroundTasks` `hasBackgroundTasks` | 后台任务（占位，恒空 / 恒 false） |
+ *
+ * `children` / `unfinished` 的每一项：`agentInstanceId` `agentId` `agentName` `depth`
+ * `status` `statusLabel` `taskLine` `interruptReason`。
+ */
+export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
+	const agentInstance = ctx.agentInstance;
+	const tools = ctx.tools.map((t) => ({ name: t.name, description: TOOL_USAGE[t.name] ?? t.description }));
+	const delegatableAgents = (ctx.def.delegatable ?? [])
+		.filter((id) => ctx.mode.agents[id])
+		.map((id) => ({ id, name: ctx.mode.agents[id].name }));
+	const children = (ctx.childAgentInstances ?? []).map(childEntry);
+	const unfinished = (ctx.unfinishedAgentInstances ?? []).map(childEntry);
+	const budget = ctx.budget;
+	const taskList = (ctx.taskList ?? '').trim();
+	const mcpSection = (ctx.mcpSection ?? '').trim();
+	const isSubAgent = !!agentInstance.parentAgentInstanceId;
+	// 根实例的 task 就是用户的原话（由 messages 里的 user 消息承载），不在 system prompt 里重复
+	const parentPrompt = isSubAgent ? (ctx.parentPrompt ?? agentInstance.task ?? '').trim() : '';
+
+	const scope: Record<string, unknown> = {
+		// 身份 / 位置
+		agentId: agentInstance.agentId,
+		agentName: agentInstance.agentName,
+		agentInstanceId: agentInstance.agentInstanceId,
+		modeId: ctx.mode.id,
+		modeName: ctx.mode.name,
+		depth: agentInstance.depth,
+		maxDepth: ctx.mode.maxDepth,
+		isRoot: !isSubAgent,
+		isSubAgent,
+		parentAgentInstanceId: agentInstance.parentAgentInstanceId ?? '',
+
+		// 运行环境
+		platform: platformLabel(),
+		shell: shellLabel(),
+		time: nowLabel(),
+		runningDir: ctx.runningDir || '(未指定)',
+		...conversationDirs(ctx.conversationDir ?? ''),
+
+		// 基座（先占位，最后再渲染，避免自引用）
+		basePrompt: '',
+
+		// 父 Agent 下发的任务
+		parentPrompt,
+		hasParentPrompt: !!parentPrompt,
+
+		// 工具
+		tools,
+		hasTools: tools.length > 0,
+		hasTool: Object.fromEntries(tools.map((t) => [t.name, true])),
+
+		// 委托
+		delegatableAgents,
+		canDelegate: delegatableAgents.length > 0,
+		depthExhausted: !!ctx.depthExhausted,
+
+		// 任务清单
+		taskList,
+		hasTaskList: !!taskList,
+		taskListEnabled: !!ctx.mode.taskList?.enabled,
+
+		// 子实例
+		children,
+		hasChildren: children.length > 0,
+		unfinished,
+		hasUnfinished: unfinished.length > 0,
+
+		// 循环预算
+		hasBudget: !!budget,
+		budgetTotalLeft: budget?.totalLeft ?? 0,
+		budgetAgentInstanceLeft: budget?.agentInstanceLeft ?? 0,
+		budgetWarn: !!budget?.warn,
+		budgetExhausted: !!budget?.exhausted,
+
+		// MCP
+		mcpSection,
+		hasMcp: !!mcpSection,
+
+		// 后台任务（本版不实现，保留变量位置）
+		backgroundTasks: [],
+		hasBackgroundTasks: false,
+	};
+
+	// 基座自己也可以带 {{platform}} / {{time}} 之类的变量：
+	// 用当前作用域再渲染一遍。此刻 scope.basePrompt 还是空串，所以基座里写 {{ basePrompt }}
+	// 不会自引用。要不要把基座放进 system prompt，由 prompt.md 里有没有 {{ basePrompt }} 决定。
+	scope.basePrompt = renderTemplate(ctx.basePrompt ?? '', scope).trim();
+	return scope;
+}
+
 // #endregion
 
 // #region 主入口
 
 /**
- * 拼接某个实例的 system prompt。
- * 返回空串时调用方**不应下发 system message**。
+ * 渲染某个实例的 system prompt：**模板就是该 Agent 的 `prompt.md`**。
+ * 返回空串时调用方**不应下发 system message**（「空」模式的 prompt.md 就是空的）。
+ *
+ * 最后会把连续 3 个以上的换行压成 2 个 —— md 里的 `{{#if}}` / `{{#each}}` 独占一行时
+ * 难免留下多余空行，压一下省 token 也省得作者为了排版去抠标签位置。
  */
-export function assembleSystemPrompt(ctx: PromptContext): string {
-	// 「真正空」的判定：没有基座、没有身份提示词、没有工具、没有委托、不注入清单
-	const trulyEmpty =
-		!ctx.mode.injectBasePrompt &&
-		!ctx.def.prompt.trim() &&
-		ctx.tools.length === 0 &&
-		!ctx.def.taskListInject &&
-		(ctx.def.delegatable ?? []).length === 0;
-	if (trulyEmpty) return '';
-
-	const scope = buildTemplateScope(ctx);
-
-	const sections: string[] = [
-		renderBase(ctx),
-		renderTemplate(ctx.def.prompt.trim(), scope),
-		renderParentTask(ctx),
-		renderDelegation(ctx),
-		ctx.depthExhausted ? renderDepthExhausted(ctx) : '',
-		renderFinishConvention(ctx),
-		renderTools(ctx),
-		renderReasonRequirement(ctx),
-		ctx.mcpSection ?? '',
-		renderTaskList(ctx),
-		renderChildRoster(ctx),
-		renderUnfinished(ctx),
-		renderBudget(ctx),
-		renderBackgroundTasks(ctx),
-	];
-
-	return sections
-		.map((s) => s.trim())
-		.filter(Boolean)
-		.join('\n\n---\n\n');
-}
-
-/** 第 3 段：父 Agent 下发的任务 */
-function renderParentTask(ctx: PromptContext): string {
-	const task = (ctx.parentPrompt ?? ctx.agentInstance.task ?? '').trim();
-	if (!task) return '';
-	if (!ctx.agentInstance.parentAgentInstanceId) {
-		// 根实例：task 就是用户的原话，由 messages 里的 user 消息承载
-		return '';
-	}
-	return `# 来自父 Agent 的任务
-
-${task}`;
+export function renderSystemPrompt(ctx: PromptContext): string {
+	const template = ctx.def.prompt ?? '';
+	if (!template.trim()) return '';
+	return renderTemplate(template, buildPromptScope(ctx))
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
 }
 
 // #endregion

@@ -2,7 +2,6 @@
 	"id": "intent",
 	"name": "意图分析",
 	"promptFile": "prompt.md",
-	"taskListInject": true,
 	"reflectionCount": 1,
 	"delegatable": ["explore", "plan", "engineer", "verify", "review", "websearch"],
 	"model": "standard",

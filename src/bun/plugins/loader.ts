@@ -261,7 +261,6 @@ function loadAgentDefinition(
 		ability,
 		delegatable: raw.delegatable,
 		model: raw.model,
-		taskListInject: raw.taskListInject ?? false,
 		reflectionCount: raw.reflectionCount ?? 0,
 		reflectionPromptFile,
 		reflectionPrompt,
@@ -334,7 +333,6 @@ function loadModeDefinition(
 		rootAgent,
 		agents,
 		maxDepth: raw.maxDepth ?? 0,
-		injectBasePrompt: raw.injectBasePrompt ?? true,
 		taskList: raw.taskList ?? { enabled: false, writable: false },
 		mcp: raw.mcp ?? 'none',
 		// 模式配置就是 mode.json 顶层的这几个字段（没有 settings 覆盖层了）

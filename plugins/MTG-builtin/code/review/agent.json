@@ -2,7 +2,6 @@
 	"id": "review",
 	"name": "代码审查",
 	"promptFile": "prompt.md",
-	"taskListInject": false,
 	"reflectionCount": 1,
 	"ability": {
 		"mcp": "none",

@@ -799,7 +799,6 @@ function ModeJsonEditor(props: { modeId: string }) {
 				该模式的全部配置就是这一个文件（<code>{jsonPath() || '…'}</code>），保存即写回插件目录并重新加载插件。
 				<br />
 				字段：<code>rootAgent</code>（根 Agent）· <code>maxDepth</code>（最大委托深度）·
-				<code>injectBasePrompt</code>（是否注入基座提示词，见「提示词」面板）·
 				<code>taskList</code>（任务清单开关 / 是否可写）· <code>mcp</code>（<code>none</code> /{' '}
 				<code>all</code> / 服务器 id 数组）·
 				<code>limits.totalRounds</code> / <code>limits.agentInstanceRounds</code> /{' '}
@@ -860,8 +859,7 @@ function AgentsReadonly(props: { modeId: string }) {
 							工具：{allowOf(def)}
 						</div>
 						<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>
-							可委托：{def.delegatable?.length ? def.delegatable.join(', ') : '—'} ｜ 反思轮数：{def.reflectionCount ?? 0} ｜
-							任务清单注入：{def.taskListInject ? '是' : '否'}
+							可委托：{def.delegatable?.length ? def.delegatable.join(', ') : '—'} ｜ 反思轮数：{def.reflectionCount ?? 0}
 						</div>
 						<div style={{ color: 'var(--fontColorDim)', 'font-size': '0.85em' }}>
 							反思提示词：{def.reflectionPrompt?.trim()
@@ -1031,8 +1029,9 @@ function PluginModeTab() {
 
 /* ---------- 提示词 Tab ----------
    基座提示词是后端设置的一部分（settings.basePrompt），所有模式共享。
-   它支持四个运行时变量：{{platform}} / {{shell}} / {{time}} / {{runningDir}}。
-   settings.json 里没有这个字段时，后端会把代码里硬编码的默认值写进去。
+   它由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌；被内嵌时按当前作用域再渲染一遍，
+   所以这里可以写 {{platform}} / {{time}} / {{taskList}} 等任意作用域变量。
+   没有默认值：留空就是空串（合法状态），代码不会拿任何内置文案去补。
    -------------------------------------------------------------------------- */
 
 const BASE_PROMPT_VARS = [
@@ -1066,11 +1065,12 @@ function PromptTab() {
 	return (
 		<div>
 			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>基座提示词（system prompt 第 1 段）</div>
+				<div class={styles['setting-group-label']}>基座提示词</div>
 				<div class={styles['setting-group-desc']}>
-					所有模式共享这段提示词；模式在 mode.json 里用 <code>injectBasePrompt: false</code> 可以整个不注入（「空」模式就是这么做的）。
+					所有模式共享这段提示词，但<strong>不会自动拼进 system prompt</strong>：由各 Agent 的 prompt.md 里写不写{' '}
+					<code>{'{{ basePrompt }}'}</code> 决定要不要放、放在哪一段（不写就等于关闭，「空」模式就是这么做的）。
 					<br />
-					支持四个变量，运行时替换：<For each={BASE_PROMPT_VARS}>{(v) => (
+					常用变量（和 prompt.md 共用同一套，其余变量见各 Agent 的 prompt.md 末尾说明）：<For each={BASE_PROMPT_VARS}>{(v) => (
 						<>
 							<code>{v.name}</code>（{v.desc}）{' '}
 						</>
@@ -1087,14 +1087,6 @@ function PromptTab() {
 						{saving() ? '保存中…' : '保存'}
 					</ffbox-button>
 					<ffbox-button prop:disabled={!dirty()} onclick={() => setDraft(state.basePrompt)}>放弃修改</ffbox-button>
-					<ffbox-button
-						onclick={() => {
-							if (!state.defaultBasePrompt) return;
-							setDraft(state.defaultBasePrompt);
-						}}
-					>
-						恢复代码内置默认
-					</ffbox-button>
 				</div>
 				<Show when={dirty()}>
 					<div style={{ 'font-size': '12px', color: 'var(--fontColorDim)', 'margin-top': '6px' }}>

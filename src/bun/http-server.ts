@@ -21,7 +21,6 @@ import type {
 	ModeSummary,
 } from '../shared/agent';
 import { createRunner, ensurePluginsLoaded, type AgentRunner } from './agent/runner';
-import { DEFAULT_BASE_PROMPT } from './agent/defaultPrompts';
 import { getBuiltinToolNames } from './agent/tools';
 import { setUsageEmitter } from './llm/model';
 import {
@@ -515,13 +514,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 设置 — 基座提示词（system prompt 第 1 段）
+			// 设置 — 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌）
+			// 没有默认值：没填就返回空串，前端文本框也就是空的
 			if (req.method === 'GET' && path === '/api/settings/base-prompt') {
-				// 一并给出代码里硬编码的默认值，前端「恢复默认」不需要自己再抄一份
-				sendJson(res, 200, {
-					basePrompt: settings.basePrompt ?? DEFAULT_BASE_PROMPT,
-					defaultBasePrompt: DEFAULT_BASE_PROMPT,
-				});
+				sendJson(res, 200, { basePrompt: settings.basePrompt ?? '' });
 				return;
 			}
 

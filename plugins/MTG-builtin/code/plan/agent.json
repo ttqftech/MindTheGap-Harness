@@ -2,7 +2,6 @@
 	"id": "plan",
 	"name": "计划",
 	"promptFile": "prompt.md",
-	"taskListInject": true,
 	"reflectionCount": 1,
 	"delegatable": ["explore"],
 	"ability": {
