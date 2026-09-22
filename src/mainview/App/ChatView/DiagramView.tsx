@@ -1,7 +1,7 @@
 /* ==========================================================================
    图示模式 — Agent 执行时间线（v2）
 
-   数据源: Conversation.agentCtx（ctxVersion 2）
+   数据源: Conversation.agentCtx
    - agentInstances: agentInstanceId → AgentInstance（实例树）
    - events: 扁平事件数组（带 agentInstanceId）
 

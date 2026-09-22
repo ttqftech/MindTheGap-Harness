@@ -1,3 +1,7 @@
+// @hutch cli=0.25.0
+// 钉住 hutch 0.25.0 的原因：hutch 0.26.0 的 electrobun dev 会去复制 cottontail 的 bin/cottontail-core 与 bin/cottontail-stdlib，
+// 而 electrobun 2.0.1 的 devkit 锁的是 cottontail 0.5.0（0.5.0 没有这两个目录）→ 报 CopySourceMissing。
+// 等网络可用、能把 electrobun 升到含 cottontail 0.6.0 的版本后，用 `hutch self pin` 解除此钉（详见 docs/日志.md）。
 export default {
 	// 委托 pnpm 管理 JS 依赖与前端二进制执行（hutch 内置解析器不稳定，详见 docs/hutch-to-pnpm-迁移.md）
 	// 设置后：hutch install 委托 pnpm install；hutch pm ... 转发给 pnpm
@@ -6,7 +10,7 @@ export default {
 		// pnpm install --frozen-lockfile → 严格按照 pnpm-lock.yaml 安装 JS 依赖
 		// hutch electrobun prepare     → 下载 electrobun 运行时/SDK 到 .hutch/devkit（首次 clone 后必需）
 		//   注：dev/build/run 也会隐式 prepare，但 install 里显式跑一次可确保 clone 后立即可用
-		install: "pnpm install --frozen-lockfile && hutch electrobun prepare",
+		install: "hutch pm install --frozen-lockfile && hutch electrobun prepare",
 
 		// 并行启动 Vite dev server + electrobun dev --watch
 		//   pnpm exec vite --port 5173 --config config/vite.mainview.ts → Vite 开发服务器，提供前端 HMR

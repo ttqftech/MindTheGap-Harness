@@ -1270,7 +1270,6 @@ export class AgentRunner {
 function emptyCtx(conversationId: string, modeId: string): AgentCtx {
 	const timestamp = now();
 	return {
-		ctxVersion: 2,
 		conversationId,
 		modeId,
 		rootAgentInstanceId: '',
@@ -1316,8 +1315,7 @@ export function createRunner(request: AgentRunRequest, options: RunnerOptions = 
 
 	// 先把 ctx 挂到会话上（写裸对象），再读回来 —— 读回来的一定是深层代理，
 	// 这样 Runner 里的每一次改动都会自动刷新会话 updatedAt 并防抖落盘。
-	const existing = conv.agentCtx as AgentCtx | undefined;
-	if (!existing || existing.ctxVersion !== 2) {
+	if (!conv.agentCtx) {
 		conv.agentCtx = emptyCtx(request.conversationId, mode.id);
 	}
 	const ctx = conv.agentCtx as AgentCtx;

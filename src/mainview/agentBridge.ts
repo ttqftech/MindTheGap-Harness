@@ -272,28 +272,6 @@ export async function setBasePrompt(basePrompt: string): Promise<boolean> {
 	}
 }
 
-export async function getCurrentMode(): Promise<string | null> {
-	try {
-		const resp = await httpFetch<{ currentModeId: string }>('/api/settings/current-mode');
-		return resp.currentModeId ?? null;
-	} catch {
-		return null;
-	}
-}
-
-export async function setCurrentMode(currentModeId: string): Promise<boolean> {
-	try {
-		await httpFetch('/api/settings/current-mode', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ currentModeId }),
-		});
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 export interface PluginLoadErrorInfo {
 	level: 'error' | 'warn';
 	pluginId?: string;

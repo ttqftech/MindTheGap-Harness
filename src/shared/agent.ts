@@ -118,8 +118,6 @@ export interface ModeSummary {
 	/** mode.json 源码文本 / 路径 —— 设置页的编辑器直接编辑它 */
 	modeJson?: string;
 	modeJsonPath?: string;
-	/** 反思提示词来源（绝对路径；内置默认时为 '(内置默认)'），供设置页只读展示 */
-	reflectionPromptSource?: string;
 	/** 是否被用户插件覆盖了同名内置模式 */
 	overridden?: boolean;
 }
@@ -215,7 +213,6 @@ export interface BackgroundTask {
 }
 
 export interface AgentCtx {
-	ctxVersion: 2;
 	conversationId: string;
 	modeId: string;
 	rootAgentInstanceId: string;
@@ -309,7 +306,6 @@ export interface TokenUsage {
 export interface ModelConfig {
 	providerId: string;
 	modelId: string;
-	displayName: string;
 	apiFormat: 'openai-chat' | 'openai-responses' | 'anthropic';
 	baseUrl: string;
 	apiKey: string;
@@ -448,9 +444,6 @@ export type MessageBlock =
 		output?: string;	// 工具的完整输出。委托 / resume 这类异步工具会在子 Agent 终态时被最终总结覆盖
 		detail?: string;
 	}
-	/** @deprecated 委托不再单独成块——它本身就是一次工具调用，总结显示在工具输出里。
-	    保留类型只为兼容旧会话数据，渲染时退化成一行。 */
-	| { type: 'agent'; key: string; depth: number; agentInstanceId?: string; name: string; running: boolean; summary?: string }
 	| { type: 'reflection'; key: string; depth: number; agentInstanceId?: string; agentName?: string; remaining: number; text: string }
 	/** 一次 LLM 调用的账本（scope='call'）或一段 agentLoop 的小计（scope='loop'） */
 	| {
@@ -590,8 +583,6 @@ export interface ServiceSettings {
 	providers: ModelProvider[];
 	currentStandardModel: { providerId: string; modelId: string } | null;
 	currentEconomyModel: { providerId: string; modelId: string } | null;
-	/** 当前模式 id（取代 v1 的 currentAgentName） */
-	currentModeId: string;
 	/**
 	 * 基座提示词。所有模式共享，由设置页的「提示词」面板编辑。
 	 * **不自动拼进 system prompt**：要不要内嵌由各 Agent 的 prompt.md 里有没有 `{{ basePrompt }}` 决定；
@@ -602,13 +593,6 @@ export interface ServiceSettings {
 	folders: Folder[];
 	mcpServers: McpServerConfig[];
 	debug: DebugSettings;
-}
-
-/** 后端完整应用状态（Agent Service 持久化） */
-export interface ServiceAppState {
-	settings: ServiceSettings;
-	conversationMeta: ConversationMeta[];
-	activeConversationId: string | null;
 }
 
 // #endregion

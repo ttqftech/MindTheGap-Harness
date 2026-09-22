@@ -4,9 +4,8 @@
    所有 Agent 相关操作走 HTTP（对齐 FFBox 的 serviceBridge）。
    Agent Service 可脱离 electrobun 独立运行。
 
-   v2 新增/调整的接口见 docs/Agent架构-v2设计.md §12：
-   modes / mode-configs / agent/answer / plugins/reload / agent-instances /
-   requests / tasklist
+   v2 的接口见 docs/Agent架构-v2设计.md §12：
+   modes / agent/answer / plugins/reload / agent-instances / requests / tasklist
    ========================================================================== */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -133,7 +132,6 @@ function toModeSummary(mode: ModeDefinition): ModeSummary {
 		limits: mode.limits,
 		modeJson: mode.modeJsonText,
 		modeJsonPath: mode.modeJsonPath,
-		reflectionPromptSource: mode.reflectionPromptPath ?? '(内置默认)',
 		overridden: overriddenModeIds.includes(mode.id),
 	};
 }
@@ -450,15 +448,14 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
+			// 前端只写 UI 消息：agentCtx 归后端 Runner 所有（ctx.json 是 agent 层的唯一真相），
+			// 前端手上那份只是打开会话时的快照，回写会把实例树 / 轮次 / 预算回滚成旧值。
 			if (req.method === 'PUT' && path.startsWith('/api/conversation-data/')) {
 				const id = decodeURIComponent(path.slice('/api/conversation-data/'.length));
 				const body = await readBody(req);
 				const data = JSON.parse(body || '{}');
 				const conv = conversations[id];
-				if (conv) {
-					conv.messages = data.messages;
-					if (data.agentCtx !== undefined) conv.agentCtx = data.agentCtx;
-				}
+				if (conv) conv.messages = data.messages;
 				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
 				return;
 			}
@@ -491,28 +488,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 当前模式（取代 v1 的 currentAgentName）
-			if (req.method === 'GET' && path === '/api/settings/current-mode') {
-				sendJson(res, 200, { currentModeId: settings.currentModeId });
-				return;
-			}
-
-			if (req.method === 'PUT' && path === '/api/settings/current-mode') {
-				const body = await readBody(req);
-				const { currentModeId } = JSON.parse(body || '{}');
-				if (typeof currentModeId === 'string') settings.currentModeId = currentModeId;
-				sendJson(res, 200, { ok: true });
-				return;
-			}
-
-			// 模式配置覆盖层已下线：mode.json 是模式配置的唯一来源，改配置直接 PUT /api/modes/:id
-			if (path === '/api/settings/mode-configs') {
-				sendJson(res, 410, {
-					ok: false,
-					error: 'mode-configs 已下线：模式配置就是插件目录里的 mode.json，请用 PUT /api/modes/:id 保存它',
-				});
-				return;
-			}
+			// 「当前模式」不再由后端持久化：它只是前端 composer 的选择，跟着前端偏好走。
 
 			// 设置 — 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌）
 			// 没有默认值：没填就返回空串，前端文本框也就是空的
@@ -530,16 +506,6 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				}
 				settings.basePrompt = basePrompt;
 				sendJson(res, 200, { ok: true });
-				return;
-			}
-
-			// v1 的 agent-configs 已下线（迁移只在 storage.doLoadSettings 里做一次）
-			if (path === '/api/settings/agent-configs') {
-				if (req.method === 'DELETE') {
-					sendJson(res, 200, { ok: true, note: 'v1 agent-configs 已下线，迁移在启动时完成' });
-					return;
-				}
-				sendJson(res, 410, { ok: false, error: 'agent-configs 已在 v2 下线，请使用 /api/settings/mode-configs' });
 				return;
 			}
 

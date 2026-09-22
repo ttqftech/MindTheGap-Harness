@@ -73,7 +73,7 @@ async function createMainWindow() {
 		//                     实测客户区上偏移仍是 0，原生标题栏不占顶部空间（实测 GWL_STYLE=0x16C40000）
 		//
 		// styleMask 补不出 WS_SYSMENU/WS_MINIMIZEBOX/WS_MAXIMIZEBOX（试过 FullScreen:true 无效），
-		// 那三个位由 win32.ts 在窗口创建后用 Win32 API 补上，用于启用 Win11 snap layouts。
+		// 那三个位由 windowsPatch.ts 在窗口创建后用 Win32 API 补上，用于启用 Win11 snap layouts。
 		titleBarStyle: 'hiddenInset',
 		styleMask: { Resizable: true, Closable: true, Miniaturizable: true },
 		rpc,
@@ -82,7 +82,7 @@ async function createMainWindow() {
 	// 窗口控制类 RPC 需要实例，创建后再注入（详见 rpc-handlers.ts 文件头）
 	setMainWindow(mainWindow);
 
-	// Windows：给无边框窗口补回系统窗口样式位，拿回投影 / 圆角 / snap（详见 win32.ts 文件头）
+	// Windows：给无边框窗口补回系统窗口样式位，拿回投影 / 圆角 / snap（详见 windowsPatch.ts 文件头）
 	await patchFramelessWindowFrame('MindTheGap-Harness');
 
 	// 开发模式下自动打开 DevTools

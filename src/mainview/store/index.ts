@@ -3,7 +3,7 @@
 
    重构后：
    - 后端设置（providers, basePrompt, folders, conversations）→ Agent Service HTTP
-   - 前端设置（themeMode, ui state, usage）→ localStorage
+   - 前端设置（themeMode, currentModeId, ui state, usage）→ localStorage
    - 会话列表从后端获取，切换时从后端拉完整数据
    - SSE patch 更新保持前后端尽量同步
    - 模式配置不再进 store：它就是插件目录里的 mode.json，设置页直接编辑该文件
@@ -84,28 +84,14 @@ const initialUI: UIState = {
 	viewMode: 'chat',
 };
 
-const DEFAULT_PROVIDERS: ModelProvider[] = [
-	{
-		id: 'deepseek',
-		name: 'deepsleep',
-		apiFormat: 'openai-chat',
-		baseUrl: 'https://api.deepseek.com',
-		apiKey: 'sk-kentakkiCrazyThursdayVwo50kudasai',
-		models: [
-			{ id: 'deepseek-v4-elite-extreme-enhanced-extraordinary', displayName: 'DeepSeek V4 Elite Extreme Enhanced Extraordinary', role: 'standard' },
-		],
-		customParams: {},
-	},
-];
-
 export const defaultState: AppState = {
 	themeMode: 'system',
 	folders: [{ id: 'local', name: '本地', isLocal: true }],
 	conversations: [],
 	activeConversationId: null,
 	ui: initialUI,
-	providers: DEFAULT_PROVIDERS,
-	currentStandardModel: { providerId: 'deepseek', modelId: 'deepseek-v4-elite-extreme-enhanced-extraordinary' },
+	providers: [],
+	currentStandardModel: null,
 	currentEconomyModel: null,
 	currentModeId: 'code',
 	modes: [],
@@ -139,12 +125,16 @@ function saveLocalSettings() {
 		viewMode: state.ui.viewMode,
 	});
 	localSettings.set('themeMode', state.themeMode);
+	localSettings.set('currentModeId', state.currentModeId);
 	localSettings.set('usage', state.usage);	// TODO 收归
 }
 
 function loadLocalSettings() {
 	const theme = localSettings.get<'light' | 'dark' | 'system'>('themeMode', defaultState.themeMode);
 	setState('themeMode', theme);
+
+	// 当前模式是纯前端状态：这里恢复上次的选择，「插件是否真的提供了这个模式」由 loadBackendState 校验
+	setState('currentModeId', localSettings.get<string>('currentModeId', defaultState.currentModeId));
 
 	// TODO 不用本地持久化 ui 设置项
 	const ui = localSettings.get<Partial<UIState>>('ui', {});
@@ -180,7 +170,6 @@ async function saveBackendSettings() {
 		standard: state.currentStandardModel,
 		economy: state.currentEconomyModel,
 	});
-	await agentBridge.setCurrentMode(state.currentModeId);
 	await agentBridge.setBasePrompt(state.basePrompt);
 	await agentBridge.setFolders(state.folders);
 	await agentBridge.setMcpServers(state.mcpServers);
@@ -189,11 +178,10 @@ async function saveBackendSettings() {
 async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, currentMode, folders, conversations, mcpServers, basePrompt, serviceHealth] = await Promise.all([
+	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getModes(),
-		agentBridge.getCurrentMode(),
 		agentBridge.getFolders(),
 		agentBridge.getConversations(),
 		agentBridge.getMcpServers(),
@@ -210,10 +198,8 @@ async function loadBackendState(): Promise<void> {
 	// 空串是合法状态（用户可以把基座清空），所以无条件同步
 	setState('basePrompt', basePrompt.basePrompt);
 	setState('serviceHealth', serviceHealth);
-	// 当前模式以「插件真的提供了这个模式」为准，否则退回第一个可用模式
-	if (currentMode && modes.some((m) => m.id === currentMode)) {
-		setState('currentModeId', currentMode);
-	} else if (modes.length > 0) {
+	// 当前模式是纯前端状态（由本地偏好恢复），这里只校验「插件真的提供了这个模式」，否则退回第一个可用模式
+	if (modes.length > 0 && !modes.some((m) => m.id === state.currentModeId)) {
 		setState('currentModeId', modes[0].id);
 	}
 	if (folders.length > 0) setState('folders', folders);
@@ -564,10 +550,10 @@ export const actions = {
 		scheduleSaveBackend();
 	},
 
-	/** 切换当前模式（第一层的 chip） */
+	/** 切换当前模式（第一层的 chip）。纯前端状态，只落本地偏好，不惊动后端设置 */
 	setCurrentModeId(modeId: string) {
 		setState('currentModeId', modeId);
-		scheduleSaveBackend();
+		saveLocalSettings();
 	},
 	/**
 	 * 基座提示词（设置页「提示词」面板）。

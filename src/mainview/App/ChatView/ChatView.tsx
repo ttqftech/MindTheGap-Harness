@@ -14,11 +14,13 @@ import styles from './ChatView.module.css';
 import { state as appState, actions, getActiveConversation, getProviderById, currentModeName } from '@mainview/store';
 import type { Message, MessageBlock } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
-import { runAgent, cancelAgent, subscribeStream, saveConversationData, getTaskList, getCtx } from '@mainview/agentBridge';
+import * as agentBridge from '@mainview/agentBridge';
 import type { AgentStreamEvent, ToolResult } from '@shared/agent';
 import { requestFolderPath } from '@mainview/localBridge';
-import { showMenu, alertMsgbox } from '@mainview/ffboxBridge';
+import { alertMsgbox } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
+
+// #region 图标
 
 function UserIcon() {
 	return <span>U</span>;
@@ -41,14 +43,6 @@ function StopIcon() {
 	);
 }
 
-function ChevronDown() {
-	return (
-		<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-			<polyline points="6 9 12 15 18 9"/>
-		</svg>
-	);
-}
-
 function SparkleIcon() {
 	return (
 		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -57,32 +51,37 @@ function SparkleIcon() {
 	);
 }
 
-/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
-function buildModelConfig(): ModelConfig | null {
-	const ref = appState.currentStandardModel;
-	if (!ref) return null;
-	const provider = appState.providers.find((p) => p.id === ref.providerId);
-	if (!provider) return null;
-	const model = provider.models.find((m) => m.id === ref.modelId);
-	if (!model) return null;
-	return {
-		providerId: provider.id,
-		modelId: model.id,
-		displayName: model.displayName,
-		apiFormat: provider.apiFormat,
-		baseUrl: provider.baseUrl,
-		apiKey: provider.apiKey,
-		customParams: { ...provider.customParams, ...model.customParams },
-	};
-}
+// #endregion
 
-/* ---------- 工具入参 / 输出的展示上限 ----------
-   「透明」不等于「无上限」：一条 web_search 的结果动辄几万字符，
-   全量塞进 message.blocks 会把会话文件撑爆、也会让 UI 卡死。
-   这里截断到 8K 并注明总长度，完整内容仍在后端 ctx.json 里（图示模式可见）。 */
+// #region 常量
+
+/* 工具入参 / 输出的展示上限：「透明」不等于「无上限」：一条 web_search 的结果动辄几万字符，全量塞进 message.blocks 会把会话文件撑爆、也会让 UI 卡死。这里并注明总长度，完整内容仍在后端 ctx.json 里（图示模式可见）。 */
 const TOOL_ARGS_LIMIT = 1500;
 const TOOL_OUTPUT_LIMIT = 8000;
 
+/** LLM 用途 → 中文标签。账本里的 purpose 是内部枚举，直接显示用户看不懂 */
+const PURPOSE_LABEL: Record<string, string> = {
+	agent_loop: '主循环',
+	reflection: '反思',
+	ask_child: '询问子 Agent',
+	web_rank: '搜索结果打分',
+	other: '其他',
+};
+
+/** agentLoop 中断原因 → 中文标签 */
+const LOOP_REASON_LABEL: Record<string, string> = {
+	ask_user: '等待用户回答',
+	finish: '本段结束',
+	interrupted: '被中断',
+	error: '出错中止',
+	await_child: '等待子 Agent',
+};
+
+// #endregion
+
+// #region 工具函数
+
+/** 截断到 limit，并注明被省略的长度 */
 function truncateWithNote(text: string, limit: number): string {
 	if (text.length <= limit) return text;
 	const head = text.slice(0, Math.floor(limit * 0.8));
@@ -112,36 +111,39 @@ function formatToolOutput(result: ToolResult): string {
 function fmtTokens(n?: number): string {
 	if (n === undefined || n === null) return '?';
 	if (n < 1000) return String(n);
-	if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+	if (n < 10000) return `${(n / 1000).toFixed(2)}k`;
+	if (n < 100000) return `${(n / 1000).toFixed(1)}k`;
 	return `${Math.round(n / 1000)}k`;
 }
 
 function fmtDuration(ms?: number): string {
 	if (!ms && ms !== 0) return '';
-	return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+	return ms < 100 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** LLM 用途 → 中文标签。账本里的 purpose 是内部枚举，直接显示用户看不懂 */
-const PURPOSE_LABEL: Record<string, string> = {
-	agent_loop: '主循环',
-	reflection: '反思',
-	ask_child: '询问子 Agent',
-	web_rank: '搜索结果打分',
-	other: '其他',
-};
+/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
+function buildModelConfig(): ModelConfig | null {
+	const ref = appState.currentStandardModel;
+	if (!ref) return null;
+	const provider = appState.providers.find((p) => p.id === ref.providerId);
+	if (!provider) return null;
+	const model = provider.models.find((m) => m.id === ref.modelId);
+	if (!model) return null;
+	return {
+		providerId: provider.id,
+		modelId: model.id,
+		apiFormat: provider.apiFormat,
+		baseUrl: provider.baseUrl,
+		apiKey: provider.apiKey,
+		customParams: { ...provider.customParams, ...model.customParams },
+	};
+}
 
-/** agentLoop 中断原因 → 中文标签 */
-const LOOP_REASON_LABEL: Record<string, string> = {
-	ask_user: '等待用户回答',
-	finish: '本段结束',
-	interrupted: '被中断',
-	error: '出错中止',
-	await_child: '等待子 Agent',
-};
+// #endregion
 
-/** ask_user 提问卡片 ----------
-   单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
+// #region ask_user 提问卡片
 
+/** 单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
 function AskUserCard(props: {
 	block: Extract<MessageBlock, { type: 'ask_user' }>;
 	onSubmit: (text: string) => void;
@@ -219,7 +221,13 @@ function AskUserCard(props: {
 	);
 }
 
+// #endregion
+
+// #region 主组件
+
 export default function ChatView() {
+	// #region 局部状态
+
 	const [inputText, setInputText] = createSignal('');
 	const [isGenerating, setIsGenerating] = createSignal(false);
 	/** 当前流式写入的 assistant 消息 ID */
@@ -230,10 +238,13 @@ export default function ChatView() {
 	/** 取消订阅函数 */
 	let unsubscribeFn: (() => void) | null = null;
 
-	/* === Agent 层级追踪（一次 run 内有效）：
+	// #endregion
+
+	// #region Agent 层级追踪
+
+	/* 一次 run 内有效：
 	   v2 的事件自带 agentInstanceId，因此只需要一张 id → depth 的映射，不再靠事件顺序猜深度。
-	   另外记一张 id → 名称，用于在块上标注「这条是谁产生的」（子 Agent 的产出不再单独成块，
-	   没有名字就看不出是根 Agent 还是哪个子 Agent 在说话）。 */
+	   另外记一张 id → 名称，用于在块上标注「这条是谁产生的」（子 Agent 的产出不再单独成块，没有名字就看不出是根 Agent 还是哪个子 Agent 在说话）。 */
 	let instanceDepths = new Map<string, number>();
 	let instanceNames = new Map<string, string>();
 	const depthOf = (agentInstanceId?: string) => (agentInstanceId ? instanceDepths.get(agentInstanceId) ?? 0 : 0);
@@ -242,33 +253,41 @@ export default function ChatView() {
 		if (!agentInstanceId) return undefined;
 		return depthOf(agentInstanceId) > 0 ? instanceNames.get(agentInstanceId) : undefined;
 	};
-	const resetRunState = () => {
-		instanceDepths = new Map();
-		instanceNames = new Map();
+
+	// #endregion
+
+	// #region 显示文本
+
+	const currentModelDisplay = () => {
+		const ref = appState.currentStandardModel;
+		if (!ref) return '未选择模型';
+		const provider = getProviderById(ref.providerId);
+		const model = provider?.models.find((m) => m.id === ref.modelId);
+		if (!provider || !model) return '未选择模型';
+		return `${provider.name} / ${model.displayName}`;
 	};
 
-	/* === 下拉菜单 === */
-	const [openMenu, setOpenMenu] = createSignal<'folder' | 'mode' | null>(null);
+	const currentFolderDisplay = () => {
+		const conv = getActiveConversation();
+		if (!conv) return '选择文件夹...';
+		const folder = appState.folders.find((f) => f.id === conv.folderId);
+		return folder?.name || '本地';
+	};
 
-	let folderBtn: HTMLButtonElement | undefined;
-	let modeBtn: HTMLButtonElement | undefined;
+	const conversationTitle = () => getActiveConversation()?.title || '新任务';
+
+	const parseTaskListLines = (text: string) =>
+		text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
+
+	// #endregion
+
+	// #region 下拉菜单（文件夹 / 模式 / 模型）
+
 	let modelInput: FFBoxDropdownInput | undefined;
 
-	const popupMenu = (id: 'folder' | 'mode', options: Parameters<typeof showMenu>[0]) => {
-		setOpenMenu(id);
-		showMenu({
-			...options,
-			onClose: () => {
-				options.onClose?.();
-				setOpenMenu(null);
-			},
-		});
-	};
-
-	/** 运行文件夹菜单 */
-	const openFolderMenu = () => {
+	const folderMenu = createMemo<MenuItem[]>(() => {
 		const activeFolderId = getActiveConversation()?.folderId;
-		const menu: MenuItem[] = [
+		return [
 			...appState.folders.map((f) => ({
 				type: 'radio' as const,
 				value: f.id,
@@ -276,50 +295,45 @@ export default function ChatView() {
 				checked: activeFolderId === f.id,
 			})),
 			{ type: 'separator' as const },
-			{ type: 'normal' as const, value: '__new__', label: '+ 新建文件夹…' },
+			{ type: 'normal' as const, value: '__new__', label: '+ 添加文件夹…' },
 		];
-		popupMenu('folder', {
-			triggerElem: folderBtn,
-			type: 'select',
-			menu,
-			onSelect: (_e, value) => {
-				if (value === '__new__') {
-					void (async () => {
-						const folderPath = await requestFolderPath();
-						if (folderPath) {
-							const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
-							actions.addFolder(folderPath, folderName);
-						}
-					})();
-					return;
-				}
-				const conv = getActiveConversation();
-				if (conv) actions.setConversationFolder(conv.id, value);
-			},
-		});
-	};
+	});
 
-	/** 模式菜单（第一层的 chip 从「子 Agent」改成「模式」，数据来自 GET /api/modes） */
-	const openModeMenu = () => {
-		if (appState.modes.length === 0) {
-			void alertMsgbox('没有可用模式', '插件里没有加载到任何模式，请到「设置 → 插件 / 模式」检查插件目录。');
+	const onFolderChange = (e: CustomEvent<string>) => {
+		const value = e.detail;
+		if (value === '__new__') {
+			void (async () => {
+				const folderPath = await requestFolderPath();
+				if (folderPath) {
+					const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
+					actions.addFolder(folderPath, folderName);
+				}
+			})();
 			return;
 		}
-		popupMenu('mode', {
-			triggerElem: modeBtn,
-			type: 'select',
-			menu: appState.modes.map((m) => ({
-				type: 'radio' as const,
-				value: m.id,
-				label: `${m.ui?.icon ?? ''} ${m.name}`.trim(),
-				checked: appState.currentModeId === m.id,
-			})),
-			onSelect: (_e, value) => {
-				actions.setCurrentModeId(value);
-				const conv = getActiveConversation();
-				if (conv) void import('@mainview/agentBridge').then((b) => b.updateConversation(conv.id, { modeId: value }));
-			},
-		});
+		const conv = getActiveConversation();
+		if (conv) actions.setConversationFolder(conv.id, value);
+	};
+
+	const modeMenu = createMemo<MenuItem[]>(() =>
+		appState.modes.map((m) => ({
+			type: 'radio' as const,
+			value: m.id,
+			label: `${m.ui?.icon ?? ''} ${m.name}`.trim(),
+			checked: appState.currentModeId === m.id,
+		})),
+	);
+
+	const currentModeLabel = () => {
+		const mode = appState.modes.find((m) => m.id === appState.currentModeId);
+		return mode ? `${mode.ui?.icon ?? ''} ${mode.name}`.trim() : '🤖 默认';
+	};
+
+	const onModeChange = (e: CustomEvent<string>) => {
+		const value = e.detail;
+		actions.setCurrentModeId(value);
+		const conv = getActiveConversation();
+		if (conv) void agentBridge.updateConversation(conv.id, { modeId: value });
 	};
 
 	/* === 模型选择：只读 DropdownInput === */
@@ -350,6 +364,10 @@ export default function ChatView() {
 		if (modelInput) modelInput.text = currentModelDisplay();
 	};
 
+	// #endregion
+
+	// #region 滚动与后端刷新
+
 	const chatAreaRef = (el: HTMLDivElement) => {
 		createEffect(() => {
 			getActiveConversation();
@@ -362,15 +380,50 @@ export default function ChatView() {
 
 	/** 刷新任务清单面板 */
 	const refreshTaskList = async (convId: string) => {
-		const list = await getTaskList(convId);
+		const list = await agentBridge.getTaskList(convId);
 		setTaskList(list);
 	};
 
 	/** 拉一次最新 ctx 给结构图用（ctx 归后端所有，前端只持有快照，跑完必须重新拉） */
 	const refreshCtx = async (convId: string) => {
-		const ctx = await getCtx(convId);
+		const ctx = await agentBridge.getCtx(convId);
 		if (ctx) actions.setConversationCtx(convId, ctx);
 	};
+
+	// #endregion
+
+	// #region 流式的收尾与占位消息
+
+	/** 把一条 assistant 占位消息加到会话里，返回它的 id */
+	const addAssistantPlaceholder = (convId: string): string | null => {
+		actions.addMessage(convId, { role: 'assistant', content: '', modeId: appState.currentModeId });
+		const conv = appState.conversations.find((c) => c.id === convId);
+		return conv?.messages[conv.messages.length - 1]?.id ?? null;
+	};
+
+	/** 结束流式状态 */
+	const finishStreaming = () => {
+		const convId = appState.activeConversationId;
+		setIsGenerating(false);
+		setStreamMsgId(null);
+		if (unsubscribeFn) {
+			unsubscribeFn();
+			unsubscribeFn = null;
+		}
+		if (convId) {
+			const conv = appState.conversations.find((c) => c.id === convId);
+			if (conv && conv.messages.length > 0) {
+				// 只写 messages：UI 消息归前端所有，agentCtx 归后端所有（ctx.json 是 agent 层的唯一真相）。
+				// 这里手上的 conv.agentCtx 只是「打开会话时的快照」，一并回写会把 Runner 刚更新过的
+				// 实例树 / 轮次 / 预算回滚成旧值。
+				void agentBridge.saveConversationData(convId, { messages: conv.messages });
+			}
+		}
+	};
+
+	// #endregion
+
+	// #region 流式事件处理
 
 	/** 处理单个 AgentStreamEvent（全部写入结构化 blocks） */
 	const handleStreamEvent = (convId: string, event: AgentStreamEvent) => {
@@ -520,54 +573,9 @@ export default function ChatView() {
 		}
 	};
 
-	/** 结束流式状态 */
-	const finishStreaming = () => {
-		const convId = appState.activeConversationId;
-		setIsGenerating(false);
-		setStreamMsgId(null);
-		if (unsubscribeFn) {
-			unsubscribeFn();
-			unsubscribeFn = null;
-		}
-		if (convId) {
-			const conv = appState.conversations.find((c) => c.id === convId);
-			if (conv && conv.messages.length > 0) {
-				// 只写 messages：UI 消息归前端所有，agentCtx 归后端所有（ctx.json 是 agent 层的唯一真相）。
-				// 这里手上的 conv.agentCtx 只是「打开会话时的快照」，一并回写会把 Runner 刚更新过的
-				// 实例树 / 轮次 / 预算回滚成旧值。
-				void saveConversationData(convId, { messages: conv.messages });
-			}
-		}
-	};
+	// #endregion
 
-	/** 把一条 assistant 占位消息加到会话里，返回它的 id */
-	const addAssistantPlaceholder = (convId: string): string | null => {
-		actions.addMessage(convId, { role: 'assistant', content: '', modeId: appState.currentModeId });
-		const conv = appState.conversations.find((c) => c.id === convId);
-		return conv?.messages[conv.messages.length - 1]?.id ?? null;
-	};
-
-	/** 回答 ask_user 卡片：把答案续接回该实例，并开一条新的 assistant 消息承接后续输出 */
-	const handleAskUserAnswer = async (convId: string, msgId: string, callId: string, text: string) => {
-		actions.patchMessageBlock(convId, msgId, callId, {
-			status: text === '用户已跳过此提问' ? 'skipped' : 'answered',
-			answer: text,
-		} as Partial<MessageBlock>);
-
-		if (text === '用户已跳过此提问') return;
-
-		const newMsgId = addAssistantPlaceholder(convId);
-		if (!newMsgId) return;
-		setIsGenerating(true);
-		setStreamMsgId(newMsgId);
-		unsubscribeFn = subscribeStream(convId, (event) => handleStreamEvent(convId, event));
-
-		const result = await actions.answerToolCall(convId, callId, text);
-		if (!result.ok) {
-			actions.appendMessageBlock(convId, newMsgId, { type: 'error', depth: 0, message: `回答提交失败: ${result.error}` });
-			finishStreaming();
-		}
-	};
+	// #region 发送 / 停止 / 回答提问
 
 	const handleSend = async () => {
 		const text = inputText().trim();
@@ -611,12 +619,13 @@ export default function ChatView() {
 		setInputText('');
 		setIsGenerating(true);
 		setStreamMsgId(assistantMsgId);
-		resetRunState();
+		instanceDepths = new Map(); instanceNames = new Map();
 
-		unsubscribeFn = subscribeStream(convId, (event) => handleStreamEvent(convId, event));
+
+		unsubscribeFn = agentBridge.subscribeStream(convId, (event) => handleStreamEvent(convId, event));
 
 		try {
-			const result = await runAgent({
+			const result = await agentBridge.runAgent({
 				conversationId: convId,
 				userMessage: text,
 				modeId: appState.currentModeId,
@@ -642,34 +651,35 @@ export default function ChatView() {
 
 	const handleStop = async () => {
 		const conv = getActiveConversation();
-		if (conv) await cancelAgent(conv.id);
+		if (conv) await agentBridge.cancelAgent(conv.id);
 		finishStreaming();
 	};
 
-	onCleanup(() => {
-		if (unsubscribeFn) unsubscribeFn();
-	});
+	/** 回答 ask_user 卡片：把答案续接回该实例，并开一条新的 assistant 消息承接后续输出 */
+	const handleAskUserAnswer = async (convId: string, msgId: string, callId: string, text: string) => {
+		actions.patchMessageBlock(convId, msgId, callId, {
+			status: text === '用户已跳过此提问' ? 'skipped' : 'answered',
+			answer: text,
+		} as Partial<MessageBlock>);
 
-	const currentModelDisplay = () => {
-		const ref = appState.currentStandardModel;
-		if (!ref) return '未选择模型';
-		const provider = getProviderById(ref.providerId);
-		const model = provider?.models.find((m) => m.id === ref.modelId);
-		if (!provider || !model) return '未选择模型';
-		return `${provider.name} / ${model.displayName}`;
+		if (text === '用户已跳过此提问') return;
+
+		const newMsgId = addAssistantPlaceholder(convId);
+		if (!newMsgId) return;
+		setIsGenerating(true);
+		setStreamMsgId(newMsgId);
+		unsubscribeFn = agentBridge.subscribeStream(convId, (event) => handleStreamEvent(convId, event));
+
+		const result = await actions.answerToolCall(convId, callId, text);
+		if (!result.ok) {
+			actions.appendMessageBlock(convId, newMsgId, { type: 'error', depth: 0, message: `回答提交失败: ${result.error}` });
+			finishStreaming();
+		}
 	};
 
-	const currentFolderDisplay = () => {
-		const conv = getActiveConversation();
-		if (!conv) return '选择文件夹...';
-		const folder = appState.folders.find((f) => f.id === conv.folderId);
-		return folder?.name || '本地';
-	};
+	// #endregion
 
-	const conversationTitle = () => getActiveConversation()?.title || '新任务';
-
-	const parseTaskListLines = (text: string) =>
-		text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
+	// #region 块渲染
 
 	/** 渲染单个结构化块：文本 / 工具调用 / 子 Agent / 反思轮 / 提问卡片 / 错误 */
 	const renderBlock = (block: MessageBlock, msgId: string) => {
@@ -741,15 +751,6 @@ export default function ChatView() {
 					</details>
 				);
 			}
-
-			case 'agent':
-				// 旧会话数据兼容：委托早已不再单独成块，这里退化成一行（不再显示 summary）
-				return (
-					<div class={styles['agent-block-agent']} style={indent}>
-						<span class={styles['agent-tool-icon']}>🤖</span>
-						<span class={styles['agent-tool-name']}>{block.name}</span>
-					</div>
-				);
 
 			case 'reasoning':
 				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
@@ -828,6 +829,16 @@ export default function ChatView() {
 				return <div class={styles['agent-block-error']} style={indent}>❌ {block.message}</div>;
 		}
 	};
+
+	// #endregion
+
+	// #region 生命周期
+
+	onCleanup(() => {
+		if (unsubscribeFn) unsubscribeFn();
+	});
+
+	// #endregion
 
 	return (
 		<div class={styles['main-content']}>
@@ -939,27 +950,24 @@ export default function ChatView() {
 			<div class={styles['input-area']}>
 				<div class={styles['input-wrapper']}>
 					<div class={styles['input-controls-top']}>
-						<button
-							ref={folderBtn}
-							classList={{ [styles['chip-btn']]: true, [styles.active]: openMenu() === 'folder' }}
-							title='运行文件夹'
-							onclick={openFolderMenu}
-						>
-							📁 <span class={styles['chip-label']}>{currentFolderDisplay()}</span>
-							<ChevronDown />
-						</button>
-
-						{/* 模式 chip（v1 的「子 Agent」chip） */}
-						<button
-							ref={modeBtn}
-							classList={{ [styles['chip-btn']]: true, [styles.active]: openMenu() === 'mode' }}
+						<ffbox-dropdown-input
+							class={styles['folder-dropdown']}
+							title="运行文件夹"
+							placeholder="选择文件夹"
+							prop:readonly={true}
+							prop:text={currentFolderDisplay()}
+							prop:list={folderMenu()}
+							onchange={onFolderChange}
+						/>
+						<ffbox-dropdown-input
+							class={styles['mode-dropdown']}
 							title="运行模式"
-							onclick={openModeMenu}
-						>
-							{appState.modes.find((m) => m.id === appState.currentModeId)?.ui?.icon ?? '🤖'}{' '}
-							<span class={styles['chip-label']}>{currentModeName()}</span>
-							<ChevronDown />
-						</button>
+							placeholder="选择模式"
+							prop:readonly={true}
+							prop:text={currentModeLabel()}
+							prop:list={modeMenu()}
+							onchange={onModeChange}
+						/>
 					</div>
 
 					<div class={styles['input-textarea-wrapper']}>
@@ -1017,3 +1025,5 @@ export default function ChatView() {
 		</div>
 	);
 }
+
+// #endregion

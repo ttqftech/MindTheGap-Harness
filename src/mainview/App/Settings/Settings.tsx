@@ -17,6 +17,7 @@ import type {
 } from '@shared/agent';
 import { confirmMsgbox, alertMsgbox } from '@mainview/ffboxBridge';
 import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/agentBridge';
+import { shell } from '@mainview/localBridge';
 
 /** ISO 8601（UTC）→ 本地时间；构建信息里的时间统一存 UTC，只在展示时转换 */
 function formatTime(iso: string): string {
@@ -726,7 +727,6 @@ function ModeJsonEditor(props: { modeId: string }) {
 	const [jsonText, setJsonText] = createSignal('');
 	const [savedText, setSavedText] = createSignal('');
 	const [jsonPath, setJsonPath] = createSignal('');
-	const [reflectionSource, setReflectionSource] = createSignal('');
 	const [error, setError] = createSignal('');
 	const [saving, setSaving] = createSignal(false);
 
@@ -735,13 +735,11 @@ function ModeJsonEditor(props: { modeId: string }) {
 		const detail = await getMode(props.modeId) as {
 			modeJson?: string;
 			modeJsonPath?: string;
-			reflectionPromptSource?: string;
 		} | null;
 		const text = detail?.modeJson ?? '';
 		setJsonText(text);
 		setSavedText(text);
 		setJsonPath(detail?.modeJsonPath ?? '');
-		setReflectionSource(detail?.reflectionPromptSource ?? '');
 	};
 
 	createEffect(() => {
@@ -806,7 +804,16 @@ function ModeJsonEditor(props: { modeId: string }) {
 				<br />
 				反思提示词不在这个文件里：读 <code>&lt;模式&gt;/reflection.md</code> →{' '}
 				<code>&lt;Agent&gt;/reflection.md</code>（Agent 级存在即整份替换，都没有时用代码内置默认）。
-				模式级来源：<code>{reflectionSource() || '…'}</code>
+				<Show when={jsonPath()}>
+					<span style={{ 'margin-left': '8px' }}>
+						<ffbox-button onclick={() => {
+							const p = jsonPath();
+							const sep = p.includes('\\') ? '\\' : '/';
+							const dir = p.substring(0, p.lastIndexOf(sep));
+							if (dir) void shell.openPath(dir);
+						}}>打开文件夹</ffbox-button>
+					</span>
+				</Show>
 			</div>
 			<textarea
 				class={`${styles['json-textarea']}${error() ? ` ${styles.error}` : ''}`}

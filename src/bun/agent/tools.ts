@@ -13,10 +13,7 @@
    （见 getToolsForAgentInstance）。
    ========================================================================== */
 
-import {
-	existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync,
-	readdirSync, statSync, rmSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, isAbsolute, relative, extname } from 'node:path';
 import { execSync } from 'node:child_process';
 import type {
@@ -101,19 +98,7 @@ export interface AgentTool {
 	description: string;
 	parameters: Record<string, unknown>;
 	execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
-	/** 'server' = 后端直接执行；'client' = 需要客户端（前端/用户）响应后才算完成 */
-	origin?: 'server' | 'client';
 }
-
-/** 审批钩子（预留，本版恒 allow） */
-export interface ToolCallInfo {
-	callId: string;
-	agentInstanceId: string;
-	toolName: string;
-	args: Record<string, unknown>;
-	reason: string;
-}
-export type ToolGate = (call: ToolCallInfo) => Promise<'allow' | 'deny' | 'ask-user'>;
 
 // #endregion
 
@@ -124,7 +109,7 @@ const toolRegistry = new Map<string, AgentTool>();
 /**
  * 动态工具源（当前只有 MCP）。
  * 静态注册表放内置工具，动态源放运行时连上才有的工具，
- * 两者在 getAllTools() 里合并，断开时按 sourceId 整体注销。
+ * 两者在 getToolsForAgentInstance() 里合并，断开时按 sourceId 整体注销。
  */
 const dynamicToolSources = new Map<string, AgentTool[]>();
 
@@ -140,10 +125,6 @@ function allDynamicTools(): AgentTool[] {
 	const out: AgentTool[] = [];
 	for (const list of dynamicToolSources.values()) out.push(...list);
 	return out;
-}
-
-export function getAllTools(): AgentTool[] {
-	return [...toolRegistry.values(), ...allDynamicTools()];
 }
 
 /** 内置（静态注册表）工具名，用于插件加载时的校验 */
@@ -1059,7 +1040,6 @@ registerTool({
 		},
 		required: ['question'],
 	},
-	origin: 'client',
 	async execute(args, ctx) {
 		const question = String(args.question ?? '').trim();
 		if (!question) return { success: false, content: 'question 不能为空' };
@@ -1072,37 +1052,5 @@ registerTool({
 });
 
 // #endregion
-
-// #region 供其它模块使用的辅助
-
-/** 列出目录（递归，带黑名单）—— 供 runner 组装目录概览等场景复用 */
-export function listDirSafe(dir: string, maxDepth = 3): string[] {
-	const out: string[] = [];
-	const walk = (current: string, depth: number) => {
-		let entries;
-		try {
-			entries = readdirSync(current, { withFileTypes: true });
-		} catch {
-			return;
-		}
-		for (const e of entries) {
-			if (SEARCH_SKIP_DIRS.has(e.name)) continue;
-			const full = join(current, e.name);
-			out.push(e.isDirectory() ? `${full}/` : full);
-			if (e.isDirectory() && depth < maxDepth) walk(full, depth + 1);
-		}
-	};
-	walk(dir, 1);
-	return out;
-}
-
-/** 清空整个会话工作目录（用于会话删除时的清理，由 storage 调用） */
-export function removeDirSafe(dir: string): void {
-	try {
-		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-	} catch {
-		// 忽略
-	}
-}
 
 // #endregion

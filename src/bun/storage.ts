@@ -191,7 +191,6 @@ const defaultSettings: ServiceSettings = {
 	providers: [],
 	currentStandardModel: null,
 	currentEconomyModel: null,
-	currentModeId: 'code',
 	// 基座提示词没有默认值：唯一来源是 settings.basePrompt，没填就是空串（空串是合法状态）。
 	// 这里列出来只是为了让缺字段的老 settings.json 补上一个空键，免得读侧到处判 undefined。
 	basePrompt: '',
@@ -201,13 +200,6 @@ const defaultSettings: ServiceSettings = {
 		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false },
 	},
 };
-
-/** 只读的遗留字段（读到即丢弃，不再写回） */
-interface LegacySettings {
-	agentConfigs?: unknown;			// v1：按 Agent 名索引的配置
-	currentAgentName?: unknown;		// v1：当前 Agent 名
-	modeConfigs?: unknown;			// v2 早期的「模式配置覆盖层」，已随 mode.json 展平下线
-}
 
 /**
  * 异步从磁盘加载设置进内存镜像。
@@ -224,42 +216,21 @@ export function loadSettings(): Promise<void> {
 }
 
 async function doLoadSettings(): Promise<void> {
-	let raw: (Partial<ServiceSettings> & LegacySettings) = {};
+	let raw: Partial<ServiceSettings> = {};
 	try {
-		raw = JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')) as Partial<ServiceSettings> & LegacySettings;
+		raw = JSON.parse(await readFile(SETTINGS_FILE, 'utf-8')) as Partial<ServiceSettings>;
 	} catch {
 		// 文件不存在或损坏 → 保持默认值
 	}
-	// 老版本的 settings.json 不含后加的字段，逐项用默认值补齐。
+	// settings.json 里没有的字段一律保持默认值。
 	// 注意不能直接 {...defaultSettings, ...raw}：raw 里显式存在的 undefined 会覆盖默认值。
 	for (const key of Object.keys(defaultSettings) as (keyof ServiceSettings)[]) {
 		const value = (raw as Record<string, unknown>)[key];
 		if (value !== undefined) (settingsRaw as unknown as Record<string, unknown>)[key] = value;
 	}
 
-	// v1 → v2 迁移：agentConfigs / currentAgentName 一律丢弃，落到新的模式字段上（幂等）
-	let needFlush = false;
-	if (raw.currentAgentName !== undefined || raw.agentConfigs !== undefined) {
-		(settingsRaw as unknown as Record<string, unknown>).currentModeId =
-			(settingsRaw as unknown as Record<string, unknown>).currentModeId ?? 'code';
-		needFlush = true;
-		console.log('[Storage] 检测到 v1 设置（agentConfigs / currentAgentName），已丢弃并落到 currentModeId');
-	}
-
-	// 模式配置已改为「mode.json 是唯一来源」，旧的覆盖层读到即丢弃（下次落盘时自然消失）
-	if (raw.modeConfigs !== undefined) {
-		needFlush = true;
-		console.log('[Storage] 检测到已下线的 modeConfigs 覆盖层，已丢弃（模式配置现在只认插件 mode.json）');
-	}
-
 	// 基座提示词没有任何「缺失就补默认值」的逻辑：没填就是空串（用户可以在设置页清空），
-	// 空串是合法状态。缺字段时上面那个默认值补齐循环会补一个空串进来。
-
-	// 迁移结果立即落盘一次，避免每次启动都走迁移分支
-	if (needFlush) {
-		settingsDirty = true;
-		flushSettings();
-	}
+	// 空串是合法状态。缺字段时上面那个默认值循环会补一个空串进来。
 
 	settingsLoaded = true;
 }
@@ -361,9 +332,8 @@ function loadConversation(id: string): ServiceConversation | undefined {
 	if (slot) return slot.proxy;
 	const raw = readJsonFile<ServiceConversation | null>(conversationCtxPath(id), null);
 	if (!raw) return undefined;
-	// 兼容手工改过文件夹名的情况：以目录名为准
+	// 以目录名为准（会话 id 就是目录名）
 	raw.id = id;
-	if (!raw.modeId) raw.modeId = 'code';
 	return openSlot(raw).proxy;
 }
 
@@ -445,7 +415,7 @@ export function conversationMetas(): ConversationMeta[] {
 	if (!existsSync(CONVERSATIONS_DIR)) mkdirSync(CONVERSATIONS_DIR, { recursive: true });
 	const metas: ConversationMeta[] = [];
 	for (const entry of readdirSync(CONVERSATIONS_DIR, { withFileTypes: true })) {
-		if (!entry.isDirectory()) continue;	// 兼容旧版的 <id>.json 单文件（不迁移，直接忽略）
+		if (!entry.isDirectory()) continue;	// 一个会话一个目录，目录之外的文件忽略
 		const id = entry.name;
 		const conv = slots.get(id)?.raw ?? readJsonFile<ServiceConversation | null>(conversationCtxPath(id), null);
 		if (!conv) continue;
@@ -453,7 +423,7 @@ export function conversationMetas(): ConversationMeta[] {
 			id: conv.id ?? id,
 			folderId: conv.folderId,
 			title: conv.title,
-			modeId: conv.modeId ?? 'code',
+			modeId: conv.modeId,
 			createdAt: conv.createdAt,
 			updatedAt: conv.updatedAt,
 		});
@@ -484,7 +454,7 @@ export function createConversation(params: { folderId?: string; title?: string; 
 		id,
 		folderId: params.folderId ?? 'local',
 		title: params.title ?? '新任务',
-		modeId: params.modeId ?? (settings.currentModeId || 'code'),
+		modeId: params.modeId ?? 'code',
 		createdAt: now,
 		updatedAt: now,
 		messages: [],
