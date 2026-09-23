@@ -11,8 +11,11 @@
  * - 新增 `finish` 完成工具、`reflectionCount` 反思、`ask_user` 客户端工具、循环预算
  * - 新增 §8 LLM 层请求日志类型（LlmRequestRecord / LlmPurpose / LlmTrigger）
  *
- * 注意：UI 侧的 `Message` / `MessageBlock`（前端渲染用的投影）保留不变，
- * 它由 Runner 在跑的过程中同步产出，和 ctx.agentInstances 一起落在同一个 ctx.json 里。
+ * 注意：界面**没有独立的 UI 消息模型**（2026-09-14 起）。渲染完全由 ctx 现算：
+ * `src/shared/projection.ts` 的 `foldCtxToRenderTree()` 从根实例出发，遇到 delegate 工具调用
+ * 就下钻到子实例递归渲染。所以这里的 `AgentInstance.messages` 就是唯一的转写真相，
+ * 其中带 `uiOnly` 标记的条目只给界面看、不下发给模型。设计稿见
+ * `docs/设计-ctx唯一真相与动态投影.md`。
  */
 
 // #region 1. 插件 / 模式 / Agent 定义（磁盘数据模型）
@@ -165,8 +168,74 @@ export type AgentInstanceStatus =
 	| 'interrupted';		// 用户取消 / 进程退出
 	// 注：'running' 若被中途打断，仍保持 running；下次启动 agentLoop 前统一改 interrupted
 
-/** LlmMessage 之上只加一个时间戳 */
-export type AgentInstanceMessage = LlmMessage & { updatedAt: number };
+/**
+ * 条目的结构化载荷种类（`kind`）：
+ * - `ask_user_state` 属 **uiOnly**（界面要看、不下发模型）
+ * - `tool_result` / `reflection` 是普通条目的附加信息，仍会进 LLM 上下文
+ *   （`tool_result` 解掉「成功/失败靠 `[失败] ` 前缀嗅探」；`reflection` 解掉「反思文本和 system prompt 分不开」）
+ */
+export type MessageKind = 'ask_user_state' | 'tool_result' | 'reflection';
+
+/**
+ * 实例条目 = LLM 消息 + 时间戳 + 可选的结构化载荷。
+ *
+ * ⚠️ 这份数组是**双重身份**：既是界面转写的唯一真相，又是发给模型的上下文。
+ * 所以要区分「界面看、模型不看」的条目（如提问卡片状态），这就是 `uiOnly` 的用途。
+ */
+export type AgentInstanceMessage = LlmMessage & {
+	updatedAt: number;
+	/** 只给界面看，组 payload 时过滤掉（见 runner 的 `toLlmMessages()`） */
+	uiOnly?: true;
+	kind?: MessageKind;
+	/** `kind` 对应的结构化载荷 */
+	data?: AskUserState | ToolResultInfo | ReflectionInfo;
+	/**
+	 * 这次 LLM 调用的账本，挂在**这次调用的产出物**上（assistant 条目 / 反思条目）。
+	 *
+	 * 为什么不做成一条独立的 `role:'system'` 条目：usage 本来就是「某一次 LLM 调用附带的一条数据」，
+	 * 拆成独立条目后投影只能把它平铺进转写，界面上就出现一堆与调用脱节的流水，与「一次调用一个块」冲突。
+	 *
+	 * 交接方式：usage emitter 在 `callLlm` 内部就触发（比 runner push 产出物更早），
+	 * 所以先暂存在 `AgentInstance.pendingUsage`，由 runner 在 push 产出物时取走（`runner.ts` 的 `adoptUsage`）。
+	 */
+	usages?: UsageEntry[];
+};
+
+/** 一次 LLM 请求的账本（真相在 ctx；requestLog.jsonl 只是诊断日志） */
+export interface UsageEntry {
+	seq: number;					// 会话内第几次 LLM 请求
+	round?: number;					// 该实例第几轮 agentLoop
+	purpose: string;				// agent_loop / reflection / ask_child / web_rank
+	model: string;
+	logId?: string;
+	input?: number;
+	output?: number;
+	cached?: number;
+	total?: number;
+	durationMs: number;
+	/** agentLoop 本段的小计不落盘：由前端按区间对 usage 条目求和 */
+}
+
+/** `kind: 'ask_user_state'` 的载荷：提问卡片的状态（不再靠字符串比对） */
+export interface AskUserState {
+	callId: string;
+	status: 'waiting' | 'answered' | 'skipped';
+	answer?: string;
+}
+
+/** `kind: 'tool_result'` 的载荷：工具结果的终态信息 */
+export interface ToolResultInfo {
+	success: boolean;
+	/** 工具返回的结构化字段（如 delegate 的 `childAgentInstanceIds` / `status`，渲染嵌套树要用） */
+	structured?: Record<string, unknown>;
+	error?: string;
+}
+
+/** `kind: 'reflection'` 的载荷：反思条目的元信息（反思正文本身在 content 里） */
+export interface ReflectionInfo {
+	/** 本轮反思后还剩几次 */
+	remaining: number;
+}
 
 export interface AgentInstance {
 	agentInstanceId: string;
@@ -179,18 +248,26 @@ export interface AgentInstance {
 	status: AgentInstanceStatus;
 	/** 父 Agent 下发的任务说明（同时是首条 user 消息内容） */
 	task?: string;
-	/** 该实例自己的完整消息历史（含 system），每条带 updatedAt */
+	/** 该实例自己的完整消息历史（含 system 与 uiOnly 条目），每条带 updatedAt */
 	messages: AgentInstanceMessage[];
 	/** 尚未拿到结果的 tool callId（便于调度器判断是否可重入，可从 messages 推导，这里缓存） */
 	pendingCallIds?: string[];
+	/**
+	 * 运行期暂存：usage emitter 记下、还没被某次 LLM 产出物领走的账本。
+	 * 正常流程里它在 push 产出物时立刻被清空（见 `runner.ts` 的 `adoptUsage`），落盘时通常不存在。
+	 * **不是给界面看的东西** —— 界面上的账本一律读 `AgentInstanceMessage.usages`。
+	 */
+	pendingUsage?: UsageEntry[];
 	/** 历次 finish 提交的总结（完成后仍可被重新唤醒接续，所以是数组） */
 	summaries?: string[];
 	/** 剩余反思次数（创建时 = AgentDefinition.reflectionCount ?? 0） */
 	reflectionsRemaining: number;
 	/** 本实例消耗的 agentLoop 轮数 */
 	rounds: number;
+	/** 本实例累计发起过多少次 LLM 请求（唯一写入点在 llm usage emitter） */
+	llmCalls: number;
 	childAgentInstanceIds: string[];
-	/** 本实例累计 token。只是从 requestLog 聚合来的运行时缓存，权威数据在 requestLog.jsonl */
+	/** 本实例累计 token（唯一写入点在 llm usage emitter；唯一真相） */
 	tokens?: TokenUsage;
 	startedAt: number;
 	lastUpdatedAt?: number;
@@ -330,8 +407,6 @@ export interface AskUserArgs {
 	question: string;
 	/** 单选项（每个可带描述）；为空时前端只给自由输入 */
 	options?: { label: string; description?: string }[];
-	/** 追加到提问卡片的补充说明 */
-	extraPrompt?: string;
 }
 
 /** POST /api/agent/answer —— 续接 client 工具（ask_user） */
@@ -384,6 +459,8 @@ export interface LlmRequestRecord {
 	providerId: string;
 	model: string;
 	format: 'openai-chat' | 'openai-responses' | 'anthropic';
+	/** 这条记录来自内置 mock（`model` 会是 `mock:<scenario>`）。统计真实用量时应剔除 */
+	mock?: boolean;
 
 	// ---- 请求形状（只记「形」，正文不进来：正文在 ctx.json 里）----
 	request?: {
@@ -418,74 +495,9 @@ export interface RequestLogConfig {
 
 // #endregion
 
-// #region 8. UI 侧数据模型（会话 & 消息）
+// #region 8. 会话（UI 侧数据模型）
 
-export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
-
-/**
- * UI 侧的「一块内容」。
- *
- * 透明性原则：后端 ctx 里能看到的，前端尽量都能看到——工具入参、工具完整输出、
- * 反思轮、思考过程，全部落进 block 里，而不是只留一行「调用了某某工具」。
- */
-export type MessageBlock =
-	| { type: 'text'; key?: string; depth: number; agentInstanceId?: string; agentName?: string; content: string }
-	| { type: 'reasoning'; key: string; depth: number; agentInstanceId?: string; agentName?: string; content: string; done?: boolean }
-	| {
-		type: 'tool';
-		key: string;
-		depth: number;
-		agentInstanceId?: string;
-		agentName?: string;
-		name: string;
-		status: 'running' | 'success' | 'error';
-		reason?: string;
-		args?: string;	// 入参（格式化后的字符串），长内容会被截断
-		output?: string;	// 工具的完整输出。委托 / resume 这类异步工具会在子 Agent 终态时被最终总结覆盖
-		detail?: string;
-	}
-	| { type: 'reflection'; key: string; depth: number; agentInstanceId?: string; agentName?: string; remaining: number; text: string }
-	/** 一次 LLM 调用的账本（scope='call'）或一段 agentLoop 的小计（scope='loop'） */
-	| {
-		type: 'usage';
-		key: string;
-		depth: number;
-		agentInstanceId?: string;
-		agentName?: string;
-		scope: 'call' | 'loop';
-		input?: number;
-		output?: number;
-		cached?: number;
-		total?: number;
-		seq?: number;
-		round?: number;
-		purpose?: string;
-		durationMs?: number;
-		model?: string;
-		/** 仅 scope='loop'：本段增量 */
-		deltaInput?: number;
-		deltaOutput?: number;
-		deltaTotal?: number;
-		loopCalls?: number;
-		reason?: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child';
-	}
-	| { type: 'ask_user'; key: string; depth: number; agentInstanceId?: string; agentName?: string; question: string; options: { label: string; description?: string }[]; status: 'waiting' | 'answered' | 'skipped'; answer?: string }
-	| { type: 'error'; key?: string; depth: number; agentInstanceId?: string; agentName?: string; message: string };
-
-export interface Message {
-	id: string;
-	role: MessageRole;
-	content: string;	// 存放简单文本内容。具体内容在 blocks 中，因为一轮 llm 调用可以有很多东西，比如思考、工具调用……
-	createdAt: number;
-	agentName?: string;
-	modeId?: string;
-	tokens?: { input?: number; output?: number; cached?: number };
-	duration?: number;
-	llmCalls?: number;	// 这条消息期间共发起了多少次 LLM 请求（含所有子 Agent）
-	blocks?: MessageBlock[];
-}
-
-/** 会话元信息（列表展示用，不含 messages） */
+/** 会话元信息（列表展示用，不含 ctx） */
 export interface ConversationMeta {
 	id: string;
 	folderId: string;
@@ -495,16 +507,28 @@ export interface ConversationMeta {
 	updatedAt: number;
 }
 
-/** 后端完整会话数据（ServiceConversation） */
+/**
+ * 后端完整会话数据。
+ *
+ * ⚠️ **没有 `messages` 字段**（2026-09-14 删除）：界面上的内容一律由 ctx 现算 ——
+ * 见 `src/shared/projection.ts` 的 `foldCtxToRenderTree()`。历史遗留的 `Message` /
+ * `MessageBlock` / `MessageRole`（前端自己拼一份 UI 转写再回写后端）已一并删除。
+ */
 export interface ServiceConversation extends ConversationMeta {
-	messages: Message[];
 	agentCtx?: AgentCtx;
 }
 
-/** 文件夹 */
+/**
+ * 文件夹 —— 就是一个工作目录。
+ * 作用只有两个：把会话归类，以及把工作目录路径传给 Agent（`AgentRunRequest.runningDir` → 提示词 `{{ runningDir }}`）。
+ *
+ * - 没有「名字」这个概念：`id` 就是绝对路径本身，显示名由 `folderLabel()` 从路径现算（只看最后一段）。
+ * - 「本地」是默认分组：`id === 'local'`、没有 `path`，等于「不给 Agent 传工作目录」。
+ */
 export interface Folder {
+	/** 真实文件夹 = 绝对路径；默认分组固定为 'local' */
 	id: string;
-	name: string;
+	/** 工作目录绝对路径；「本地」没有 */
 	path?: string;
 	isLocal?: boolean;
 }
@@ -573,9 +597,23 @@ export interface ModelProviderModel {
 	customParams?: Record<string, unknown>;
 }
 
+/** 开发用 mock：把 LLM 请求转给后端内置的 mock 服务（**工具仍真实执行**） */
+export interface MockSettings {
+	/** 打开后，**下一次** LLM 请求就发往内置 mock；运行期间禁止切换（见 http-server 的守卫） */
+	enabled: boolean;
+	/** 剧本名，见 `src/bun/llm/mock.ts` 的 MOCK_SCENARIOS */
+	scenario: string;
+}
+
 /** 调试配置 */
 export interface DebugSettings {
 	requestLog: RequestLogConfig;
+	/**
+	 * 内置 mock 开关。
+	 * ⚠️ 声明为可选：老的 settings.json 里 `debug` 只有 requestLog，而 `loadSettings()` 是
+	 * **整对象覆盖**（不做深合并），所以运行时它可能就是 undefined —— 读侧一律用 `?.` 防御。
+	 */
+	mock?: MockSettings;
 }
 
 /** 后端完整设置 */

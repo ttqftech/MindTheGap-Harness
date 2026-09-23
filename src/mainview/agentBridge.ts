@@ -1,10 +1,10 @@
-/* ==========================================================================
-   agentBridge — Agent Service HTTP + SSE（对齐 FFBox 的 serviceBridge 职责）
-
-   重构后：纯 HTTP + SSE，不再有 RPC 回退。
-   Agent Service 可脱离 electrobun 独立运行。
-   所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
-   ========================================================================== */
+/**
+ * agentBridge — Agent Service HTTP + SSE（对齐 FFBox 的 serviceBridge 职责）
+ *
+ * 重构后：纯 HTTP + SSE，不再有 RPC 回退。
+ * Agent Service 可脱离 electrobun 独立运行。
+ * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
+ */
 
 import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
@@ -21,7 +21,7 @@ async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	return resp.json();
 }
 
-/* ---------- 健康检查 ---------- */
+// #region 健康检查
 
 /**
  * 探活并取回服务自报的构建信息。
@@ -30,7 +30,7 @@ async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export async function health(): Promise<ServiceHealth | null> {
 	try {
 		const ctrl = new AbortController();
-		const timer = setTimeout(() => ctrl.abort(), 1500);
+		const timer = setTimeout(() => ctrl.abort(), 3000);
 		const resp = await fetch(`${HTTP_BASE}/api/health`, { signal: ctrl.signal });
 		clearTimeout(timer);
 		if (!resp.ok) return null;
@@ -40,7 +40,9 @@ export async function health(): Promise<ServiceHealth | null> {
 	}
 }
 
-/* ---------- Agent 运行 ---------- */
+// #endregion
+
+// #region Agent 运行、回答问题
 
 export async function runAgent(params: AgentRunRequest): Promise<{ ok: boolean; conversationId?: string; error?: string }> {
 	try {
@@ -66,15 +68,25 @@ export async function cancelAgent(conversationId: string): Promise<{ ok: boolean
 	}
 }
 
-/* ---------- 流式订阅 ---------- */
+/** 回答一个 client 工具调用（ask_user），续接该实例的 agentLoop */
+export async function answerToolCall(params: { conversationId: string; toolCallId: string; result: string }): Promise<{ ok: boolean; error?: string }> {
+	try {
+		return await httpFetch('/api/agent/answer', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params),
+		});
+	} catch (e: any) {
+		return { ok: false, error: e?.message };
+	}
+}
 
-export function subscribeStream(
-	conversationId: string,
-	listener: (event: AgentStreamEvent) => void,
-): () => void {
-	const es = new EventSource(
-		`${HTTP_BASE}/api/agent/stream?conversationId=${encodeURIComponent(conversationId)}`,
-	);
+// #endregion
+
+// #region 流式订阅
+
+export function subscribeStream(conversationId: string, listener: (event: AgentStreamEvent) => void): () => void {
+	const es = new EventSource(`${HTTP_BASE}/api/agent/stream?conversationId=${encodeURIComponent(conversationId)}`);
 	es.onmessage = (e) => {
 		try {
 			const event = JSON.parse(e.data) as AgentStreamEvent;
@@ -89,7 +101,9 @@ export function subscribeStream(
 	return () => es.close();
 }
 
-/* ---------- Ctx ---------- */
+// #endregion
+
+// #region Ctx、会话管理
 
 export async function getCtx(conversationId: string): Promise<AgentCtx | null> {
 	try {
@@ -98,8 +112,6 @@ export async function getCtx(conversationId: string): Promise<AgentCtx | null> {
 		return null;
 	}
 }
-
-/* ---------- 会话管理 ---------- */
 
 export async function getConversations(): Promise<ConversationMeta[]> {
 	try {
@@ -152,22 +164,18 @@ export async function updateConversation(id: string, patch: Partial<Conversation
 	}
 }
 
-/** 保存 UI 消息。**不要**顺手回写 agentCtx：ctx 由后端 Runner 自己持久化（ctx.json 是唯一真相），
- *  前端手上那份只是快照，回写会把实例树/轮次回滚。 */
-export async function saveConversationData(id: string, data: { messages: ServiceConversation['messages'] }): Promise<boolean> {
+export async function getTaskList(conversationId: string): Promise<string> {
 	try {
-		await httpFetch(`/api/conversation-data/${encodeURIComponent(id)}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(data),
-		});
-		return true;
+		const resp = await httpFetch<{ taskList: string }>(`/api/conversations/${encodeURIComponent(conversationId)}/tasklist`);
+		return resp.taskList ?? '';
 	} catch {
-		return false;
+		return '';
 	}
 }
 
-/* ---------- 设置 — 模型提供商 ---------- */
+// #endregion
+
+// #region 设置 — 模型提供商
 
 export async function getProviders(): Promise<ModelProvider[]> {
 	try {
@@ -214,7 +222,9 @@ export async function setCurrentModel(params: { standard?: ServiceSettings['curr
 	}
 }
 
-/* ---------- 设置 — 模式（取代 v1 的 Agent 配置） ---------- */
+// #endregion
+
+// #region 设置 — 模式（取代 v1 的 Agent 配置）
 
 /** 聚合所有插件 → 模式列表（含各自的 mode.json 源码） */
 export async function getModes(): Promise<ModeSummary[]> {
@@ -272,6 +282,50 @@ export async function setBasePrompt(basePrompt: string): Promise<boolean> {
 	}
 }
 
+// #endregion
+
+// #region 设置 — 内置 mock（开发用：LLM 走假模型，工具仍真实执行）
+
+export interface MockState {
+	enabled: boolean;
+	scenario: string;
+	/** 可选剧本（由后端给，前端不重复维护一份） */
+	scenarios: { id: string; label: string }[];
+}
+
+export async function getMock(): Promise<MockState> {
+	try {
+		return await httpFetch<MockState>('/api/settings/mock');
+	} catch {
+		return { enabled: false, scenario: 'web', scenarios: [] };
+	}
+}
+
+/**
+ * 切换 mock。⚠️ 运行期间后端会拒绝（409，服务正在跑 LLM 时不让换），所以调用方必须处理失败。
+ */
+export async function setMock(params: { enabled?: boolean; scenario?: string }): Promise<{ ok: boolean; error?: string }> {
+	try {
+		return await httpFetch('/api/settings/mock', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(params),
+		});
+	} catch (e: any) {
+		// httpFetch 会把整个响应体塞进 message，这里把后端的业务错误（`{ error }`）取出来给用户看
+		const raw = String(e?.message ?? e);
+		const json = raw.match(/\{.*\}$/)?.[0];
+		if (json) {
+			try {
+				return { ok: false, error: (JSON.parse(json) as { error?: string }).error ?? raw };
+			} catch {
+				// 解析失败就用原文
+			}
+		}
+		return { ok: false, error: raw };
+	}
+}
+
 export interface PluginLoadErrorInfo {
 	level: 'error' | 'warn';
 	pluginId?: string;
@@ -298,7 +352,9 @@ export async function reloadPlugins(): Promise<{ ok: boolean; modes?: string[]; 
 	}
 }
 
-/* ---------- 设置 — MCP 服务器 ---------- */
+// #endregion
+
+// #region 设置 — MCP 服务器
 
 export async function getMcpServers(): Promise<McpServerConfig[]> {
 	try {
@@ -380,7 +436,7 @@ export async function testMcpServer(config: McpServerConfig): Promise<{
 	}
 }
 
-/** 手动调用一个 MCP 工具（设置面板里用来验证效果） */
+/** 手动调用一个 MCP 工具（设置面板里用来验证效果）（TODO 前端待实现） */
 export async function callMcpTool(name: string, args: Record<string, unknown>): Promise<{ success: boolean; content: string; error?: string }> {
 	try {
 		return await httpFetch('/api/mcp/call', {
@@ -393,7 +449,9 @@ export async function callMcpTool(name: string, args: Record<string, unknown>): 
 	}
 }
 
-/* ---------- 设置 — 文件夹 ---------- */
+// #endregion
+
+// #region 设置 — 文件夹
 
 export async function getFolders(): Promise<Folder[]> {
 	try {
@@ -416,56 +474,9 @@ export async function setFolders(folders: Folder[]): Promise<boolean> {
 	}
 }
 
-/* ---------- client 工具（ask_user）的回答 ---------- */
+// #endregion
 
-/** 回答一个 client 工具调用（ask_user），续接该实例的 agentLoop */
-export async function answerToolCall(params: { conversationId: string; toolCallId: string; result: string }): Promise<{ ok: boolean; error?: string }> {
-	try {
-		return await httpFetch('/api/agent/answer', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(params),
-		});
-	} catch (e: any) {
-		return { ok: false, error: e?.message };
-	}
-}
-
-/* ---------- 任务清单 ---------- */
-
-export async function getTaskList(conversationId: string): Promise<string> {
-	try {
-		const resp = await httpFetch<{ taskList: string }>(`/api/conversations/${encodeURIComponent(conversationId)}/tasklist`);
-		return resp.taskList ?? '';
-	} catch {
-		return '';
-	}
-}
-
-export async function setTaskList(conversationId: string, taskList: string): Promise<boolean> {
-	try {
-		await httpFetch(`/api/conversations/${encodeURIComponent(conversationId)}/tasklist`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ taskList }),
-		});
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/* ---------- 单个 AgentInstance（调试 / 详情） ---------- */
-
-export async function getAgentInstance(conversationId: string, agentInstanceId: string): Promise<AgentInstance | null> {
-	try {
-		return await httpFetch<AgentInstance>(`/api/conversations/${encodeURIComponent(conversationId)}/agent-instances/${encodeURIComponent(agentInstanceId)}`);
-	} catch {
-		return null;
-	}
-}
-
-/* ---------- LLM 请求日志 ---------- */
+// #region LLM 请求日志
 
 export async function getRequests(
 	conversationId: string,
@@ -486,22 +497,6 @@ export async function getRequests(
 	}
 }
 
-export interface RequestStatsResponse {
-	total: number;
-	byStatus: Record<string, number>;
-	byPurpose: Record<string, { count: number; input: number; output: number }>;
-	byModel: Record<string, { count: number; input: number; output: number }>;
-	byAgentInstance: Record<string, { count: number; input: number; output: number; agentName?: string }>;
-}
-
-export async function getRequestStats(conversationId: string): Promise<RequestStatsResponse | null> {
-	try {
-		return await httpFetch<RequestStatsResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/requests/stats`);
-	} catch {
-		return null;
-	}
-}
-
 export async function clearRequests(conversationId: string): Promise<boolean> {
 	try {
 		await httpFetch(`/api/conversations/${encodeURIComponent(conversationId)}/requests`, { method: 'DELETE' });
@@ -510,3 +505,5 @@ export async function clearRequests(conversationId: string): Promise<boolean> {
 		return false;
 	}
 }
+
+// #endregion

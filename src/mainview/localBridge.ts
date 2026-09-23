@@ -38,7 +38,9 @@ export const dialog = {
 };
 
 async function dialogPickFolder(): Promise<string | null> {
-	const result = await rpc.request.dialogOpen({ multiple: false } as any);
+	// pickFolder 必须显式传：handler 里是 canChooseFiles: !params?.pickFolder，
+	// 漏传的话弹出来的是「选文件」框，用户根本选不中目录 —— 表现为「添加文件夹没反应」。
+	const result = await rpc.request.dialogOpen({ pickFolder: true, multiple: false });
 	if (result.ok && result.data.length > 0) return result.data[0];
 	return null;
 }

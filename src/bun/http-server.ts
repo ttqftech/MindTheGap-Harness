@@ -5,14 +5,13 @@
    Agent Service 可脱离 electrobun 独立运行。
 
    v2 的接口见 docs/Agent架构-v2设计.md §12：
-   modes / agent/answer / plugins/reload / agent-instances / requests / tasklist
+   modes / agent/answer / plugins/reload / requests / tasklist
    ========================================================================== */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type {
 	AgentAnswerRequest,
 	AgentCtx,
-	AgentInstance,
 	AgentRunRequest,
 	AgentStreamEvent,
 	McpServerConfig,
@@ -21,9 +20,10 @@ import type {
 } from '../shared/agent';
 import { createRunner, ensurePluginsLoaded, type AgentRunner } from './agent/runner';
 import { getBuiltinToolNames } from './agent/tools';
-import { setUsageEmitter } from './llm/model';
+import { setMockResolver, setUsageEmitter, type UsageEmit } from './llm/model';
+import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import {
-	clearRequests, readRequestStats, readRequests, setRequestLogOptions,
+	clearRequests, readRequests, setRequestLogOptions,
 } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
@@ -207,16 +207,43 @@ function getTaskList(conversationId: string): string {
 	return getConversationCtxById(conversationId)?.taskList ?? '';
 }
 
-function setTaskList(conversationId: string, taskList: string): { ok: boolean; error?: string } {
-	const conv = conversations[conversationId];
-	if (!conv) return { ok: false, error: 'Not found' };
-	const ctx = conv.agentCtx as AgentCtx | undefined;
-	if (!ctx) return { ok: false, error: '该会话还没有 agentCtx' };
-	ctx.taskList = taskList;
-	return { ok: true };
-}
-
 // #endregion
+
+/**
+ * 把一次 LLM 请求的账本落进 ctx。
+ *
+ * 唯一埋点是 `callLlm` 的 usage emitter —— 主循环 / 反思 / ask_child / web_rank 四条路径都会经过它，
+ * 所以账本只在这一处审计，不必在四个调用点各写一遍。
+ *
+ * 为什么落 ctx 而不是只留在 requestLog：requestLog 是**可删的诊断日志**，而界面上的用量流水必须能由
+ * ctx 独立重建（见 docs/设计-ctx唯一真相与动态投影.md §3.3）。
+ *
+ * 为什么导出：它不依赖 HTTP。`artifacts/e2e/probe-conversation.ts` 这类**进程内**探针不启本服务，
+ * 需要手动 `setUsageEmitter(recordUsageInCtx)` 才能覆盖到账本落 ctx 这条链路（否则探针里账本恒为空）。
+ */
+export function recordUsageInCtx(e: UsageEmit) {
+	if (!e.agentInstanceId) return;
+	const instance = getConversationCtxById(e.conversationId)?.agentInstances?.[e.agentInstanceId];
+	if (!instance) return;
+	instance.llmCalls = (instance.llmCalls ?? 0) + 1;
+	// 账本挂到「这次调用的产出物」上，不单开一条 system 条目（见 shared/agent.ts 的 `usages`）。
+	// emitter 在 callLlm 内部触发，比 runner push assistant 更早，所以先暂存在实例上，由 runner 取走。
+	instance.pendingUsage = [
+		...(instance.pendingUsage ?? []),
+		{
+			seq: e.seq,
+			round: e.round,
+			purpose: e.purpose,
+			model: e.model ?? '',
+			logId: e.logId,
+			input: e.tokens.input,
+			output: e.tokens.output,
+			cached: e.tokens.inputCached,
+			total: e.tokens.total,
+			durationMs: e.durationMs ?? 0,
+		},
+	];
+}
 
 /**
  * 启动 Agent HTTP 服务。
@@ -355,7 +382,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 			}
 
 			// ---------- 会话内的子资源 ----------
-			// /api/conversations/:id/{requests|requests/stats|tasklist|agent-instances/:agentInstanceId}
+			// /api/conversations/:id/{tasklist|requests}
 
 			const convSub = /^\/api\/conversations\/([^/]+)\/(.+)$/.exec(path);
 			if (convSub) {
@@ -367,19 +394,9 @@ export function startHttpServer(options: { channel?: string } = {}) {
 						sendJson(res, 200, { taskList: getTaskList(conversationId) });
 						return;
 					}
-					if (req.method === 'PUT') {
-						const body = await readBody(req);
-						const { taskList } = JSON.parse(body || '{}');
-						sendJson(res, 200, setTaskList(conversationId, taskList ?? ''));
-						return;
-					}
 				}
 
-				if (rest === 'requests' || rest === 'requests/stats') {
-					if (req.method === 'GET' && rest === 'requests/stats') {
-						sendJson(res, 200, readRequestStats(conversationId));
-						return;
-					}
+				if (rest === 'requests') {
 					if (req.method === 'GET') {
 						const limit = Number(url.searchParams.get('limit') ?? 50);
 						const records = readRequests(conversationId, {
@@ -396,15 +413,6 @@ export function startHttpServer(options: { channel?: string } = {}) {
 						sendJson(res, 200, { ok: true });
 						return;
 					}
-				}
-
-				const instanceMatch = /^agent-instances\/(.+)$/.exec(rest);
-				if (instanceMatch && req.method === 'GET') {
-					const agentInstanceId = decodeURIComponent(instanceMatch[1]);
-					const ctx = getConversationCtxById(conversationId);
-					const instance: AgentInstance | undefined = ctx?.agentInstances?.[agentInstanceId];
-					sendJson(res, 200, instance ?? { ok: false, error: 'Not found' });
-					return;
 				}
 			}
 
@@ -444,18 +452,6 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				const conv = conversations[id];
 				// 赋值即持久化（updatedAt 由 storage 自动刷新）
 				if (conv) Object.assign(conv, patch);
-				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
-				return;
-			}
-
-			// 前端只写 UI 消息：agentCtx 归后端 Runner 所有（ctx.json 是 agent 层的唯一真相），
-			// 前端手上那份只是打开会话时的快照，回写会把实例树 / 轮次 / 预算回滚成旧值。
-			if (req.method === 'PUT' && path.startsWith('/api/conversation-data/')) {
-				const id = decodeURIComponent(path.slice('/api/conversation-data/'.length));
-				const body = await readBody(req);
-				const data = JSON.parse(body || '{}');
-				const conv = conversations[id];
-				if (conv) conv.messages = data.messages;
 				sendJson(res, 200, conv ?? { ok: false, error: 'Not found' });
 				return;
 			}
@@ -506,6 +502,38 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				}
 				settings.basePrompt = basePrompt;
 				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 设置 — 内置 mock（开发用：LLM 走假模型，**工具仍真实执行**）
+			if (req.method === 'GET' && path === '/api/settings/mock') {
+				const mock = settings.debug?.mock;
+				sendJson(res, 200, {
+					enabled: mock?.enabled ?? false,
+					scenario: mock?.scenario ?? 'web',
+					scenarios: MOCK_SCENARIOS,
+				});
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/mock') {
+				// 运行期间禁止切换：它改的是「下一次 LLM 请求走谁」，中途改会让同一个 run 混入两种响应。
+				// 前端也会把开关禁用，这里是兜底（headless 调用同样受保护）。
+				for (const runner of activeRunners.values()) {
+					if (runner.isRunning()) {
+						sendJson(res, 409, { ok: false, error: 'Agent 正在运行，等它结束再切换 mock' });
+						return;
+					}
+				}
+				const body = await readBody(req);
+				const params = JSON.parse(body || '{}') as { enabled?: boolean; scenario?: string };
+				const current = settings.debug?.mock ?? { enabled: false, scenario: 'web' };
+				settings.debug.mock = {
+					enabled: typeof params.enabled === 'boolean' ? params.enabled : current.enabled,
+					scenario: typeof params.scenario === 'string' && params.scenario ? params.scenario : current.scenario,
+				};
+				logMsg(`[HttpServer] 内置 mock：${settings.debug.mock.enabled ? `开（${settings.debug.mock.scenario}）` : '关'}`);
+				sendJson(res, 200, { ok: true, ...settings.debug.mock, scenarios: MOCK_SCENARIOS });
 				return;
 			}
 
@@ -602,7 +630,16 @@ export function startHttpServer(options: { channel?: string } = {}) {
 		// 启动时加载插件 + 同步 requestLog 配置 + 订阅 usage 事件
 		const loaded = reloadPlugins();
 		setRequestLogOptions(getRequestLogOptionsFromSettings());
+		// 内置 mock：**每次请求现读**设置（开关/剧本改了下一轮立即生效；运行期间由路由守卫禁止切换）
+		setMockResolver(() => {
+			const mock = settings.debug?.mock;
+			if (!mock?.enabled) return null;
+			setMockScenario(mock.scenario);
+			return { baseUrl: ensureMockServer(), scenario: mock.scenario };
+		});
 		setUsageEmitter((e) => {
+			// 先落 ctx（真相），再广播（实时显示）：两者互不依赖，前端刷新后能从 ctx 重建
+			recordUsageInCtx(e);
 			broadcastAgentStream(e.conversationId, {
 				type: 'usage',
 				agentInstanceId: e.agentInstanceId,

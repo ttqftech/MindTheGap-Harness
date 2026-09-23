@@ -110,6 +110,7 @@
 .message {
     display: flex;
     gap: 12px;
+    outline: green 1px dashed;
 }
 
 .message.user {
@@ -168,6 +169,11 @@
     gap: 4px;
     padding: 6px 0;
     max-width: 100%;
+    outline: green 1px dashed;
+}
+
+.agent-reply>* {
+    outline: red 1px dashed;
 }
 
 .agent-block-text {
@@ -707,4 +713,101 @@
     padding: 3px 14px 6px;
     color: var(--fontColorDim);
     font-size: 0.9em;
+}
+
+/* ---------- 一次 LLM 调用 = 一个块 ----------
+   块里的子块（思考 / 正文 / 各次工具调用）都缩在它里面；账本贴在块的下方。
+   左侧这条细竖线只干一件事：让人一眼看出「这几个子块属于同一次模型输出」。 */
+
+.agent-llm {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 6px;
+    border-left: 2px solid hwb(var(--bg85) / 0.85);
+}
+
+/* ---------- 委托块 → 子 Agent 的缩进容器 ----------
+   子 Agent 与工具块**同级**、渲染在它下面（不再嵌在工具块的 <details> 里），
+   只靠左边距 + 一条竖直虚线标出「这里是委托出去的一棵子树」。 */
+
+.agent-tool-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.agent-tool-children {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 3px 0 6px 18px;
+    padding-left: 10px;
+    border-left: 2px dashed hwb(var(--bg85) / 1);
+}
+
+/* ---------- 子 Agent 嵌套节点（一个实例 = 一个可整块折叠的块） ---------- */
+
+.agent-node {
+    margin: 4px 0;
+    padding: 2px 8px 6px;
+    border-radius: 6px;
+    /* 临时调试用：一眼框出「哪一块是一个完整的子 Agent」。outline 不占布局，验证完直接删 */
+    outline: 1px dashed var(--primary);
+}
+
+.agent-node-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 0;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    font-size: 12.5px;
+    color: var(--fontColorMuted);
+}
+
+.agent-node-header::-webkit-details-marker {
+    display: none;
+}
+
+.agent-node-header::before {
+    content: '▸';
+    flex-shrink: 0;
+    opacity: 0.55;
+    transition: transform 0.12s ease;
+}
+
+details[open] > .agent-node-header::before {
+    content: '▾';
+}
+
+.agent-node-name {
+    color: var(--fontColor);
+}
+
+.agent-node-task {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 62%;
+}
+
+/* ---------- 内置 mock 开关（开发用，常亮） ---------- */
+
+.mock-scenario {
+    width: 200px;
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+/* mock 开着时用醒目色：假响应和真响应长得一模一样，忘了关很容易误以为 Agent 真在工作 */
+.chip-btn.is-mock {
+    background-color: hwb(0 45% 40% / 0.22);
+    color: var(--dangerColor, #e5484d);
+}
+
+.chip-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }

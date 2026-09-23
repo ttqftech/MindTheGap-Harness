@@ -8,9 +8,12 @@
        settings.json
        plugins/                                  # 用户插件（由 plugins/loader 扫描）
        conversations/<conversationId>/
-         ctx.json                                # 全量：meta + modeId + messages + agentCtx
-         requestLog.jsonl                        # LLM 层账本（由 llm/requestLog.ts 独立读写）
+         ctx.json                                # 全量：meta + modeId + agentCtx（唯一真相）
+         requestLog.jsonl                        # LLM 层账本（诊断日志，可删）
          workspace/{docs,backups,tmp/llm}/       # AI 工作产出
+
+   ⚠️ ctx.json 里**没有 UI 消息**（2026-09-14 起）：界面内容由 `shared/projection.ts`
+   从 agentCtx 现算，不再持久化一份投影。
 
    - settings：进程启动时通过 loadSettings() **异步读盘一次**（在 HTTP 服务监听前完成），
      之后读全走内存缓存；任意层级的写都会自动 700ms 防抖落盘。
@@ -194,10 +197,13 @@ const defaultSettings: ServiceSettings = {
 	// 基座提示词没有默认值：唯一来源是 settings.basePrompt，没填就是空串（空串是合法状态）。
 	// 这里列出来只是为了让缺字段的老 settings.json 补上一个空键，免得读侧到处判 undefined。
 	basePrompt: '',
-	folders: [{ id: 'local', name: '本地', isLocal: true }],
+	folders: [{ id: 'local', isLocal: true }],
 	mcpServers: [builtinSineServer()],
 	debug: {
 		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false },
+		// 内置 mock 默认关。⚠️ 老 settings.json 里的 `debug` 只有 requestLog，而这里是**整对象覆盖**，
+		// 所以运行时 settings.debug.mock 可能是 undefined —— 读侧必须 `?.`（见 llm/model.ts、http-server.ts）
+		mock: { enabled: false, scenario: 'web' },
 	},
 };
 
@@ -457,7 +463,6 @@ export function createConversation(params: { folderId?: string; title?: string; 
 		modeId: params.modeId ?? 'code',
 		createdAt: now,
 		updatedAt: now,
-		messages: [],
 	};
 	ensureConversationDir(id);
 	writeJsonFile(conversationCtxPath(id), raw);

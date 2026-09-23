@@ -582,11 +582,38 @@ async function parseSseStream(
 // #region 公共 API
 
 /**
+ * 开发用 mock 的解析器：由 http-server 注入（它负责读 settings）。
+ * 返回 null = 走真实请求。
+ *
+ * 放在这一处的原因：`callLlm` 是唯一 LLM 出口 —— 只换 baseUrl / apiFormat，runner、工具、SSE 全都无感。
+ * 注意开关是**每次请求现读**的（不是启动时缓存），但运行期间禁止切换（http-server 有守卫）。
+ */
+let mockResolver: (() => { baseUrl: string; scenario: string } | null) | null = null;
+
+export function setMockResolver(fn: typeof mockResolver): void {
+	mockResolver = fn;
+}
+
+/**
  * 调用 LLM 并写一条请求日志。
  * 日志写在 finally 里：成功 / 报错 / 被 abort 都会留下终态记录。
  */
 export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCallResult> {
-	const { config, messages, tools = [], onChunk = () => {}, signal, responseFormat } = req;
+	const { config: rawConfig, messages, tools = [], onChunk = () => {}, signal, responseFormat } = req;
+
+	// 开着 mock 时把这次请求转给内置 mock：强制 openai-chat 格式 + 换 baseUrl，
+	// 并把 modelId 标成 `mock:<scenario>`，这样 requestLog 与 ctx 里的账本条目一眼能看出不是真模型。
+	const mock = mockResolver?.() ?? null;
+	const isMock = mock !== null;
+	const config: ModelConfig = isMock
+		? {
+			...rawConfig,
+			apiFormat: 'openai-chat',
+			baseUrl: mock!.baseUrl,
+			apiKey: rawConfig.apiKey || 'mock',
+			modelId: `mock:${mock!.scenario}`,
+		}
+		: rawConfig;
 
 	const { logId, seq } = allocateLogId(meta.conversationId);
 	const startedAt = Date.now();
@@ -657,6 +684,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 			providerId: config.providerId,
 			model: config.modelId,
 			format: config.apiFormat,
+			mock: isMock,
 			request: {
 				messageCount: messages.length,
 				toolCount: tools.length,

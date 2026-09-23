@@ -25,12 +25,14 @@ import type {
 	AgentInstanceStatus,
 	AgentRunRequest,
 	AgentStreamEvent,
+	AskUserState,
 	LlmMessage,
 	LlmTrigger,
 	ModeDefinition,
 	ModelConfig,
 	TokenUsage,
 	ToolResult,
+	ToolResultInfo,
 } from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
@@ -72,6 +74,34 @@ function isTerminal(status: AgentInstanceStatus): boolean {
 
 function message(msg: LlmMessage): AgentInstanceMessage {
 	return { ...msg, updatedAt: now() };
+}
+
+/**
+ * 组装真正发给模型的 messages。
+ *
+ * `instance.messages` 是双重身份：既是界面转写的唯一真相，又是 LLM 上下文。所以这里必须
+ * ①滤掉「只给界面看」的条目（usage / 提问卡片状态，见 shared/agent.ts 的 uiOnly）
+ * ②剥掉内部字段（updatedAt 等），免得被序列化进请求体。
+ *
+ * ⚠️ 所有 callLlm 调用点都必须经过本函数 —— 直接 map instance.messages 会把 UI 专用内容塞给模型。
+ */
+function toLlmMessages(entries: AgentInstanceMessage[]): LlmMessage[] {
+	return entries
+		.filter((m) => !m.uiOnly)
+		.map(({ updatedAt: _updatedAt, uiOnly: _uiOnly, kind: _kind, data: _data, usages: _usages, ...rest }) => rest);
+}
+
+/**
+ * 把 usage emitter 暂存的账本挂到**这次 LLM 调用的产出物**上（assistant 消息 / 反思条目）。
+ *
+ * ⚠️ 必须在 push 产出物的那一刻调用：emitter 在 `callLlm` 内部就触发了，比 push 更早，
+ * 中间只有这一个交接点。漏掉它 = 账本永远留在 `pendingUsage` 里，界面上再也看不到。
+ */
+function adoptUsage(instance: AgentInstance, entry: AgentInstanceMessage): AgentInstanceMessage {
+	const pending = instance.pendingUsage;
+	if (!pending || pending.length === 0) return entry;
+	delete instance.pendingUsage;
+	return { ...entry, usages: pending };
 }
 
 /** 任务清单：文本 ↔ 结构化条目 */
@@ -197,6 +227,7 @@ export class AgentRunner {
 		if (!target) return { ok: false, error: `未找到等待中的工具调用 ${toolCallId}` };
 
 		this.writeToolResult(target, toolCallId, { success: true, content: result, structured: { answer: result } });
+		this.setAskUserState(target, toolCallId, 'answered', result);
 		target.pendingCallIds = (target.pendingCallIds ?? []).filter((id) => id !== toolCallId);
 		this.persist();
 		this.maybeReenter(target.agentInstanceId, 'answer');
@@ -209,6 +240,7 @@ export class AgentRunner {
 			for (const callId of instance.pendingCallIds ?? []) {
 				if (this.isClientToolResult(instance, callId)) {
 					this.writeToolResult(instance, callId, { success: true, content: '用户已跳过此提问' });
+					this.setAskUserState(instance, callId, 'skipped', '用户已跳过此提问');
 					this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, callId, toolName: 'ask_user', result: { success: true, content: '用户已跳过此提问' } });
 				}
 			}
@@ -221,8 +253,9 @@ export class AgentRunner {
 
 	/**
 	 * 发起一轮 run。
-	 * - 已有一个「未结束」的根实例（用户打断后又被唤醒）→ 沿用，不新建
-	 * - 否则新建根实例，并把上一轮 run 的实例树 / 事件流清空（每轮 run 一棵新树，避免 ctx.json 无限增长）
+	 * - 会话已有根实例 → **永远沿用**（一个会话一个根实例，历史因此天然完整，见 docs/设计-ctx唯一真相与动态投影.md §3.1）
+	 * - 会话还没有根实例 → 新建，实例树里只有它自己
+	 * 注意：实例树与事件流**只追加、不再清空**（旧实现每轮新建根实例 + 清空，正是「ctx 无法承载整段历史」的根因）。
 	 */
 	async run(userMessage: string): Promise<void> {
 		const limits = this.limits();
@@ -230,8 +263,8 @@ export class AgentRunner {
 		this.ctx.modeId = this.mode.id;
 
 		let root = this.ctx.agentInstances[this.ctx.rootAgentInstanceId];
-		// 新建根实例时由 createInstance 负责发 agent_start；只有「唤醒已有实例」才在这里补发
-		const isNewRoot = !root || isTerminal(root.status);
+		// 新建根实例时由 createInstance 负责发 agent_start；只有「沿用已有实例」才在这里补发
+		const isNewRoot = !root;
 		if (isNewRoot) {
 			const instanceId = uid();
 			const def = this.mode.agents[this.mode.rootAgent];
@@ -242,20 +275,21 @@ export class AgentRunner {
 				depth: 0,
 				task: userMessage,
 			});
-			this.ctx.agentInstances = { [instanceId]: root };
-			this.ctx.events = [];
+			this.ctx.agentInstances[instanceId] = root;
 			this.ctx.rootAgentInstanceId = instanceId;
 		}
 
 		// 上一轮挂起的 client 工具（ask_user）在用户发新消息时算作「已跳过」
 		this.skipPendingClientTools();
 
-		// 被中断的根实例：本次发言就是「唤醒它」，回到 running
+		// 被中断 / 已完成的根实例：本次发言就是「唤醒它」，回到 running
 		root.status = 'running';
 		root.interruptReason = undefined;
 		root.task = userMessage;
+		// 反思次数是实例级字段且只减不增；根实例永续之后必须按轮重置，否则反思用尽一次就再也不反思了
+		if (!isNewRoot) root.reflectionsRemaining = this.defOf(root).reflectionCount ?? 0;
 		// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，
-		// 这里只补「唤醒已有实例」的情况，否则会出现两条一模一样的 user 消息。
+		// 这里只补「沿用已有实例」的情况，否则会出现两条一模一样的 user 消息。
 		if (!isNewRoot) root.messages.push(message({ role: 'user', content: userMessage }));
 		root.lastUpdatedAt = now();
 		this.emitEvent(root, 'user_message', { content: userMessage });
@@ -317,6 +351,8 @@ export class AgentRunner {
 			summaries: [],
 			reflectionsRemaining: params.def.reflectionCount ?? 0,
 			rounds: 0,
+			// 由 llm usage emitter 累加（见 http-server.recordUsageInCtx），不在这里算
+			llmCalls: 0,
 			childAgentInstanceIds: [],
 			startedAt: now(),
 			lastUpdatedAt: now(),
@@ -375,7 +411,7 @@ export class AgentRunner {
 		let nextTrigger: LlmTrigger | null = null;
 		// 本段 agentLoop 的账本快照：进入时记一次，退出时算增量播报给前端
 		const tokensBefore: TokenUsage = { ...(instance.tokens ?? {}) };
-		const callsBefore = this.llmCallCount.get(agentInstanceId) ?? 0;
+		const callsBefore = instance.llmCalls ?? 0;
 		let exitReason: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child' = 'finish';
 		try {
 			if (this.aborted) {
@@ -416,7 +452,7 @@ export class AgentRunner {
 			const result = await callLlm(
 				{
 					config: this.model,
-					messages: instance.messages.map(({ updatedAt: _u, ...rest }) => rest),
+					messages: toLlmMessages(instance.messages),
 					tools: llmTools,
 					onChunk: (chunk) => {
 						// 思考增量先发：思考模型的推理阶段通常远长于正文，
@@ -457,9 +493,8 @@ export class AgentRunner {
 					function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
 				}));
 			}
-			instance.messages.push(message(assistantMessage));
+			instance.messages.push(adoptUsage(instance, message(assistantMessage)));
 			instance.tokens = this.mergeTokens(instance.tokens, result.usage);
-			this.bumpLlmCalls(instance.agentInstanceId);
 			instance.lastUpdatedAt = now();
 			this.emitEvent(instance, 'assistant_message', { text: result.text, toolCallIds: result.toolCalls.map((t) => t.id) });
 
@@ -516,17 +551,12 @@ export class AgentRunner {
 		}
 	}
 
-	/** 每个实例累计发起了多少次 LLM 请求（供 agentLoop 小计算「本段几次调用」） */
-	private llmCallCount = new Map<string, number>();
-
-	private bumpLlmCalls(agentInstanceId: string): void {
-		this.llmCallCount.set(agentInstanceId, (this.llmCallCount.get(agentInstanceId) ?? 0) + 1);
-	}
-
-	/** 工具内部的 LLM 请求（web_search 的相关性打分）同样记在发起它的实例账上 */
+	/**
+	 * 工具内部的 LLM 请求（web_search 的相关性打分）把 token 记在发起它的实例账上。
+	 * `llmCalls` 不在这里加：llm usage emitter 是这条路径的必经之处，已统一累加（见 http-server.recordUsageInCtx）。
+	 */
 	private chargeSubLlm(instance: AgentInstance, usage: TokenUsage): void {
 		instance.tokens = this.mergeTokens(instance.tokens, usage);
-		this.bumpLlmCalls(instance.agentInstanceId);
 	}
 
 	/**
@@ -549,7 +579,7 @@ export class AgentRunner {
 			output: (after.output ?? 0) - (before.output ?? 0),
 			total: (after.total ?? 0) - (before.total ?? 0),
 		};
-		const calls = (this.llmCallCount.get(instance.agentInstanceId) ?? 0) - callsBefore;
+		const calls = (instance.llmCalls ?? 0) - callsBefore;
 		// 本段一次都没花钱（例如纯粹在等子 Agent）就不打扰界面
 		if (!delta.total && !calls) return;
 
@@ -611,9 +641,10 @@ export class AgentRunner {
 			}
 
 			if (marker?.kind === 'ask_user') {
-				// client 工具：写占位结果 → 出循环 → 前端弹卡片
+				// client 工具：写占位结果 + 卡片状态 → 出循环 → 前端弹卡片
 				const placeholder: ToolResult = { success: true, content: '已向客户端发出提问，等待用户回应' };
 				this.writeToolResult(instance, call.id, placeholder);
+				this.setAskUserState(instance, call.id, 'waiting');
 				instance.status = 'pending';
 				suspended = true;
 				this.emitStream({
@@ -910,10 +941,8 @@ export class AgentRunner {
 		const target = this.findInstance(targetId);
 		if (!target) return { success: false, content: `找不到子实例 ${targetId}` };
 
-		// 去掉首条 system，其余全带上
-		const history = target.messages
-			.filter((_, index) => index !== 0)
-			.map(({ updatedAt: _u, ...rest }) => rest);
+		// 去掉首条 system，其余全带上（uiOnly 条目由 toLlmMessages 滤掉）
+		const history = toLlmMessages(target.messages.filter((_, index) => index !== 0));
 
 		const prompt = `${ASK_CHILD_FIXED_PROMPT}\n\n# 提问\n${question}`;
 		try {
@@ -935,7 +964,6 @@ export class AgentRunner {
 					trigger: 'tool_results',
 				},
 			);
-			this.bumpLlmCalls(asker.agentInstanceId);
 			this.emitEvent(asker, 'system', { kind: 'ask_child', targetAgentInstanceId: targetId, question, answer: result.text });
 			return {
 				success: true,
@@ -1010,14 +1038,28 @@ export class AgentRunner {
 			// ⚠️ 早先这里无条件重入，并在没追问时塞一句「（反思未产生有效追问，请自行检查是否确实完成）」
 			// 让模型「再检查一遍」——那等于用一句废话白烧一整轮 LLM（实测每次多花数千 token）。
 			if (reflectionActionable(reflection)) {
-				instance.messages.push(message({ role: 'system', content: reflection }));
+				// 有追问：这条反思要进 LLM 上下文（所以**不是** uiOnly），用 kind 标记出来，
+				// 渲染时才能和「本实例的 system prompt」区分（见 shared/projection.ts）。
+				instance.messages.push(adoptUsage(instance, {
+					...message({ role: 'system', content: reflection }),
+					kind: 'reflection',
+					data: { remaining: instance.reflectionsRemaining },
+				}));
 				this.persist();
 				// ⚠️ 不能在这里直接 maybeReenter：本函数是被 agentLoop await 的，此刻 busy 还握着，
 				// 重入会被 busy 守卫挡掉（表现为「反思完就没动静了」）。把触发类型交回 agentLoop，
 				// 等 finally 释放 busy 后再由调度器重入。
 				return 'reflection';
 			}
-			// 没有追问：落到下面的「正式结束」（status 会被重新置为 succeeded）
+			// 没有追问：这条反思只给界面看（uiOnly，不进 LLM 上下文），但要落 ctx ——
+			// 否则「刷新后反思轮消失」，而它本来就是要给用户看的东西。
+			instance.messages.push(adoptUsage(instance, {
+				...message({ role: 'system', content: reflection }),
+				uiOnly: true,
+				kind: 'reflection',
+				data: { remaining: instance.reflectionsRemaining },
+			}));
+			// 落到下面的「正式结束」（status 会被重新置为 succeeded）
 		}
 
 		// 正式结束
@@ -1054,7 +1096,8 @@ export class AgentRunner {
 		// 反思口径按 agent 级 > 模式级 > 内置默认 解析（见 plugins/loader.resolveReflectionPrompt）
 		const prompt = resolveReflectionPrompt(this.mode, def).text;
 
-		const initialSystem = instance.messages.find((m) => m.role === 'system')?.content ?? '';
+		// 取该实例的初始 system（第一条 system = 本实例的 system prompt；跳过 uiOnly 条目，它们没有正文）
+		const initialSystem = instance.messages.find((m) => m.role === 'system' && !m.uiOnly)?.content ?? '';
 		const result = await callLlm(
 			{
 				config: this.model,
@@ -1080,10 +1123,10 @@ export class AgentRunner {
 				agentInstanceRound: instance.rounds,
 			},
 		);
-		// ⚠️ 反思也是一次真金白银的 LLM 请求，必须计入本实例账本。
-		// 漏掉它的后果是：界面上的「总消耗」比 requestLog 里少一大截（反思经常比正文还长）。
+		// ⚠️ 反思也是一次真金白银的 LLM 请求，必须计入本实例的 token 账本。
+		// 漏掉它的后果是：界面上的「总消耗」比真实值少一大截（反思经常比正文还长）。
+		// （llmCalls 与 usage 条目由 usage emitter 统一记，这里不用管。）
 		instance.tokens = this.mergeTokens(instance.tokens, result.usage);
-		this.bumpLlmCalls(instance.agentInstanceId);
 		return result.text;
 	}
 
@@ -1158,34 +1201,54 @@ export class AgentRunner {
 
 	// ---------- 消息 / 事件 / 落盘 ----------
 
-	/** 写回（或追加）某次工具调用的结果 */
+	/**
+	 * 写回（或追加）某次工具调用的结果。
+	 * 结果的终态信息（成功/失败 + 结构化字段）随条目一起落 ctx（`kind: 'tool_result'`）——
+	 * 前端不必再对 `[失败] ` 前缀做字符串嗅探；delegate 的子实例 ID 也从这里取。
+	 */
 	private writeToolResult(instance: AgentInstance, callId: string, result: ToolResult): void {
 		const content = result.success ? result.content : `[失败] ${result.content}`;
+		const data: ToolResultInfo = { success: result.success, structured: result.structured, error: result.error };
 		const existing = instance.messages.find((m) => m.role === 'tool' && m.toolCallId === callId);
 		if (existing) {
 			existing.content = content;
+			existing.kind = 'tool_result';
+			existing.data = data;
 			existing.updatedAt = now();
 		} else {
-			instance.messages.push(message({ role: 'tool', content, toolCallId: callId }));
+			instance.messages.push({ ...message({ role: 'tool', content, toolCallId: callId }), kind: 'tool_result', data });
 		}
 		instance.lastUpdatedAt = now();
 		this.emitEvent(instance, 'tool_result', { callId, success: result.success, content: content.slice(0, 2000) });
 	}
 
-	/** 判断某个 pending 的 callId 是不是 client 工具（ask_user）的 */
-	private isClientToolResult(instance: AgentInstance, callId: string): boolean {
-		for (const msg of instance.messages) {
-			if (msg.role === 'assistant' && msg.toolCalls) {
-				for (const tc of msg.toolCalls) {
-					if (tc.id !== callId) continue;
-					const name = tc.function.name;
-					if (name === 'ask_user') return true;
-					// 已写入的占位结果也能认出来
-				}
-			}
+	/**
+	 * 写 / 更新某次 ask_user 的卡片状态（uiOnly 条目）。
+	 * 状态是显式的：前端不再靠 `content === '用户已跳过此提问'` 这类字符串比对判断卡片该显示成什么。
+	 */
+	private setAskUserState(instance: AgentInstance, callId: string, status: AskUserState['status'], answer?: string): void {
+		const existing = instance.messages.find(
+			(m) => m.kind === 'ask_user_state' && (m.data as AskUserState).callId === callId,
+		);
+		if (existing) {
+			existing.data = { callId, status, answer };
+			existing.updatedAt = now();
+		} else {
+			instance.messages.push({
+				...message({ role: 'system', content: '' }),
+				uiOnly: true,
+				kind: 'ask_user_state',
+				data: { callId, status, answer },
+			});
 		}
-		const toolMsg = instance.messages.find((m) => m.role === 'tool' && m.toolCallId === callId);
-		return toolMsg?.content === '已向客户端发出提问，等待用户回应';
+		instance.lastUpdatedAt = now();
+	}
+
+	/** 判断某个 pending 的 callId 是不是 client 工具（ask_user）的：看它有没有提问状态条目 */
+	private isClientToolResult(instance: AgentInstance, callId: string): boolean {
+		return instance.messages.some(
+			(m) => m.kind === 'ask_user_state' && (m.data as AskUserState).callId === callId,
+		);
 	}
 
 	private mergeTokens(prev: TokenUsage | undefined, usage: TokenUsage): TokenUsage {

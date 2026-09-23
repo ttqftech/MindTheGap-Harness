@@ -1,22 +1,29 @@
 ﻿/* ==========================================================================
    主聊天视图 — MindTheGap-Harness
 
-   对接 v2 Agent：
-   - handleSend → agentBridge.runAgent（body 用 modeId）
-   - subscribeStream 订阅流式事件实现打字机效果
-   - 事件自带 agentInstanceId → 直接映射深度，并行子 Agent 也不会串层
-   - ask_user 走 client_tool_call：渲染提问卡片，回答后 POST /api/agent/answer
+   渲染模型（2026-09-14 重构后）：
+   - 界面内容 = `foldCtxToRenderTree(mergeOverlayCtx(ctx, overlay))`，**不再有 UI 消息**
+   - ctx 是唯一真相（后端 Runner 写）；overlay 是组件内的「在飞」增量（SSE 翻译成 ctx 形状的条目）
+   - **一次 LLM 调用 = 一个块**（`RenderLlmBlock`）：思考 / 正文 / 各次工具调用都是它的**子块**，
+     工具结果贴在对应调用处（不单独成块），账本（usages）贴在块的下方
+   - 子 Agent 不再靠 depth 缩进：委托工具的**子块**下面同级挂它的节点，一个实例 = 一个可整块折叠的块
+   - ask_user 走 client_tool_call：渲染提问卡片，回答后 POST /api/agent/answer 续接
+
+   设计稿：docs/设计-ctx唯一真相与动态投影.md（§5.3 是 SSE → 条目的翻译表）
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
+import { createStore, produce } from 'solid-js/store';
 import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
 import styles from './ChatView.module.css';
-import { state as appState, actions, getActiveConversation, getProviderById, currentModeName } from '@mainview/store';
-import type { Message, MessageBlock } from '@mainview/store';
+import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
+import { emptyOverlay, foldCtxToRenderTree, mergeOverlayCtx } from '@shared/projection';
+import type { OverlayCtx, RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@shared/projection';
 import * as agentBridge from '@mainview/agentBridge';
-import type { AgentStreamEvent, ToolResult } from '@shared/agent';
+import type { AgentInstanceMessage, AgentStreamEvent, ToolResult, UsageEntry } from '@shared/agent';
 import { requestFolderPath } from '@mainview/localBridge';
+import { folderLabel } from '@shared/utils';
 import { alertMsgbox } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
 
@@ -55,7 +62,8 @@ function SparkleIcon() {
 
 // #region 常量
 
-/* 工具入参 / 输出的展示上限：「透明」不等于「无上限」：一条 web_search 的结果动辄几万字符，全量塞进 message.blocks 会把会话文件撑爆、也会让 UI 卡死。这里并注明总长度，完整内容仍在后端 ctx.json 里（图示模式可见）。 */
+/* 工具入参 / 输出的展示上限：「透明」不等于「无上限」：一条 web_search 的结果动辄几万字符，
+   全量渲染会把界面卡死。截断是**渲染层**的事——投影本身给全文，完整内容始终在 ctx 里。 */
 const TOOL_ARGS_LIMIT = 1500;
 const TOOL_OUTPUT_LIMIT = 8000;
 
@@ -68,13 +76,26 @@ const PURPOSE_LABEL: Record<string, string> = {
 	other: '其他',
 };
 
-/** agentLoop 中断原因 → 中文标签 */
-const LOOP_REASON_LABEL: Record<string, string> = {
-	ask_user: '等待用户回答',
-	finish: '本段结束',
-	interrupted: '被中断',
-	error: '出错中止',
-	await_child: '等待子 Agent',
+/** 实例状态 → 中文标签 */
+const STATUS_LABEL: Record<string, string> = {
+	running: '进行中',
+	pending: '等待中',
+	succeeded: '已完成',
+	failed: '失败',
+	interrupted: '已中断',
+};
+
+/**
+ * mock 开着时允许没有配置 provider：这份占位配置只是让请求能发出去，
+ * 后端会把 baseUrl / apiFormat 覆盖成内置 mock 的（见 `bun/llm/model.ts` 的 mockResolver）。
+ */
+const MOCK_PLACEHOLDER_MODEL: ModelConfig = {
+	providerId: 'mock',
+	modelId: 'mock',
+	apiFormat: 'openai-chat',
+	baseUrl: '',
+	apiKey: 'mock',
+	customParams: {},
 };
 
 // #endregion
@@ -87,24 +108,6 @@ function truncateWithNote(text: string, limit: number): string {
 	const head = text.slice(0, Math.floor(limit * 0.8));
 	const tail = text.slice(-Math.floor(limit * 0.2));
 	return `${head}\n\n…（已省略 ${text.length - head.length - tail.length} 字符，完整内容见后端 ctx）\n\n${tail}`;
-}
-
-/** 工具入参 → 可读字符串 */
-function formatToolArgs(args: unknown): string {
-	if (args === undefined || args === null) return '';
-	const text = typeof args === 'string' ? args : (() => {
-		try { return JSON.stringify(args, null, 2); } catch { return String(args); }
-	})();
-	return truncateWithNote(text, TOOL_ARGS_LIMIT);
-}
-
-/** 工具结果 → 可读字符串（失败时把错误信息也带上） */
-function formatToolOutput(result: ToolResult): string {
-	const body = result.content ?? '';
-	if (!result.success) {
-		return `[失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
-	}
-	return truncateWithNote(body, TOOL_OUTPUT_LIMIT);
 }
 
 /** 1234 → "1.2k"：账本里数字位数差别很大，统一压成短形式才不会把一行撑爆 */
@@ -139,13 +142,218 @@ function buildModelConfig(): ModelConfig | null {
 	};
 }
 
+/** 工具结果 → 可读字符串（失败时把错误信息也带上） */
+function toolOutputText(result: ToolResult): string {
+	const body = result.content ?? '';
+	if (!result.success) {
+		return `[失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
+	}
+	return body;
+}
+
+// #endregion
+
+// #region SSE → 在飞 overlay
+
+/**
+ * 把一条 SSE 事件翻译成「ctx 形状」的在飞条目（翻译表见设计稿 §5.3）。
+ *
+ * ⚠️ overlay 必须与 ctx 同形状（实例 → 条目），否则子 Agent 的在飞内容就没法嵌进上级的
+ * delegate 块里，只能再写一套拼树逻辑 —— 那正是旧设计病根的复现。
+ */
+function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
+	const ensure = (id: string) => {
+		if (!draft.instances[id]) draft.instances[id] = { messages: [] };
+		return draft.instances[id]!.messages;
+	};
+
+	/**
+	 * 取「当前正在写」的 assistant 条目：
+	 * - 写工具调用：复用尾部的 assistant 条目（一条 assistant 消息可以带多个工具调用）
+	 * - 写正文/思考：若尾部那条已经有工具调用了，就另起一条（工具调用之后的文字属于下一轮）
+	 */
+	const assistantEntry = (id: string, kind: 'text' | 'toolCall'): AgentInstanceMessage => {
+		const messages = ensure(id);
+		const tail = messages[messages.length - 1];
+		if (tail?.role === 'assistant') {
+			if (kind === 'toolCall') return tail;
+			if (!tail.toolCalls?.length) return tail;
+		}
+		messages.push({ role: 'assistant', content: '', updatedAt: Date.now() });
+		return messages[messages.length - 1]!;
+	};
+
+	/** 工具结果按 callId 覆盖写（同一个 callId 会来两次：占位 + 终态） */
+	const upsertToolResult = (id: string, event: Extract<AgentStreamEvent, { type: 'tool_end' }>) => {
+		const messages = ensure(id);
+		const content = toolOutputText(event.result);
+		const data = { success: event.result.success, structured: event.result.structured, error: event.result.error };
+		const existing = messages.find((m) => m.role === 'tool' && m.toolCallId === event.callId);
+		if (existing) {
+			existing.content = content;
+			existing.kind = 'tool_result';
+			existing.data = data;
+			existing.updatedAt = Date.now();
+		} else {
+			messages.push({
+				role: 'tool',
+				content,
+				toolCallId: event.callId,
+				kind: 'tool_result',
+				data,
+				updatedAt: Date.now(),
+			});
+		}
+	};
+
+	// done / error 已在 handleStreamEvent 里提前返回，但这里仍要防一手类型（它们没有 agentInstanceId）
+	const id = 'agentInstanceId' in event ? event.agentInstanceId ?? '' : '';
+	switch (event.type) {
+		case 'agent_start': {
+			ensure(id);
+			draft.meta[id] = {
+				agentInstanceId: id,
+				agentId: event.agentId,
+				agentName: event.agentName,
+				parentAgentInstanceId: event.parentAgentInstanceId,
+				depth: event.depth,
+				status: 'running',
+				task: event.task,
+				startedAt: Date.now(),
+			};
+			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = id;
+			// 首条 user 条目 = 该实例的任务（与 ctx 里的形态一致）
+			ensure(id).push({
+				role: 'user',
+				content: event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? ''),
+				updatedAt: Date.now(),
+			});
+			break;
+		}
+
+		case 'text': {
+			const entry = assistantEntry(id, 'text');
+			entry.content += event.chunk;
+			entry.updatedAt = Date.now();
+			break;
+		}
+
+		case 'reasoning': {
+			const entry = assistantEntry(id, 'text');
+			entry.reasoningContent = (entry.reasoningContent ?? '') + event.chunk;
+			entry.updatedAt = Date.now();
+			break;
+		}
+
+		case 'tool_start': {
+			const entry = assistantEntry(id, 'toolCall');
+			if (!entry.toolCalls) entry.toolCalls = [];
+			entry.toolCalls.push({
+				id: event.callId,
+				type: 'function',
+				function: { name: event.toolName, arguments: JSON.stringify(event.args ?? {}) },
+			});
+			entry.updatedAt = Date.now();
+			break;
+		}
+
+		case 'tool_end': {
+			// ask_user 的「工具块」不渲染（它渲染成提问卡片），所以不必进 overlay
+			if (event.toolName !== 'ask_user') upsertToolResult(id, event);
+			break;
+		}
+
+		case 'usage': {
+			// 只记单次调用（scope='call'）；agentLoop 的「本段小计」是派生值，不落任何一处。
+			// 账本挂到**这次调用的 assistant 条目**上（与后端的 usages 字段一致：它是那次调用自带的数据），
+			// 不另起条目 —— 否则投影只能把它平铺成一条与调用脱节的流水。
+			if (event.scope === 'loop') break;
+			const data: UsageEntry = {
+				seq: event.seq ?? 0,
+				round: event.round,
+				purpose: event.purpose ?? 'agent_loop',
+				model: event.model ?? '',
+				logId: event.logId,
+				input: event.tokens.input,
+				output: event.tokens.output,
+				cached: event.tokens.inputCached,
+				total: event.tokens.total,
+				durationMs: event.durationMs ?? 0,
+			};
+			const entry = assistantEntry(id, 'text');
+			entry.usages = [...(entry.usages ?? []), data];
+			entry.updatedAt = Date.now();
+			break;
+		}
+
+		case 'reflection': {
+			// 反思的 usage 比反思正文先到，上面已经按「挂当前 assistant」处理了；
+			// 这里把它从那条 assistant 上**取回**，改挂到反思自己的条目上（与后端形态一致）。
+			const messages = ensure(id);
+			const tail = messages[messages.length - 1];
+			let usages: UsageEntry[] | undefined;
+			if (tail?.role === 'assistant') {
+				usages = tail.usages?.filter((u) => u.purpose === 'reflection');
+				const rest = tail.usages?.filter((u) => u.purpose !== 'reflection');
+				if (rest?.length) tail.usages = rest;
+				else delete tail.usages;
+			}
+			messages.push({
+				role: 'system',
+				content: event.prompt,
+				uiOnly: true,
+				kind: 'reflection',
+				data: { remaining: event.remaining },
+				usages,
+				updatedAt: Date.now(),
+			});
+			break;
+		}
+
+		case 'client_tool_call': {
+			ensure(id).push({
+				role: 'system',
+				content: '',
+				uiOnly: true,
+				kind: 'ask_user_state',
+				data: { callId: event.callId, status: 'waiting' },
+				updatedAt: Date.now(),
+			});
+			break;
+		}
+
+		case 'agent_end': {
+			const meta = draft.meta[id];
+			if (meta) meta.status = event.status;
+			break;
+		}
+
+		default:
+			break;
+	}
+}
+
+/** 在 overlay 里把某次提问的状态改掉（回答 / 跳过） */
+function setOverlayAskState(draft: OverlayCtx, callId: string, status: 'answered' | 'skipped', answer: string): void {
+	for (const instance of Object.values(draft.instances)) {
+		const entry = instance.messages.find(
+			(m) => m.kind === 'ask_user_state' && (m.data as { callId?: string })?.callId === callId,
+		);
+		if (entry) {
+			entry.data = { callId, status, answer };
+			entry.updatedAt = Date.now();
+			return;
+		}
+	}
+}
+
 // #endregion
 
 // #region ask_user 提问卡片
 
 /** 单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
 function AskUserCard(props: {
-	block: Extract<MessageBlock, { type: 'ask_user' }>;
+	block: RenderAskInfo;
 	onSubmit: (text: string) => void;
 }) {
 	const [choice, setChoice] = createSignal<string | null>(null);
@@ -172,7 +380,7 @@ function AskUserCard(props: {
 								<label class={styles['ask-card-option']}>
 									<input
 										type="radio"
-										name={`ask-${props.block.key}`}
+										name={`ask-${props.block.callId}`}
 										checked={choice() === opt.label}
 										onchange={() => setChoice(opt.label)}
 									/>
@@ -184,7 +392,7 @@ function AskUserCard(props: {
 							)}
 						</For>
 						<label class={styles['ask-card-option']}>
-							<input type="radio" name={`ask-${props.block.key}`} checked={choice() === '__other__'} onchange={() => setChoice('__other__')} />
+							<input type="radio" name={`ask-${props.block.callId}`} checked={choice() === '__other__'} onchange={() => setChoice('__other__')} />
 							<span class={styles['ask-card-option-label']}>其他</span>
 						</label>
 					</div>
@@ -230,29 +438,28 @@ export default function ChatView() {
 
 	const [inputText, setInputText] = createSignal('');
 	const [isGenerating, setIsGenerating] = createSignal(false);
-	/** 当前流式写入的 assistant 消息 ID */
-	const [streamMsgId, setStreamMsgId] = createSignal<string | null>(null);
+	/** 本轮 run 的即时错误（重拉 ctx 后由实例的 interruptReason 接管显示） */
+	const [runError, setRunError] = createSignal<string | null>(null);
 	/** 任务清单面板 */
 	const [taskList, setTaskList] = createSignal('');
 	const [taskListOpen, setTaskListOpen] = createSignal(false);
+	/** 在飞 overlay：SSE 事件翻译成的「ctx 形状的增量」 */
+	const [overlay, setOverlay] = createStore<OverlayCtx>(emptyOverlay());
+	/** 流式期间的滚动触发（overlay 是 store，深度访问不好追踪，用一个计数器带一下） */
+	const [streamTick, setStreamTick] = createSignal(0);
 	/** 取消订阅函数 */
 	let unsubscribeFn: (() => void) | null = null;
 
 	// #endregion
 
-	// #region Agent 层级追踪
+	// #region 渲染树
 
-	/* 一次 run 内有效：
-	   v2 的事件自带 agentInstanceId，因此只需要一张 id → depth 的映射，不再靠事件顺序猜深度。
-	   另外记一张 id → 名称，用于在块上标注「这条是谁产生的」（子 Agent 的产出不再单独成块，没有名字就看不出是根 Agent 还是哪个子 Agent 在说话）。 */
-	let instanceDepths = new Map<string, number>();
-	let instanceNames = new Map<string, string>();
-	const depthOf = (agentInstanceId?: string) => (agentInstanceId ? instanceDepths.get(agentInstanceId) ?? 0 : 0);
-	/** 只给 depth > 0（子 Agent）标注名字，根 Agent 不必重复显示 */
-	const nameOf = (agentInstanceId?: string) => {
-		if (!agentInstanceId) return undefined;
-		return depthOf(agentInstanceId) > 0 ? instanceNames.get(agentInstanceId) : undefined;
-	};
+	/** 界面内容：已提交的 ctx + 在飞的 overlay，共用同一个投影函数 */
+	const renderTree = createMemo(() => {
+		const conversation = getActiveConversation();
+		streamTick();
+		return foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlay));
+	});
 
 	// #endregion
 
@@ -271,7 +478,7 @@ export default function ChatView() {
 		const conv = getActiveConversation();
 		if (!conv) return '选择文件夹...';
 		const folder = appState.folders.find((f) => f.id === conv.folderId);
-		return folder?.name || '本地';
+		return folder ? folderLabel(folder) : '本地';
 	};
 
 	const conversationTitle = () => getActiveConversation()?.title || '新任务';
@@ -291,7 +498,7 @@ export default function ChatView() {
 			...appState.folders.map((f) => ({
 				type: 'radio' as const,
 				value: f.id,
-				label: f.name,
+				label: folderLabel(f),
 				checked: activeFolderId === f.id,
 			})),
 			{ type: 'separator' as const },
@@ -300,13 +507,17 @@ export default function ChatView() {
 	});
 
 	const onFolderChange = (e: CustomEvent<string>) => {
+		if (isGenerating()) return;	// 运行期间不让改工作目录（下一轮才生效的那类改动统一锁住）
 		const value = e.detail;
 		if (value === '__new__') {
 			void (async () => {
 				const folderPath = await requestFolderPath();
-				if (folderPath) {
-					const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
-					actions.addFolder(folderPath, folderName);
+				if (!folderPath) return;
+				const folder = actions.addFolder(folderPath);
+				// 从这个下拉里新建文件夹，意图就是「把当前会话放进这个新目录」，顺手就切过去
+				if (folder) {
+					const conv = getActiveConversation();
+					if (conv) actions.setConversationFolder(conv.id, folder.id);
 				}
 			})();
 			return;
@@ -330,6 +541,7 @@ export default function ChatView() {
 	};
 
 	const onModeChange = (e: CustomEvent<string>) => {
+		if (isGenerating()) return;	// 运行期间禁止改模式
 		const value = e.detail;
 		actions.setCurrentModeId(value);
 		const conv = getActiveConversation();
@@ -356,6 +568,7 @@ export default function ChatView() {
 	});
 
 	const onModelChange = (e: CustomEvent<string>) => {
+		if (isGenerating()) return;	// 运行期间禁止改运行语义（同「回复过程中不能点发送」）
 		const value = e.detail;
 		if (typeof value !== 'string') return;
 		const sep = value.indexOf('/');
@@ -363,6 +576,36 @@ export default function ChatView() {
 		actions.setCurrentStandardModel({ providerId: value.slice(0, sep), modelId: value.slice(sep + 1) });
 		if (modelInput) modelInput.text = currentModelDisplay();
 	};
+
+	// #region 内置 mock 开关（开发用）
+
+	/** 剧本下拉：选项由后端给（`GET /api/settings/mock` 里带 scenarios），前端不重复维护 */
+	const scenarioMenu = createMemo<MenuItem[]>(() =>
+		appState.mock.scenarios.map((s) => ({
+			type: 'radio' as const,
+			value: s.id,
+			label: s.label,
+			checked: appState.mock.scenario === s.id,
+		})),
+	);
+
+	const currentScenarioLabel = () =>
+		appState.mock.scenarios.find((s) => s.id === appState.mock.scenario)?.label ?? appState.mock.scenario;
+
+	/** 点一下切换开/关。运行期间后端也会拒绝（409），这里把错误如实弹出来 */
+	const toggleMock = async () => {
+		if (isGenerating()) return;
+		const result = await actions.setMock({ enabled: !appState.mock.enabled });
+		if (!result.ok) void alertMsgbox('切换 mock 失败', result.error ?? '未知错误');
+	};
+
+	const onScenarioChange = async (e: CustomEvent<string>) => {
+		if (isGenerating()) return;
+		const result = await actions.setMock({ scenario: e.detail });
+		if (!result.ok) void alertMsgbox('切换剧本失败', result.error ?? '未知错误');
+	};
+
+	// #endregion
 
 	// #endregion
 
@@ -372,6 +615,7 @@ export default function ChatView() {
 		createEffect(() => {
 			getActiveConversation();
 			taskList();
+			streamTick();
 			queueMicrotask(() => {
 				el.scrollTop = el.scrollHeight;
 			});
@@ -384,193 +628,58 @@ export default function ChatView() {
 		setTaskList(list);
 	};
 
-	/** 拉一次最新 ctx 给结构图用（ctx 归后端所有，前端只持有快照，跑完必须重新拉） */
-	const refreshCtx = async (convId: string) => {
-		const ctx = await agentBridge.getCtx(convId);
-		if (ctx) actions.setConversationCtx(convId, ctx);
-	};
-
 	// #endregion
 
-	// #region 流式的收尾与占位消息
+	// #region 一轮 run 的开始与结束
+	//
+	// 生命周期只有两个动作：
+	//   beginRun —— 清空 overlay（清掉上一轮的残留）后发请求
+	//   endRun   —— 重拉 ctx（拿「已提交」的内容）+ 清空 overlay
+	// 中间不重拉：§6 决定了「在飞」的内容不在 ctx 里，靠 overlay 呈现即可。
 
-	/** 把一条 assistant 占位消息加到会话里，返回它的 id */
-	const addAssistantPlaceholder = (convId: string): string | null => {
-		actions.addMessage(convId, { role: 'assistant', content: '', modeId: appState.currentModeId });
-		const conv = appState.conversations.find((c) => c.id === convId);
-		return conv?.messages[conv.messages.length - 1]?.id ?? null;
-	};
-
-	/** 结束流式状态 */
-	const finishStreaming = () => {
-		const convId = appState.activeConversationId;
-		setIsGenerating(false);
-		setStreamMsgId(null);
+	const beginRun = (convId: string) => {
 		if (unsubscribeFn) {
 			unsubscribeFn();
 			unsubscribeFn = null;
 		}
-		if (convId) {
-			const conv = appState.conversations.find((c) => c.id === convId);
-			if (conv && conv.messages.length > 0) {
-				// 只写 messages：UI 消息归前端所有，agentCtx 归后端所有（ctx.json 是 agent 层的唯一真相）。
-				// 这里手上的 conv.agentCtx 只是「打开会话时的快照」，一并回写会把 Runner 刚更新过的
-				// 实例树 / 轮次 / 预算回滚成旧值。
-				void agentBridge.saveConversationData(convId, { messages: conv.messages });
-			}
+		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
+		openOverrides.clear();
+		setRunError(null);
+		setOverlay(emptyOverlay(convId, appState.currentModeId));
+		setStreamTick((v) => v + 1);
+		unsubscribeFn = agentBridge.subscribeStream(convId, (event) => handleStreamEvent(convId, event));
+	};
+
+	const endRun = async (convId: string) => {
+		setIsGenerating(false);
+		if (unsubscribeFn) {
+			unsubscribeFn();
+			unsubscribeFn = null;
 		}
+		await loadConversationCtx(convId, true);
+		setOverlay(emptyOverlay(convId, appState.currentModeId));
 	};
 
 	// #endregion
 
 	// #region 流式事件处理
 
-	/** 处理单个 AgentStreamEvent（全部写入结构化 blocks） */
 	const handleStreamEvent = (convId: string, event: AgentStreamEvent) => {
-		const msgId = streamMsgId();
-		if (!msgId) return;
-
-		switch (event.type) {
-			case 'text':
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'text',
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					agentName: nameOf(event.agentInstanceId),
-					content: event.chunk,
-				});
-				break;
-
-			case 'tool_start':
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'tool',
-					key: event.callId,
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					agentName: nameOf(event.agentInstanceId),
-					name: event.toolName,
-					status: 'running',
-					reason: event.reason,
-					args: formatToolArgs(event.args),
-				});
-				break;
-
-			case 'tool_end':
-				// 工具输出原样展示：成功是结果正文，失败是错误信息。
-				// delegate / resume_* 这类异步工具会先发一次「未完成」占位，
-				// 子 Agent 终态时再发一次终态结果，同一个 key 直接覆盖即可。
-				actions.patchMessageBlock(convId, msgId, event.callId, {
-					status: event.result.success ? 'success' : 'error',
-					output: formatToolOutput(event.result),
-				} as Partial<MessageBlock>, 'tool');
-				if (event.toolName === 'task_list_write' || event.toolName === 'task_list_read') {
-					void refreshTaskList(convId);
-				}
-				break;
-
-			case 'agent_start':
-				// 只记层级与名字，不再生成「委托卡片」——委托本身就是一次工具调用，
-				// 它的入参与结果（子 Agent 总结）都在 tool 块里，额外 UI 是重复的。
-				instanceDepths.set(event.agentInstanceId, event.depth);
-				instanceNames.set(event.agentInstanceId, event.agentName);
-				break;
-
-			case 'agent_end':
-				break;
-
-			case 'reasoning':
-				// 思考模型的推理增量：实时显示，但折叠起来不抢正文的位置
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'reasoning',
-					key: `think-${event.agentInstanceId}-${Date.now()}`,
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					content: event.chunk,
-				});
-				break;
-
-			case 'reflection':
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'reflection',
-					key: `refl-${event.agentInstanceId}-${Date.now()}`,
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					agentName: nameOf(event.agentInstanceId),
-					remaining: event.remaining,
-					text: event.prompt,
-				});
-				break;
-
-			case 'client_tool_call':
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'ask_user',
-					key: event.callId,
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					question: String((event.args as Record<string, unknown>)?.question ?? '需要你的确认'),
-					options: ((event.args as Record<string, unknown>)?.options as { label: string; description?: string }[]) ?? [],
-					status: 'waiting',
-				});
-				// 挂起：结束本轮「生成中」状态，让用户可以回答或直接发新消息（后者会把提问标记为跳过）
-				finishStreaming();
-				break;
-
-			case 'error':
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'error',
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					message: event.message,
-				});
-				finishStreaming();
-				break;
-
-			case 'usage': {
-				const t = event.tokens ?? {};
-				// scope='loop' 是「本段小计」，它只是对已播报过的单次调用再汇总一次，
-				// 不能重复计入总量；只有 scope='call' 才代表真正多花了一次请求的钱。
-				if (event.scope !== 'loop') {
-					actions.addMessageTokens(convId, msgId, t);
-				}
-				actions.appendMessageBlock(convId, msgId, {
-					type: 'usage',
-					key: `usage-${event.logId ?? Date.now()}-${event.scope ?? 'call'}`,
-					depth: depthOf(event.agentInstanceId),
-					agentInstanceId: event.agentInstanceId,
-					agentName: event.agentName ?? nameOf(event.agentInstanceId),
-					scope: event.scope ?? 'call',
-					input: t.input,
-					output: t.output,
-					cached: t.inputCached,
-					total: t.total,
-					seq: event.seq,
-					round: event.round,
-					purpose: event.purpose,
-					durationMs: event.durationMs,
-					model: event.model,
-					deltaInput: event.loopDelta?.input,
-					deltaOutput: event.loopDelta?.output,
-					deltaTotal: event.loopDelta?.total,
-					loopCalls: event.loopCalls,
-					reason: event.reason,
-				});
-				break;
-			}
-
-			case 'done':
-				{
-					const conv = appState.conversations.find((c) => c.id === convId);
-					const msg = conv?.messages.find((m) => m.id === msgId);
-					const hasText = msg?.blocks?.some((b) => b.type === 'text') || !!msg?.content;
-					if (!hasText && event.summary) {
-						actions.appendMessageBlock(convId, msgId, { type: 'text', depth: 0, content: event.summary });
-					}
-				}
-				void refreshTaskList(convId);
-				void refreshCtx(convId);
-				finishStreaming();
-				break;
+		if (event.type === 'done') {
+			void refreshTaskList(convId);
+			void endRun(convId);
+			return;
 		}
+		if (event.type === 'error') {
+			setRunError(event.message);
+			return;
+		}
+		// ask_user 挂起：本轮还没结束（实例在等用户），只是让输入框可用，订阅与 overlay 都留着
+		if (event.type === 'client_tool_call') {
+			setIsGenerating(false);
+		}
+		setOverlay(produce((draft) => applyEvent(draft, event)));
+		setStreamTick((v) => v + 1);
 	};
 
 	// #endregion
@@ -581,7 +690,8 @@ export default function ChatView() {
 		const text = inputText().trim();
 		if (!text || isGenerating()) return;
 
-		const modelConfig = buildModelConfig();
+		// mock 开着时就算没配 provider 也能跑（后端会把请求转给内置 mock）
+		const modelConfig = buildModelConfig() ?? (appState.mock.enabled ? MOCK_PLACEHOLDER_MODEL : null);
 		if (!modelConfig) {
 			void alertMsgbox('未配置模型', '请先在「设置 → 模型」里配置模型提供商与模型，然后再发起任务。');
 			return;
@@ -595,50 +705,35 @@ export default function ChatView() {
 		if (!conv) {
 			conv = await actions.createConversation('local', text.slice(0, 20) || '新任务');
 			if (!conv) return;
-		} else if (conv.messages.length === 0) {
+		} else if (!conv.agentCtx) {
+			// 会话还没有跑过 → 用首句当标题（旧逻辑用 messages 为空判断，现在等价于「没有 ctx」）
 			await actions.renameConversation(conv.id, text.slice(0, 30));
 		}
 		const convId = conv.id;
 
-		// 用户直接发新消息：把仍等待回答的卡片标记为已跳过
-		for (const msg of conv.messages) {
-			for (const block of msg.blocks ?? []) {
-				if (block.type === 'ask_user' && block.status === 'waiting') {
-					actions.patchMessageBlock(convId, msg.id, block.key, { status: 'skipped', answer: '用户已跳过此提问' } as Partial<MessageBlock>);
-				}
-			}
-		}
-
-		actions.addMessage(convId, { role: 'user', content: text });
-		const assistantMsgId = addAssistantPlaceholder(convId);
-		if (!assistantMsgId) {
-			console.error('[ChatView] 没能获取新添加的 assistant 消息');
-			return;
-		}
+		// 会话所属的文件夹就是它的工作目录：「本地」没有 path，等于不传，
+		// 由后端回退到 process.cwd()。文件夹改过之后，下一轮 run 自动用新目录。
+		const runningDir = appState.folders.find((f) => f.id === conv.folderId)?.path;
 
 		setInputText('');
 		setIsGenerating(true);
-		setStreamMsgId(assistantMsgId);
-		instanceDepths = new Map(); instanceNames = new Map();
-
-
-		unsubscribeFn = agentBridge.subscribeStream(convId, (event) => handleStreamEvent(convId, event));
+		beginRun(convId);
 
 		try {
 			const result = await agentBridge.runAgent({
 				conversationId: convId,
 				userMessage: text,
 				modeId: appState.currentModeId,
+				runningDir,
 				model: modelConfig,
 			});
-
 			if (!result.ok) {
-				actions.updateMessage(convId, assistantMsgId, { content: `❌ Agent 错误: ${result.error}` });
-				finishStreaming();
+				setRunError(`❌ Agent 错误: ${result.error}`);
+				await endRun(convId);
 			}
 		} catch (err: any) {
-			actions.updateMessage(convId, assistantMsgId, { content: `❌ 调用失败: ${err?.message || String(err)}` });
-			finishStreaming();
+			setRunError(`❌ 调用失败: ${err?.message || String(err)}`);
+			await endRun(convId);
 		}
 	};
 
@@ -651,29 +746,25 @@ export default function ChatView() {
 
 	const handleStop = async () => {
 		const conv = getActiveConversation();
-		if (conv) await agentBridge.cancelAgent(conv.id);
-		finishStreaming();
+		if (conv) {
+			await agentBridge.cancelAgent(conv.id);
+			await endRun(conv.id);
+		} else {
+			setIsGenerating(false);
+		}
 	};
 
-	/** 回答 ask_user 卡片：把答案续接回该实例，并开一条新的 assistant 消息承接后续输出 */
-	const handleAskUserAnswer = async (convId: string, msgId: string, callId: string, text: string) => {
-		actions.patchMessageBlock(convId, msgId, callId, {
-			status: text === '用户已跳过此提问' ? 'skipped' : 'answered',
-			answer: text,
-		} as Partial<MessageBlock>);
+	/** 回答提问卡片：本地先把状态改成已回答，再 POST 续接（订阅还开着，后续输出继续进 overlay） */
+	const handleAskUserAnswer = async (convId: string, callId: string, text: string) => {
+		const skipped = text === '用户已跳过此提问';
+		setOverlay(produce((draft) => setOverlayAskState(draft, callId, skipped ? 'skipped' : 'answered', text)));
+		if (skipped) return;
 
-		if (text === '用户已跳过此提问') return;
-
-		const newMsgId = addAssistantPlaceholder(convId);
-		if (!newMsgId) return;
 		setIsGenerating(true);
-		setStreamMsgId(newMsgId);
-		unsubscribeFn = agentBridge.subscribeStream(convId, (event) => handleStreamEvent(convId, event));
-
 		const result = await actions.answerToolCall(convId, callId, text);
 		if (!result.ok) {
-			actions.appendMessageBlock(convId, newMsgId, { type: 'error', depth: 0, message: `回答提交失败: ${result.error}` });
-			finishStreaming();
+			setRunError(`回答提交失败: ${result.error}`);
+			await endRun(convId);
 		}
 	};
 
@@ -681,153 +772,240 @@ export default function ChatView() {
 
 	// #region 块渲染
 
-	/** 渲染单个结构化块：文本 / 工具调用 / 子 Agent / 反思轮 / 提问卡片 / 错误 */
-	const renderBlock = (block: MessageBlock, msgId: string) => {
-		const indent = { 'margin-left': `${block.depth * 18}px` };
-		const convId = appState.activeConversationId ?? '';
+	/**
+	 * 用户手动折叠/展开过的块。
+	 *
+	 * 投影每次重算都会**重建块对象**（流式期间每来一个增量就重算一次），DOM 上的 `<details>` 会被换掉，
+	 * 不把用户的意愿记在这里就会被弹回去。key 用块的稳定标识（工具用 callId、子 Agent 用实例 id）——
+	 * ⚠️ 每轮 run 开始时清空：根实例是永续的，不清的话上一条轮次的展开状态会串到新轮次的同名块上。
+	 */
+	const openOverrides = new Map<string, boolean>();
+	const openState = (key: string, fallback: boolean) => openOverrides.get(key) ?? fallback;
+	const rememberOpen = (key: string, isOpen: boolean) => {
+		openOverrides.set(key, isOpen);
+	};
 
-		switch (block.type) {
-			case 'text':
+	/** 一次 LLM 调用的账本：贴在所属块的**下方**（它是那次调用自带的一条数据，不是独立条目） */
+	const renderUsage = (usage: UsageEntry) => {
+		const parts: string[] = [`#${usage.seq ?? '?'}`];
+		if (usage.round) parts.push(`第 ${usage.round} 轮`);
+		parts.push(`↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)}`);
+		parts.push(`共 ${fmtTokens(usage.total)}`);
+		if (usage.cached) parts.push(`缓存 ${fmtTokens(usage.cached)}`);
+		const duration = fmtDuration(usage.durationMs);
+		if (duration) parts.push(duration);
+		if (usage.purpose && usage.purpose !== 'agent_loop') {
+			parts.push(PURPOSE_LABEL[usage.purpose] ?? usage.purpose);
+		}
+		return (
+			<div class={styles['agent-block-usage']}>
+				<span class={styles['agent-usage-icon']}>🧮</span>
+				<span class={styles['agent-usage-text']}>{parts.join(' · ')}</span>
+			</div>
+		);
+	};
+
+	/**
+	 * LLM 调用块里的**一个子块**：思考 / 正文 / 一次工具调用。
+	 * 工具调用的结果贴在同一处（`role:'tool'` 的条目由投影合并进来），不单独成块。
+	 */
+	const renderSubBlock = (sub: RenderSubBlock) => {
+		switch (sub.type) {
+			case 'reasoning':
+				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
+				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
 				return (
-					<div style={indent}>
-						<Show when={block.agentName}>
-							<div class={styles['agent-block-owner']}>🤖 {block.agentName}</div>
-						</Show>
-						<div class={styles['agent-block-text']}>{block.content}</div>
-					</div>
+					<details class={styles['agent-block-reasoning']}>
+						<summary>
+							<span class={styles['agent-reasoning-label']}>💭 思考中</span>
+							<span class={styles['agent-reasoning-peek']}>{sub.content.slice(-72)}</span>
+						</summary>
+						<div class={styles['agent-block-reasoning-body']}>{sub.content}</div>
+					</details>
+				);
+
+			case 'text':
+				return <div class={styles['agent-block-text']}>{sub.content}</div>;
+
+			case 'reflection':
+				// 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定，折叠起来看
+				return (
+					<details class={styles['agent-block-reflection']}>
+						<summary>🪞 反思轮{sub.remaining !== undefined ? `（剩 ${sub.remaining} 次）` : ''}</summary>
+						<div class={styles['agent-block-reflection-body']}>{sub.content}</div>
+					</details>
 				);
 
 			case 'tool': {
-				// 工具调用 = 一行摘要（谁调用 / 调什么 / 为什么 / 状态 / 输出预览）+ 可展开的入参与完整输出。
-				// 委托、总结返回（finish）、ask_user 在后端都是工具调用，因此一律走这里，不另设 UI。
-				return (
+				const tool = sub as RenderToolSub;
+
+				// ask_user 的工具调用渲染成提问卡片（它的「结果」是用户回答，不是工具输出）
+				if (tool.ask) {
+					const convId = appState.activeConversationId ?? '';
+					return (
+						<AskUserCard
+							block={tool.ask}
+							onSubmit={(text) => void handleAskUserAnswer(convId, tool.callId, text)}
+						/>
+					);
+				}
+
+				// 工具调用 = 一行摘要（状态 + 工具名 + 理由 + 输出预览）+ 可展开的入参与完整输出。
+				const childCount = tool.children?.length ?? 0;
+				// 普通工具：输出短就直接展开（一眼看到结果），长的折起来。
+				// 子节点不再影响展开态 —— 它们已经不在这个 <details> 里了（见下面的注释）。
+				const toolBlock = (
 					<details
 						class={styles['agent-block-tool']}
-						style={indent}
-						classList={{ [styles['is-error']]: block.status === 'error' }}
-						/* 直接在属性里写表达式（而不是先算好存常量），Solid 才会把它编译成响应式更新：
-						   工具结果到达时，短输出 / 出错的块会自动展开，长的仍保持折叠。 */
-						open={block.status === 'error' || (!!block.output && block.output.length <= 240) ? true : undefined}
+						classList={{ [styles['is-error']]: tool.status === 'error' }}
+						open={openState(`tool:${tool.callId}`, tool.status === 'error' || (!!tool.output && tool.output.length <= 240))}
+						ontoggle={(e) => rememberOpen(`tool:${tool.callId}`, e.currentTarget.open)}
 					>
 						<summary class={styles['agent-tool-summary']}>
 							<span class={styles['agent-tool-icon']}>
-								{block.status === 'running' ? '⏳' : block.status === 'success' ? '✓' : '✗'}
+								{tool.status === 'running' ? '⏳' : tool.status === 'success' ? '✓' : '✗'}
 							</span>
-							<span class={styles['agent-tool-name']}>{block.name}</span>
-							<Show when={block.agentName}>
-								<span class={styles['agent-tool-owner']}>{block.agentName}</span>
+							<span class={styles['agent-tool-name']}>{tool.name}</span>
+							<Show when={childCount > 0}>
+								{/* 子 Agent 渲染在这个块**下面**（同级），这里只提示它委托出去了几个 */}
+								<span class={styles['agent-tool-owner']}>↳ {childCount} 个子 Agent</span>
 							</Show>
-							<Show when={block.reason}>
-								<span class={styles['agent-tool-reason']}>{block.reason}</span>
+							<Show when={tool.reason}>
+								<span class={styles['agent-tool-reason']}>{tool.reason}</span>
 							</Show>
 							<Show
-								when={block.output}
+								when={tool.output}
 								fallback={
-									<Show when={block.status === 'running'}>
+									<Show when={tool.status === 'running'}>
 										<span class={styles['agent-tool-preview']}>执行中…</span>
 									</Show>
 								}
 							>
 								<span class={styles['agent-tool-preview']}>
-									{block.output!.replace(/\s+/g, ' ').trim().slice(0, 120)}
+									{tool.output.replace(/\s+/g, ' ').trim().slice(0, 120)}
 								</span>
 							</Show>
 						</summary>
 						<div class={styles['agent-tool-body']}>
-							<Show when={block.args}>
+							<Show when={tool.args}>
 								<div class={styles['agent-tool-section']}>入参</div>
-								<pre class={styles['agent-tool-pre']}>{block.args}</pre>
+								<pre class={styles['agent-tool-pre']}>{truncateWithNote(tool.args, TOOL_ARGS_LIMIT)}</pre>
 							</Show>
-							<Show when={block.output}>
+							<Show when={tool.output}>
 								<div class={styles['agent-tool-section']}>输出</div>
-								<pre class={styles['agent-tool-pre']}>{block.output}</pre>
+								<pre class={styles['agent-tool-pre']}>{truncateWithNote(tool.output, TOOL_OUTPUT_LIMIT)}</pre>
 							</Show>
-							<Show when={!block.args && !block.output}>
+							<Show when={!tool.args && !tool.output}>
 								<div class={styles['agent-tool-hint']}>
-									{block.status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
+									{tool.status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
 								</div>
 							</Show>
 						</div>
 					</details>
 				);
-			}
 
-			case 'reasoning':
-				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
-				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
+				// ⚠️ 委托 / 唤醒类工具：子 Agent **不嵌在上面那个 <details> 里**，而是同级渲染在它下面。
+				// 理由：① 折叠工具块不该把整棵子 Agent 树一起藏起来
+				//       ② 子 Agent 要有自己的左边距，使「哪一块是一个完整的子 Agent」从结构上就看得出来
+				if (childCount === 0) return toolBlock;
 				return (
-					<details class={styles['agent-block-reasoning']} style={indent}>
-						<summary>
-							<span class={styles['agent-reasoning-label']}>💭 思考中</span>
-							<span class={styles['agent-reasoning-peek']}>{block.content.slice(-72)}</span>
-						</summary>
-						<div class={styles['agent-block-reasoning-body']}>{block.content}</div>
-					</details>
-				);
-
-			case 'usage': {
-				// 单次调用一行「流水」；agentLoop 中断时一行「小计」（加粗，因为它才是用户要看的那个数）
-				const isLoop = block.scope === 'loop';
-				const parts: string[] = [];
-				if (isLoop) {
-					parts.push(`本段 ${block.loopCalls ?? 0} 次调用`);
-					parts.push(`↑${fmtTokens(block.deltaInput)} ↓${fmtTokens(block.deltaOutput)}`);
-					parts.push(`本段共 ${fmtTokens(block.deltaTotal)}`);
-					parts.push(`累计 ${fmtTokens(block.total)}`);
-					if (block.reason) parts.push(LOOP_REASON_LABEL[block.reason] ?? block.reason);
-				} else {
-					parts.push(`#${block.seq ?? '?'}`);
-					if (block.round) parts.push(`第 ${block.round} 轮`);
-					parts.push(`↑${fmtTokens(block.input)} ↓${fmtTokens(block.output)}`);
-					parts.push(`共 ${fmtTokens(block.total)}`);
-					if (block.cached) parts.push(`缓存 ${fmtTokens(block.cached)}`);
-					const dur = fmtDuration(block.durationMs);
-					if (dur) parts.push(dur);
-					if (block.purpose && block.purpose !== 'agent_loop') {
-						parts.push(PURPOSE_LABEL[block.purpose] ?? block.purpose);
-					}
-				}
-				return (
-					<div
-						class={styles['agent-block-usage']}
-						style={indent}
-						classList={{ [styles['is-loop']]: isLoop }}
-					>
-						<span class={styles['agent-usage-icon']}>{isLoop ? '∑' : '🧮'}</span>
-						<Show when={block.agentName}>
-							<span class={styles['agent-usage-owner']}>{block.agentName}</span>
-						</Show>
-						<span class={styles['agent-usage-text']}>{parts.join(' · ')}</span>
+					<div class={styles['agent-tool-group']}>
+						{toolBlock}
+						<div class={styles['agent-tool-children']}>
+							<For each={tool.children}>{(child) => renderNode(child, false)}</For>
+						</div>
 					</div>
 				);
 			}
+		}
+	};
 
-			case 'reflection':
+	/** 单个顶层块（`isRoot` 决定用户发言是否渲染成气泡：子 Agent 的任务已在头部显示） */
+	const renderBlock = (block: RenderBlock, isRoot: boolean) => {
+		switch (block.type) {
+			case 'user':
+				if (!isRoot) return null;
 				return (
-					<details class={styles['agent-block-reflection']} style={indent}>
-						<summary>
-							🪞 反思轮（剩 {block.remaining} 次）
-							<Show when={block.agentName}>
-								<span class={styles['agent-tool-owner']}>{block.agentName}</span>
-							</Show>
-						</summary>
-						<div class={styles['agent-block-reflection-body']}>{block.text}</div>
-					</details>
+					<div class={`${styles.message} ${styles.user}`}>
+						<div class={styles['message-avatar']}>
+							<UserIcon />
+						</div>
+						<div class={styles['message-content']}>{block.content}</div>
+					</div>
 				);
 
-			case 'ask_user':
+			// ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方
+			case 'llm':
 				return (
-					<div style={indent}>
-						<AskUserCard
-							block={block}
-							onSubmit={(text) => void handleAskUserAnswer(convId, msgId, block.key, text)}
-						/>
+					<div class={styles['agent-llm']}>
+						<For each={block.subBlocks}>{(sub) => renderSubBlock(sub)}</For>
+						<Show when={block.usages}>{(usages) => (
+							<For each={usages()}>{(usage) => renderUsage(usage)}</For>
+						)}</Show>
 					</div>
 				);
 
 			case 'error':
-				return <div class={styles['agent-block-error']} style={indent}>❌ {block.message}</div>;
+				return <div class={styles['agent-block-error']}>❌ {block.message}</div>;
+
+			case 'agent':
+				return renderNode(block.node, false);
 		}
+	};
+
+	/**
+	 * 一个 Agent 实例 = 一个块序列（含它的子节点）。
+	 * 子 Agent 用 `<details>` 整块折叠（状态 + 名字 + 任务在头部，展开才是它自己的产出）。
+	 */
+	const renderNode = (node: RenderAgentNode, isRoot: boolean) => {
+		const blockList = () => (
+			<>
+				<For each={node.blocks}>{(block) => renderBlock(block, isRoot)}</For>
+			</>
+		);
+		const usageFootnote = () => (
+			<Show when={node.tokens || node.llmCalls > 0}>
+				<div class={styles['agent-msg-usage']}>
+					共 {node.llmCalls} 次 LLM 调用 · tokens ↑{fmtTokens(node.tokens?.input)} ↓{fmtTokens(node.tokens?.output)}
+					<Show when={node.tokens?.inputCached}>
+						{' '}· 缓存 {fmtTokens(node.tokens!.inputCached)}
+					</Show>
+					<Show when={node.rounds > 0}>
+						{' '}· {node.rounds} 轮
+					</Show>
+				</div>
+			</Show>
+		);
+
+		if (isRoot) {
+			return (
+				<div class={styles['agent-reply']}>
+					{blockList()}
+					{usageFootnote()}
+				</div>
+			);
+		}
+
+		return (
+			<details
+				class={styles['agent-node']}
+				/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。
+				   曾经按 status 自动折（跑完就收起），结果是「子 Agent 一完成就从界面上消失」。 */
+				open={openState(`node:${node.agentInstanceId}`, true)}
+				ontoggle={(e) => rememberOpen(`node:${node.agentInstanceId}`, e.currentTarget.open)}
+			>
+				<summary class={styles['agent-node-header']}>
+					<span>🤖</span>
+					<span class={styles['agent-node-name']}>{node.agentName || node.agentId}</span>
+					<span>{STATUS_LABEL[node.status] ?? node.status}</span>
+					<Show when={node.task}>
+						<span class={styles['agent-node-task']}>{node.task}</span>
+					</Show>
+				</summary>
+				{blockList()}
+				{usageFootnote()}
+			</details>
+		);
 	};
 
 	// #endregion
@@ -863,7 +1041,7 @@ export default function ChatView() {
 
 			{/* 聊天区域 */}
 			<div class={styles['chat-area']} ref={chatAreaRef}>
-				<Show when={!getActiveConversation() || getActiveConversation()!.messages.length === 0}>
+				<Show when={!renderTree()}>
 					<div class={styles['empty-state']}>
 						<div class={styles['empty-state-logo']}>
 							<SparkleIcon />
@@ -873,7 +1051,7 @@ export default function ChatView() {
 					</div>
 				</Show>
 
-				<Show when={appState.ui.viewMode === 'chat' && getActiveConversation()}>
+				<Show when={appState.ui.viewMode === 'chat' && renderTree()}>
 					<div class={styles['message-list']}>
 						{/* 任务清单小面板（可折叠） */}
 						<Show when={parseTaskListLines(taskList()).length > 0}>
@@ -890,44 +1068,14 @@ export default function ChatView() {
 							</div>
 						</Show>
 
-						<For each={getActiveConversation()!.messages}>
-							{(msg) => (
-								<Show
-									when={msg.role === 'assistant'}
-									fallback={
-										<div class={`${styles.message} ${styles[msg.role]}`}>
-											<div class={styles['message-avatar']}>
-												<UserIcon />
-											</div>
-											<div class={styles['message-content']}>{msg.content}</div>
-										</div>
-									}
-								>
-									<div class={styles['agent-reply']}>
-										<Show
-											when={msg.blocks?.length}
-											fallback={<div class={styles['agent-block-text']}>{msg.content}</div>}
-										>
-											<For each={msg.blocks}>
-												{(block) => renderBlock(block, msg.id)}
-											</For>
-										</Show>
-										{/* 用量脚注：ctx 里记的账本，前端能看到才算透明 */}
-										<Show when={msg.tokens}>
-											<div class={styles['agent-msg-usage']}>
-												共 {msg.llmCalls ?? 0} 次 LLM 调用 · tokens ↑{fmtTokens(msg.tokens!.input)} ↓{fmtTokens(msg.tokens!.output)}
-												<Show when={msg.tokens!.cached}>
-													{' '}· 缓存 {fmtTokens(msg.tokens!.cached)}
-												</Show>
-												<Show when={msg.duration}>
-													{' '}· {(msg.duration! / 1000).toFixed(1)}s
-												</Show>
-											</div>
-										</Show>
-									</div>
-								</Show>
-							)}
-						</For>
+						{/* 转写：从根实例开始递归渲染 */}
+						{renderNode(renderTree()!, true)}
+
+						{/* 本轮即时错误（重拉 ctx 后由失败的实例自己带错误块） */}
+						<Show when={runError()}>
+							<div class={styles['agent-block-error']}>❌ {runError()}</div>
+						</Show>
+
 						<Show when={isGenerating()}>
 							<div class={styles['agent-reply']}>
 								<span style={{ display: 'inline-flex', gap: '4px', padding: '6px 0' }}>
@@ -955,6 +1103,7 @@ export default function ChatView() {
 							title="运行文件夹"
 							placeholder="选择文件夹"
 							prop:readonly={true}
+							prop:disabled={isGenerating()}
 							prop:text={currentFolderDisplay()}
 							prop:list={folderMenu()}
 							onchange={onFolderChange}
@@ -964,10 +1113,38 @@ export default function ChatView() {
 							title="运行模式"
 							placeholder="选择模式"
 							prop:readonly={true}
+							prop:disabled={isGenerating()}
 							prop:text={currentModeLabel()}
 							prop:list={modeMenu()}
 							onchange={onModeChange}
 						/>
+						{/* 内置 mock 开关：常亮。开着时是红的 —— 假响应和真响应长得一模一样，
+						    忘了关很容易误以为 Agent 真在工作（工具是真执行的） */}
+						<button
+							class={styles['chip-btn']}
+							classList={{ [styles['is-mock']]: appState.mock.enabled }}
+							disabled={isGenerating()}
+							title={
+								appState.mock.enabled
+									? 'LLM 走内置 mock（工具仍真实执行）。运行期间不能切换'
+									: '点一下打开：LLM 走内置 mock，工具仍真实执行'
+							}
+							onclick={() => void toggleMock()}
+						>
+							🎭 {appState.mock.enabled ? `mock：${appState.mock.scenario}` : 'mock 关'}
+						</button>
+						<Show when={appState.mock.enabled}>
+							<ffbox-dropdown-input
+								class={styles['mock-scenario']}
+								title="mock 剧本"
+								placeholder="选择剧本"
+								prop:readonly={true}
+								prop:disabled={isGenerating()}
+								prop:text={currentScenarioLabel()}
+								prop:list={scenarioMenu()}
+								onchange={onScenarioChange}
+							/>
+						</Show>
 					</div>
 
 					<div class={styles['input-textarea-wrapper']}>
@@ -995,6 +1172,7 @@ export default function ChatView() {
 							title="选择模型"
 							placeholder="选择模型"
 							prop:readonly={true}
+							prop:disabled={isGenerating()}
 							prop:text={currentModelDisplay()}
 							prop:list={modelMenu()}
 							onchange={onModelChange}

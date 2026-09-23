@@ -12,11 +12,11 @@
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/localBridge';
 import * as agentBridge from '@mainview/agentBridge';
-import type { AgentCtx, ConversationMeta, Message, MessageBlock, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 
 // 转发共享类型（UI 侧统一从 store 引入，避免到处写相对路径）
-export type { Message, MessageBlock, MessageRole, ModelProvider, ModelProviderModel, ModeSummary, AgentStreamEvent } from '@shared/agent';
+export type { ModelProvider, ModelProviderModel, ModeSummary, AgentStreamEvent } from '@shared/agent';
 
 // #region 前端扩展类型
 
@@ -29,12 +29,14 @@ export interface UsageStats {
 	showTokensOutput: boolean;
 }
 
+/**
+ * UI 侧会话 = 元信息 + ctx（内存快照）。
+ *
+ * ⚠️ **没有 messages**：界面上的内容一律由 ctx 现算（`foldCtxToRenderTree()`），
+ * 不再持久化一份「UI 投影」。流式期间「在飞」的那部分放在组件自己的 overlay 里（§5.3）。
+ */
 export type UIConversation = ConversationMeta & {
-	messages: Message[];
 	agentCtx?: AgentCtx;
-	isStreaming: boolean;
-	scrollPosition?: number;
-	localDraft?: string;
 };
 
 export type ViewMode = 'chat' | 'diagram';
@@ -68,6 +70,8 @@ export type AppState = {
 	usage: UsageStats;	// 设置页用量统计（TODO 收归到设置页本身，不直接存储在 AppState 中）
 	mcpServers: McpServerConfig[];	// MCP 服务器配置（持久化在后端 settings.json）
 	mcpStatus: McpServerStatus[];	// MCP 运行态（后端内存维护，不持久化）
+	/** 内置 mock 开关（后端 settings.debug.mock）。开发用：LLM 走假模型，**工具仍真实执行** */
+	mock: { enabled: boolean; scenario: string; scenarios: { id: string; label: string }[] };
 };
 
 // #endregion
@@ -86,7 +90,7 @@ const initialUI: UIState = {
 
 export const defaultState: AppState = {
 	themeMode: 'system',
-	folders: [{ id: 'local', name: '本地', isLocal: true }],
+	folders: [{ id: 'local', isLocal: true }],
 	conversations: [],
 	activeConversationId: null,
 	ui: initialUI,
@@ -109,6 +113,7 @@ export const defaultState: AppState = {
 	},
 	mcpServers: [],
 	mcpStatus: [],
+	mock: { enabled: false, scenario: 'web', scenarios: [] },
 };
 
 export const [state, setState] = createStore<AppState>(defaultState);
@@ -178,7 +183,7 @@ async function saveBackendSettings() {
 async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth] = await Promise.all([
+	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, mock] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getModes(),
@@ -187,6 +192,7 @@ async function loadBackendState(): Promise<void> {
 		agentBridge.getMcpServers(),
 		agentBridge.getBasePrompt(),
 		agentBridge.health(),
+		agentBridge.getMock(),
 	]);
 
 	if (providers.length > 0) setState('providers', providers);
@@ -204,35 +210,49 @@ async function loadBackendState(): Promise<void> {
 	}
 	if (folders.length > 0) setState('folders', folders);
 	setState('mcpServers', mcpServers);
+	setState('mock', mock);
 
 	if (conversations.length > 0) {
-		const uiConvs: UIConversation[] = conversations.map((meta) => ({
-			...meta,
-			messages: [],
-			isStreaming: false,
-		}));
+		// UI 侧会话 = 元信息（ctx 按需拉，见 loadConversationCtx）
+		const uiConvs: UIConversation[] = conversations.map((meta) => ({ ...meta }));
 		setState('conversations', uiConvs);
 	}
 }
 
-// 加载指定会话的完整数据（按需加载）
-export async function loadConversationMessages(conversationId: string): Promise<void> {
+/**
+ * 拉取（或刷新）某会话的 ctx —— **这就是界面的数据源**（没有 UI 消息可拉）。
+ * @param force 一轮 run 结束后无条件重拉；默认只在本地还没有 ctx 时拉（切会话时按需加载）
+ */
+export async function loadConversationCtx(conversationId: string, force = false): Promise<void> {
 	const conv = state.conversations.find((c) => c.id === conversationId);
-	if (!conv || conv.messages.length > 0) return;
+	if (!conv || (!force && conv.agentCtx)) return;
 
-	const full = await agentBridge.getConversation(conversationId);
-	if (full) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (conversation) {
-					conversation.messages = full.messages;
-					conversation.agentCtx = full.agentCtx;
-				}
-			}),
-		);
-	}
+	const ctx = await agentBridge.getCtx(conversationId);
+	if (!ctx) return;
+	actions.setConversationCtx(conversationId, ctx);
+	// force = 一轮 run 刚结束：顺带从后端刷新一次 meta，让刚更新的会话在列表里上浮。
+	// ⚠️ 这里必须走后端 —— 前端自己 `Date.now()` 会把「只是点开看看」也算成一次更新。
+	if (force) void refreshConversationMeta(conversationId);
+}
+
+/**
+ * 从后端刷新单个会话的元信息（title / updatedAt / folderId 都以后端为权威）。
+ *
+ * ⚠️ 会话的 `updatedAt` 是**后端字段**（Runner 每步 `persist()` 时刷新）。
+ * 前端不要用 `Date.now()` 自己算：那样「点开一个会话」会把它顶到列表最前面，看起来像它刚被更新过。
+ */
+export async function refreshConversationMeta(conversationId: string): Promise<void> {
+	const list = await agentBridge.getConversations();
+	const meta = list.find((c) => c.id === conversationId);
+	if (!meta) return;
+	setState(
+		'conversations',
+		produce((convs) => {
+			const conv = convs.find((c) => c.id === conversationId);
+			// 只覆盖 meta 字段：`agentCtx` 不在 ConversationMeta 里，不会被这次刷新冲掉
+			if (conv) Object.assign(conv, meta);
+		}),
+	);
 }
 
 // #endregion
@@ -245,20 +265,24 @@ export const actions = {
 		saveLocalSettings();
 	},
 
-	addFolder(idOrPath: string, name?: string) {
-		const hasExplicitName = name !== undefined;
-		const id = hasExplicitName ? idOrPath : uid();
-		const folder: Folder = {
-			id,
-			name: hasExplicitName ? name : idOrPath.split(/[\\/]/).pop() || idOrPath,
-			path: hasExplicitName ? idOrPath : idOrPath,
-		};
+	/**
+	 * 添加一个文件夹（= 一个工作目录，比如「打开某个项目」）。
+	 * 文件夹没有可自定义的名字：id 就是路径，显示名由 `folderLabel()` 现算。
+	 * 同一路径不重复添加；返回 null 表示没加（空路径 / 已经有了），调用方据此决定要不要展开它。
+	 */
+	addFolder(path: string): Folder | null {
+		const target = path.trim();
+		if (!target || state.folders.some((f) => f.id === target)) return null;
+		const folder: Folder = { id: target, path: target };
 		setState('folders', (prev) => [...prev, folder]);
 		scheduleSaveBackend();
 		return folder;
 	},
 	removeFolder(id: string) {
 		if (id === 'local') return;
+		const affectedConversationIds = state.conversations
+			.filter((c) => c.folderId === id)
+			.map((c) => c.id);
 		setState('folders', (prev) => prev.filter((f) => f.id !== id));
 		setState(
 			'conversations',
@@ -269,14 +293,24 @@ export const actions = {
 			),
 		);
 		scheduleSaveBackend();
+		// ⚠️ 会话的 folderId 必须回写后端：只改前端的话，重启后这些会话挂在一个不存在的文件夹上，
+		// 而侧边栏只按 state.folders 渲染 → 任务会「凭空消失」。
+		for (const conversationId of affectedConversationIds) {
+			void agentBridge.updateConversation(conversationId, { folderId: 'local' });
+		}
 	},
 
 	async createConversation(folderId: string, title = '新任务') {
 		const conv = await agentBridge.createConversation({ folderId, title });
 		if (conv) {
+			// 只取元信息：ctx 由界面按需拉（loadConversationCtx）
 			const uiConv: UIConversation = {
-				...conv,
-				isStreaming: false,
+				id: conv.id,
+				folderId: conv.folderId,
+				title: conv.title,
+				modeId: conv.modeId,
+				createdAt: conv.createdAt,
+				updatedAt: conv.updatedAt,
 			};
 			setState('conversations', (prev) => [uiConv, ...prev]);
 			setState('activeConversationId', conv.id);
@@ -317,169 +351,34 @@ export const actions = {
 		);
 		void agentBridge.updateConversation(id, { folderId });
 	},
-	addMessage(conversationId: string, message: Omit<Message, 'id' | 'createdAt'>) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (conversation) {
-					conversation.messages.push({
-						...message,
-						id: uid(),
-						createdAt: Date.now(),
-					});
-					conversation.updatedAt = Date.now();
-				}
-			}),
-		);
-	},
-	appendMessageContent(conversationId: string, messageId: string, chunk: string) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (!conversation) return;
-				const msg = conversation.messages.find((m) => m.id === messageId);
-				if (msg) {
-					msg.content += chunk;
-					conversation.updatedAt = Date.now();
-				}
-			}),
-		);
-	},
-	updateMessage(conversationId: string, messageId: string, patch: Partial<Message>) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (!conversation) return;
-				const msg = conversation.messages.find((m) => m.id === messageId);
-				if (msg) {
-					Object.assign(msg, patch);
-					conversation.updatedAt = Date.now();
-				}
-			}),
-		);
-	},
 	/**
-	 * 累加一条消息上的 token 用量。
-	 *
-	 * ⚠️ 不能直接用 updateMessage 覆盖 `tokens`：一次用户消息期间会有**很多次** LLM 请求
-	 * （多轮工具调用 + 反思 + 子 Agent），覆盖的话界面上只剩最后一次的数字，
-	 * 而且比真实总量小得多——这正是「总消耗看着不对」的原因。
+	 * 写入某会话的 ctx 快照（唯一的 ctx 写入口）。
+	 * 界面内容全部由它现算，所以这里删掉了旧的一整套 message 操作
+	 * （addMessage / appendMessageBlock / patchMessageBlock / addMessageTokens / …）——
+	 * 那些是「前端自己拼一份 UI 转写再回写后端」时代的遗留，见 docs/设计-ctx唯一真相与动态投影.md。
 	 */
-	addMessageTokens(
-		conversationId: string,
-		messageId: string,
-		tokens: { input?: number; output?: number; inputCached?: number; cached?: number; total?: number },
-	) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (!conversation) return;
-				const msg = conversation.messages.find((m) => m.id === messageId);
-				if (!msg) return;
-				const prev = msg.tokens ?? {};
-				const cached = tokens.inputCached ?? tokens.cached ?? 0;
-				msg.tokens = {
-					input: (prev.input ?? 0) + (tokens.input ?? 0),
-					output: (prev.output ?? 0) + (tokens.output ?? 0),
-					cached: (prev.cached ?? 0) + cached,
-				};
-				msg.llmCalls = (msg.llmCalls ?? 0) + 1;
-				conversation.updatedAt = Date.now();
-			}),
-		);
-	},
-	appendMessageBlock(conversationId: string, messageId: string, block: MessageBlock) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (!conversation) return;
-				const msg = conversation.messages.find((m) => m.id === messageId);
-				if (!msg) return;
-				if (!msg.blocks) msg.blocks = [];
-				if (block.type === 'text' && msg.blocks.length > 0) {
-					const last = msg.blocks[msg.blocks.length - 1];
-					if (last.type === 'text' && last.depth === block.depth) {
-						last.content += block.content;
-						msg.content += block.content;
-						conversation.updatedAt = Date.now();
-						return;
-					}
-				}
-				// 思考增量同样按「同深度连续追加」合并，否则每个 delta 都会新起一个块
-				if (block.type === 'reasoning' && msg.blocks.length > 0) {
-					const last = msg.blocks[msg.blocks.length - 1];
-					if (last.type === 'reasoning' && last.depth === block.depth) {
-						last.content += block.content;
-						conversation.updatedAt = Date.now();
-						return;
-					}
-				}
-				msg.blocks.push(block);
-				if (block.type === 'text') {
-					msg.content += block.content;
-				}
-				conversation.updatedAt = Date.now();
-			}),
-		);
-	},
 	/**
-	 * 按 key 更新某个块。
+	 * 把 ctx 挂到 store 里（界面唯一数据源）。
 	 *
-	 * `onlyType`：只更新该类型的块。ask_user 的「提问卡片」和它的工具块共用同一个 callId 作为 key，
-	 * 工具结果到达时如果不加类型过滤，会把卡片的状态也一起改成 success——卡片会瞬间显示成「已回答」。
+	 * ⚠️ **绝不能顺手改 `updatedAt`**：侧边栏按 `updatedAt` 倒序排（`Sidebar.tsx` 的 `sorted`），
+	 * 而这个 action 每次「按需加载 ctx」都会被调用 —— 一旦在这里写 `Date.now()`，
+	 * 「点开一个会话」就等于把它标成刚更新、立刻跳到列表最前面（2026-09-14 修的 bug）。
+	 * 会话的更新时间是**后端字段**，要刷新 meta 请用 `refreshConversationMeta()`。
 	 */
-	patchMessageBlock(
-		conversationId: string,
-		messageId: string,
-		key: string,
-		patch: Partial<MessageBlock>,
-		onlyType?: MessageBlock['type'],
-	) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (!conversation) return;
-				const msg = conversation.messages.find((m) => m.id === messageId);
-				if (!msg?.blocks) return;
-				for (const b of msg.blocks) {
-					if (b.key === key && (!onlyType || b.type === onlyType)) Object.assign(b, patch);
-				}
-				conversation.updatedAt = Date.now();
-			}),
-		);
-	},
 	setConversationCtx(conversationId: string, ctx: AgentCtx) {
 		setState(
 			'conversations',
 			produce((list) => {
 				const conversation = list.find((c) => c.id === conversationId);
-				if (conversation) {
-					conversation.agentCtx = ctx;
-					conversation.updatedAt = Date.now();
-				}
-			}),
-		);
-	},
-	setConversationStreaming(conversationId: string, isStreaming: boolean) {
-		setState(
-			'conversations',
-			produce((list) => {
-				const conversation = list.find((c) => c.id === conversationId);
-				if (conversation) conversation.isStreaming = isStreaming;
+				if (conversation) conversation.agentCtx = ctx;
 			}),
 		);
 	},
 
 	setActiveConversation(id: string | null) {
 		setState('activeConversationId', id);
-        // 按需加载 messages
-		if (id) void loadConversationMessages(id);
+		// 按需加载 ctx（界面唯一的数据源）
+		if (id) void loadConversationCtx(id);
 		saveLocalSettings();
 	},
 
@@ -589,6 +488,22 @@ export const actions = {
 	/** 回答 ask_user 提问卡片 */
 	async answerToolCall(conversationId: string, toolCallId: string, result: string) {
 		return agentBridge.answerToolCall({ conversationId, toolCallId, result });
+	},
+
+	/**
+	 * 切换内置 mock（开发用）。
+	 * ⚠️ 运行期间后端会拒绝（409）→ 只有后端接受了才更新本地状态，失败原样返回给调用方提示。
+	 */
+	async setMock(params: { enabled?: boolean; scenario?: string }) {
+		const result = await agentBridge.setMock(params);
+		if (result.ok) {
+			setState('mock', (prev) => ({
+				...prev,
+				enabled: params.enabled ?? prev.enabled,
+				scenario: params.scenario ?? prev.scenario,
+			}));
+		}
+		return result;
 	},
 
 	/* ---------- MCP 服务器 ---------- */

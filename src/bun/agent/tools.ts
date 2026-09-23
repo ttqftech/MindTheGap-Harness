@@ -1036,7 +1036,6 @@ registerTool({
 					required: ['label'],
 				},
 			},
-			extraPrompt: { type: 'string', description: '追加的补充说明' },
 		},
 		required: ['question'],
 	},
@@ -1046,7 +1045,6 @@ registerTool({
 		return ctx.askUser({
 			question,
 			options: (args.options as AskUserArgs['options']) ?? [],
-			extraPrompt: args.extraPrompt as string | undefined,
 		});
 	},
 });

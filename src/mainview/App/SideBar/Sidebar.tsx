@@ -6,7 +6,7 @@ import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
 import styles from './Sidebar.module.css';
 import { state, setState, actions } from '@mainview/store';
 import { requestFolderPath } from '@mainview/localBridge';
-import { getTimeString } from '@shared/utils';
+import { folderLabel, getTimeString } from '@shared/utils';
 
 function FolderIcon() {
 	return (
@@ -111,9 +111,10 @@ export default function Sidebar() {
 	const handleNewFolder = async () => {
 		const folderPath = await requestFolderPath();
 		if (!folderPath) return;  // 用户取消
-		// 用目录名作为 folderId 和显示名
-		const folderName = folderPath.split(/[\\/]/).pop() || folderPath;
-		actions.addFolder(folderPath, folderName);
+		// 文件夹没有「名字」：id 就是路径，显示名由 folderLabel() 现算
+		const folder = actions.addFolder(folderPath);
+		// 刚加的文件夹一定是空的，顺手展开，否则看起来像「点了没反应」
+		if (folder) setExpandedFolders((prev) => new Set(prev).add(folder.id));
 	};
 
 	// 会话按 folderId 分组（createMemo 确保 Solid 追踪 state.conversations 变化）
@@ -234,7 +235,7 @@ export default function Sidebar() {
 										<FolderIcon />
 									</span>
 									<span class={styles['tree-folder-name']}>
-										{folder.name}
+										{folderLabel(folder)}
 									</span>
 									<Show when={!folder.isLocal}>
 										<button
