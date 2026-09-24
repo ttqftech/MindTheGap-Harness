@@ -276,13 +276,17 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 				}
 			}
 
+			// ⚠️ delegate / resume_* 的占位结果 success 也是 true（`structured.status === 'pending'`），
+			//    这时子 Agent 还在跑，显示 ✓ 会让人以为已经拿到结论 —— 一律按「执行中」渲染，
+			//    等子实例全部终态后 handleChildTerminal 会用同一 callId 覆盖成终态结果。
+			const awaitingChild = (resultInfo?.structured?.status as string | undefined) === 'pending';
 			subBlocks.push({
 				type: 'tool',
 				key: nextKey('tool'),
 				callId: toolCall.id,
 				name: toolCall.function.name,
 				reason,
-				status: !resultEntry ? 'running' : resultInfo?.success === false ? 'error' : 'success',
+				status: !resultEntry || awaitingChild ? 'running' : resultInfo?.success === false ? 'error' : 'success',
 				args: toolCall.function.arguments,
 				output: resultEntry?.content ?? '',
 				error: resultInfo?.error,
@@ -338,25 +342,18 @@ function parseArgs(raw: string): Record<string, unknown> | undefined {
 // #region 在飞 overlay（SSE 增量）
 
 /**
- * 在飞 overlay：**与 ctx 同形状的增量**，由前端把 SSE 事件翻译着累积起来。
- *
- * ⚠️ 它必须与 ctx 同形状（实例 → 条目），**不能**在渲染层用「扁平块列表」——
- * 否则子 Agent 的在飞内容没法嵌进上级的 delegate 块里，就只能再写一套拼树逻辑，
- * 而那正是旧设计病根的复现。这样「在飞」与「已提交」共用同一个 fold。
+ * 在飞 overlay：**与 ctx 同形状的增量**，由前端把 SSE 事件翻译着累积起来。它必须与 ctx 同形状（实例 → 条目）
  */
 export interface OverlayCtx {
 	conversationId?: string;
 	modeId?: string;
-	/** 本轮第一个 agent_start 带来的根实例（ctx 还没重建起来时用它兜底） */
-	rootAgentInstanceId?: string;
-	/** instanceId → 该实例在飞的条目 */
-	instances: Record<string, { messages: AgentInstanceMessage[] }>;
-	/** 在飞实例的展示信息（来自 agent_start） */
-	meta: Record<string, Partial<AgentInstance>>;
+	rootAgentInstanceId?: string;	// 本轮第一个 agent_start 带来的根实例（ctx 还没重建起来时用它兜底）
+	instances: Record<string, { messages: AgentInstanceMessage[] }>;	// instanceId → 该实例在飞的条目
+	meta: Record<string, Partial<AgentInstance>>;	// instanceId → 该实例在飞的展示信息
 }
 
 /** 空 overlay（一次 run 开始时用） */
-export function emptyOverlay(conversationId?: string, modeId?: string): OverlayCtx {
+export function createEmptyOverlay(conversationId?: string, modeId?: string): OverlayCtx {
 	return { conversationId, modeId, instances: {}, meta: {} };
 }
 
@@ -391,9 +388,21 @@ export function mergeOverlayCtx(
 			: overlayInstance(base, id, overlay.meta[id] ?? {}, delta.messages);
 	}
 
+	// 根实例 id：ctx 优先，其次 overlay 记下的 agent_start。**两者都没有时要兜底推断** ——
+	// 前端订阅 SSE 比 run 启动晚时（EventSource 建连要几百 ms），第一条 `agent_start` 会丢，
+	// `overlay.rootAgentInstanceId` 就是空。此时若不推断，下面的 fold 会因
+	// `agentInstances['']` 不存在而返回 null ⇒ **整个在飞期间界面一片空白**（2026-09-15 实测）。
+	// 推断规则：深度为 0 的实例，或仅有一个实例时那一个。
+	let rootAgentInstanceId = base.rootAgentInstanceId || overlay.rootAgentInstanceId || '';
+	if (!rootAgentInstanceId) {
+		const ids = Object.keys(agentInstances);
+		const depthZero = ids.find((id) => (overlay.meta[id]?.depth ?? 0) === 0);
+		rootAgentInstanceId = depthZero ?? (ids.length === 1 ? ids[0] : '');
+	}
+
 	return {
 		...base,
-		rootAgentInstanceId: base.rootAgentInstanceId || overlay.rootAgentInstanceId || '',
+		rootAgentInstanceId,
 		agentInstances,
 	};
 }

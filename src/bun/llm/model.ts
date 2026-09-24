@@ -692,9 +692,6 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 				systemPromptChars: systemText.length,
 				systemPromptHash: systemText ? hashString(systemText) : undefined,
 				totalChars: JSON.stringify(messages).length + JSON.stringify(tools).length,
-				// 三种 apiFormat 现在都走 parseSseStream 真流式（openai-chat 曾经是 stream:false，
-				// 所以这里一度写成 `apiFormat !== 'openai-chat'`）。只有运行时拿不到 resp.body
-				// 而走了「一次性 JSON 兜底」时才会不准，实测 cottontail 不会走到那条路。
 				stream: true,
 			},
 			status,

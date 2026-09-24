@@ -85,14 +85,21 @@ export async function answerToolCall(params: { conversationId: string; toolCallI
 
 // #region 流式订阅
 
-export function subscribeStream(conversationId: string, listener: (event: AgentStreamEvent) => void): () => void {
+export function subscribeStream(conversationId: string, listener: (event: AgentStreamEvent) => void, onOpen?: () => void): () => void {
 	const es = new EventSource(`${HTTP_BASE}/api/agent/stream?conversationId=${encodeURIComponent(conversationId)}`);
+	// ⚠️ 建连是**异步**的（几百 ms）。调用方必须在发 run **之前**等到这里 open ——
+	//    后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，会永久丢失，
+	//    后果是在飞期间界面一片空白（详见 ChatView.beginRun 的说明）。
+	es.onopen = () => onOpen?.();
 	es.onmessage = (e) => {
 		try {
 			const event = JSON.parse(e.data) as AgentStreamEvent;
 			listener(event);
-		} catch {
-			// ignore
+		} catch (err) {
+			// ⚠️ 千万别静默：这里一沉默，回调里抛的任何异常都退化成「界面上某块永远不动」的灵异现象 ——
+			//    既没有报错也没有堆栈（2026-09-15：工具结果的 SSE 事件就是这么被吞了半个月，
+			//    表现为「工具一直在执行中，跑完才出结果」）。宁可日志吵一点。
+			console.error('[agentBridge] 处理流式事件失败', e.data, err);
 		}
 	};
 	es.onerror = () => {

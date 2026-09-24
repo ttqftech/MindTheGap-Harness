@@ -14,3 +14,24 @@ export function folderLabel(folder: Folder): string {
 	if (folder.isLocal || !folder.path) return '本地';
 	return folder.path.split(/[\\/]/).filter(Boolean).pop() || folder.path;
 }
+
+/**
+ * 路径归一化，**只用于比较**（不是用来当 id 的）。
+ * 去首尾空白、去结尾分隔符、统一分隔符方向；Windows 绝对路径（`C:\x` / UNC）再转小写。
+ */
+export function normalizeFolderPath(path: string): string {
+	const trimmed = path.trim().replace(/[\\/]+$/, '').replace(/[\\/]+/g, '\\');
+	const isWindowsPath = /^[a-zA-Z]:\\/.test(trimmed) || trimmed.startsWith('\\\\');
+	return isWindowsPath ? trimmed.toLowerCase() : trimmed;
+}
+
+/**
+ * 两个路径是否指向同一个目录。
+ *
+ * 存在的理由：用户在「+ 添加文件夹…」里把**同一个目录**选第二次时，`addFolder()` 会返回 null
+ * （它只负责「加进列表」，返回 null 表示已经在了）。如果调用方把 null 当成「什么都不用做」，
+ * 这次点击就静默失效了 —— 用户的意图明明是「把这个会话放进这个目录」。
+ */
+export function sameFolderPath(a: string, b: string): boolean {
+	return normalizeFolderPath(a) === normalizeFolderPath(b);
+}

@@ -12,13 +12,19 @@ import { rpc, isElectrobunEnv } from './rpc';
 
 /**
  * 选择运行文件夹。
- * electron/electrobun 环境走原生对话框；浏览器（vite dev / playwright）没有
- * 文件系统对话框，用 prompt 兜底即可 —— 不值得为此维护一整个路径输入弹窗。
+ * electrobun 环境走原生对话框；浏览器（vite dev / playwright）没有文件系统对话框，用 prompt 兜底即可
  */
-export async function requestFolderPath(): Promise<string | null> {
+export async function requestFolderPath(): Promise<{ path: string | null; error: string | null }> {
 	if (isElectrobunEnv()) return dialogPickFolder();
+	// 正常应用里 __electrobun 一定存在，「在 WebView2 里却没有 __electrobun」= 预加载桥没注入，属于异常，必须说清楚。
+	if (typeof window !== 'undefined' && (window as any).chrome?.webview) {
+		const msg = '当前是 WebView2 环境但 electrobun 桥没有注入（window.__electrobun 不存在），拿不到目录对话框';
+		console.error('[localBridge] ' + msg);
+		return { path: null, error: msg };
+	}
+	console.warn('[localBridge] 非 electrobun 环境：文件夹选择退化为 window.prompt（仅供 vite dev / playwright 探针）');
 	const input = window.prompt('浏览器模式：请输入文件夹绝对路径');
-	return input?.trim() || null;
+	return { path: input?.trim() || null, error: null };
 }
 
 /* ---------- 对话框 ---------- */
@@ -37,12 +43,13 @@ export const dialog = {
 	},
 };
 
-async function dialogPickFolder(): Promise<string | null> {
-	// pickFolder 必须显式传：handler 里是 canChooseFiles: !params?.pickFolder，
-	// 漏传的话弹出来的是「选文件」框，用户根本选不中目录 —— 表现为「添加文件夹没反应」。
+async function dialogPickFolder(): Promise<{ path: string | null; error: string | null }> {
 	const result = await rpc.request.dialogOpen({ pickFolder: true, multiple: false });
-	if (result.ok && result.data.length > 0) return result.data[0];
-	return null;
+	if (!result.ok) {
+		return { path: null, error: result.error || '目录对话框调用失败' };
+	}
+	if (result.data.length === 0) return { path: null, error: null };	// 用户取消
+	return { path: result.data[0], error: null };
 }
 
 /* ---------- Shell ---------- */

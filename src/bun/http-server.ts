@@ -9,37 +9,25 @@
    ========================================================================== */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type {
-	AgentAnswerRequest,
-	AgentCtx,
-	AgentRunRequest,
-	AgentStreamEvent,
-	McpServerConfig,
-	ModeDefinition,
-	ModeSummary,
-} from '../shared/agent';
-import { createRunner, ensurePluginsLoaded, type AgentRunner } from './agent/runner';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, McpServerConfig, ModeDefinition, ModeSummary } from '@shared/agent';
+import type { ServiceHealth } from '@shared/buildInfo';
+import * as agentRunner from './agent/runner';
 import { getBuiltinToolNames } from './agent/tools';
 import { setMockResolver, setUsageEmitter, type UsageEmit } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
-import {
-	clearRequests, readRequests, setRequestLogOptions,
-} from './llm/requestLog';
+import { clearRequests, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
 import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, snapshot } from './storage';
-import type { ServiceHealth } from '../shared/buildInfo';
 import { logMsg } from './utils';
 
 export const HTTP_PORT = 18999;
 
-/** 本服务启动时间（ISO UTC）：health 里用来区分「刚起的进程」和「跑了两天的旧进程」 */
 const SERVICE_STARTED_AT = new Date().toISOString();
 
 const sseClients = new Map<string, Set<ServerResponse>>();
 
-/** 正在跑的 Runner：conversationId → Runner */
-const activeRunners = new Map<string, AgentRunner>();
+const activeRunners = new Map<string, agentRunner.AgentRunner>();	// conversationId → runner
 
 /** 上次插件加载结果里「被用户插件覆盖」的 mode id */
 let overriddenModeIds: string[] = [];
@@ -101,7 +89,7 @@ function dispatchStream(conversationId: string, event: AgentStreamEvent) {
 
 /** 重新加载插件并把 requestLog 配置同步给 llm 层 */
 function reloadPlugins(): { plugins: number; modes: string[]; errors: unknown[]; overridden: string[] } {
-	ensurePluginsLoaded();
+	agentRunner.ensurePluginsLoaded();
 	const result = loadAllPlugins({ knownToolNames: getBuiltinToolNames });
 	overriddenModeIds = result.overridden;
 	return {
@@ -155,7 +143,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 		activeRunners.delete(conversationId);
 	}
 
-	const { runner, error } = createRunner(params, {
+	const { runner, error } = agentRunner.createRunner(params, {
 		onStream: (event) => dispatchStream(conversationId, event),
 	});
 	if (!runner) {
@@ -212,14 +200,9 @@ function getTaskList(conversationId: string): string {
 /**
  * 把一次 LLM 请求的账本落进 ctx。
  *
- * 唯一埋点是 `callLlm` 的 usage emitter —— 主循环 / 反思 / ask_child / web_rank 四条路径都会经过它，
- * 所以账本只在这一处审计，不必在四个调用点各写一遍。
+ * 唯一埋点是 `callLlm` 的 usage emitter —— 主循环 / 反思 / ask_child / web_rank 四条路径都会经过它，所以账本只在这一处审计，不必在四个调用点各写一遍。
  *
- * 为什么落 ctx 而不是只留在 requestLog：requestLog 是**可删的诊断日志**，而界面上的用量流水必须能由
- * ctx 独立重建（见 docs/设计-ctx唯一真相与动态投影.md §3.3）。
- *
- * 为什么导出：它不依赖 HTTP。`artifacts/e2e/probe-conversation.ts` 这类**进程内**探针不启本服务，
- * 需要手动 `setUsageEmitter(recordUsageInCtx)` 才能覆盖到账本落 ctx 这条链路（否则探针里账本恒为空）。
+ * 为什么导出：它不依赖 HTTP。`artifacts/e2e/probe-conversation.ts` 这类**进程内**探针不启本服务，需要手动 `setUsageEmitter(recordUsageInCtx)` 才能覆盖到账本落 ctx 这条链路（否则探针里账本恒为空）。
  */
 export function recordUsageInCtx(e: UsageEmit) {
 	if (!e.agentInstanceId) return;
@@ -272,7 +255,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// ---------- 插件 / 模式 ----------
+			// #region 插件 / 模式
 
 			if (req.method === 'GET' && path === '/api/modes') {
 				sendJson(res, 200, buildModeSummaries());
@@ -325,7 +308,9 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// ---------- Agent 运行 ----------
+			// #endregion
+
+			// #region Agent 运行
 
 			if (req.method === 'POST' && path === '/api/agent/run') {
 				const body = await readBody(req);
@@ -381,7 +366,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// ---------- 会话内的子资源 ----------
+			// #endregion
+
+			// #region 会话内的子资源
+
 			// /api/conversations/:id/{tasklist|requests}
 
 			const convSub = /^\/api\/conversations\/([^/]+)\/(.+)$/.exec(path);
@@ -416,7 +404,9 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				}
 			}
 
-			// ---------- 会话管理 ----------
+			// #endregion
+
+			// #region 会话管理
 
 			if (req.method === 'GET' && path === '/api/conversations') {
 				sendJson(res, 200, { conversations: conversationMetas() });
@@ -456,7 +446,9 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// ---------- 设置 — 模型提供商 ----------
+			// #endregion
+
+			// #region 设置 — 模型提供商
 
 			if (req.method === 'GET' && path === '/api/settings/providers') {
 				sendJson(res, 200, settings.providers);
@@ -484,9 +476,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 「当前模式」不再由后端持久化：它只是前端 composer 的选择，跟着前端偏好走。
+			// #endregion
 
-			// 设置 — 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌）
+			// #region 设置 — 基座提示词
+
 			// 没有默认值：没填就返回空串，前端文本框也就是空的
 			if (req.method === 'GET' && path === '/api/settings/base-prompt') {
 				sendJson(res, 200, { basePrompt: settings.basePrompt ?? '' });
@@ -505,7 +498,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 设置 — 内置 mock（开发用：LLM 走假模型，**工具仍真实执行**）
+			// #endregion
+
+			// #region 设置 — 内置 mock
+
 			if (req.method === 'GET' && path === '/api/settings/mock') {
 				const mock = settings.debug?.mock;
 				sendJson(res, 200, {
@@ -537,7 +533,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 设置 — MCP 服务器（配置持久化）
+			// #endregion
+
+			// #region 设置 — MCP 服务器
+
 			if (req.method === 'GET' && path === '/api/settings/mcp-servers') {
 				sendJson(res, 200, settings.mcpServers);
 				return;
@@ -554,7 +553,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// MCP — 运行态
+			// #endregion
+
+			// #region MCP — 运行态
+
 			if (req.method === 'GET' && path === '/api/mcp/status') {
 				sendJson(res, 200, mcpManager.getStatus());
 				return;
@@ -588,7 +590,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// MCP — 用一份临时配置试连（不落盘、不影响现有连接）
+			// #endregion
+
+			// #region MCP — 用一份临时配置试连
+
 			if (req.method === 'POST' && path === '/api/mcp/test') {
 				const body = await readBody(req);
 				const config = JSON.parse(body || '{}') as McpServerConfig;
@@ -597,7 +602,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// MCP — 直接调用某个工具（供设置面板手动验证）
+			// #endregion
+
+			// #region MCP — 直接调用某个工具
+
 			if (req.method === 'POST' && path === '/api/mcp/call') {
 				const body = await readBody(req);
 				const { name, arguments: args } = JSON.parse(body || '{}');
@@ -606,7 +614,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 设置 — 文件夹
+			// #endregion
+
+			// #region 设置 — 文件夹
+
 			if (req.method === 'GET' && path === '/api/settings/folders') {
 				sendJson(res, 200, settings.folders);
 				return;
@@ -618,6 +629,8 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				sendJson(res, 200, { ok: true });
 				return;
 			}
+
+			// #endregion
 
 			sendJson(res, 404, { ok: false, error: `Not found: ${path}` });
 		} catch (e: any) {

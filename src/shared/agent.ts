@@ -347,7 +347,8 @@ export type AgentStreamEvent =
 	| { type: 'agent_start'; agentInstanceId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
 	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
-	| { type: 'reflection'; agentInstanceId: string; remaining: number; prompt: string }
+	| { type: 'reflection_start'; agentInstanceId: string; remaining: number }
+	| { type: 'reflection_chunk'; agentInstanceId: string; chunk: string }
 	| {
 		type: 'usage';
 		agentInstanceId?: string;

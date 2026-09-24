@@ -24,6 +24,9 @@ export interface AppRPC {
                 params: {
                     filters?: { name: string; extensions: string[] }[];
                     multiple?: boolean;
+                    /** ⚠️ 选目录必须显式传 true：handler 里是 canChooseFiles: !pickFolder，
+                     *  漏传会弹出「选文件」框 —— 用户选不中目录，表现为「添加文件夹没反应」 */
+                    pickFolder?: boolean;
                 };
                 response: RpcResult<string[]>;
             };

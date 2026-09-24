@@ -1015,11 +1015,21 @@ export class AgentRunner {
 			instance.status = 'running';
 			instance.lastUpdatedAt = now();
 
+			this.emitStream({
+				type: 'reflection_start',
+				agentInstanceId: instance.agentInstanceId,
+				remaining: instance.reflectionsRemaining,
+			});
+
 			let reflection = '';
 			try {
 				reflection = await this.reflect(instance, summary);
 			} catch (e) {
-				// 反思请求本身失败：记一笔，但不必为「继续反思」再烧一轮——直接走收尾。
+				this.emitStream({
+					type: 'reflection_chunk',
+					agentInstanceId: instance.agentInstanceId,
+					chunk: `（反思请求失败：${(e as Error).message}）`,
+				});
 				instance.messages.push(message({
 					role: 'system',
 					content: `（反思请求失败：${(e as Error).message}）`,
@@ -1027,39 +1037,22 @@ export class AgentRunner {
 			}
 
 			this.emitEvent(instance, 'reflection', { remaining: instance.reflectionsRemaining, prompt: reflection });
-			this.emitStream({
-				type: 'reflection',
-				agentInstanceId: instance.agentInstanceId,
-				remaining: instance.reflectionsRemaining,
-				prompt: reflection,
-			});
 
-			// 反思没给出任何「要补做的事」→ 直接收尾。
-			// ⚠️ 早先这里无条件重入，并在没追问时塞一句「（反思未产生有效追问，请自行检查是否确实完成）」
-			// 让模型「再检查一遍」——那等于用一句废话白烧一整轮 LLM（实测每次多花数千 token）。
 			if (reflectionActionable(reflection)) {
-				// 有追问：这条反思要进 LLM 上下文（所以**不是** uiOnly），用 kind 标记出来，
-				// 渲染时才能和「本实例的 system prompt」区分（见 shared/projection.ts）。
 				instance.messages.push(adoptUsage(instance, {
 					...message({ role: 'system', content: reflection }),
 					kind: 'reflection',
 					data: { remaining: instance.reflectionsRemaining },
 				}));
 				this.persist();
-				// ⚠️ 不能在这里直接 maybeReenter：本函数是被 agentLoop await 的，此刻 busy 还握着，
-				// 重入会被 busy 守卫挡掉（表现为「反思完就没动静了」）。把触发类型交回 agentLoop，
-				// 等 finally 释放 busy 后再由调度器重入。
 				return 'reflection';
 			}
-			// 没有追问：这条反思只给界面看（uiOnly，不进 LLM 上下文），但要落 ctx ——
-			// 否则「刷新后反思轮消失」，而它本来就是要给用户看的东西。
 			instance.messages.push(adoptUsage(instance, {
 				...message({ role: 'system', content: reflection }),
 				uiOnly: true,
 				kind: 'reflection',
 				data: { remaining: instance.reflectionsRemaining },
 			}));
-			// 落到下面的「正式结束」（status 会被重新置为 succeeded）
 		}
 
 		// 正式结束
@@ -1093,10 +1086,8 @@ export class AgentRunner {
 	/** 反思轮：额外一次 LLM 请求，输入 = 该实例的初始 system 提示词 + 本次总结 */
 	private async reflect(instance: AgentInstance, summary: string): Promise<string> {
 		const def = this.defOf(instance);
-		// 反思口径按 agent 级 > 模式级 > 内置默认 解析（见 plugins/loader.resolveReflectionPrompt）
 		const prompt = resolveReflectionPrompt(this.mode, def).text;
 
-		// 取该实例的初始 system（第一条 system = 本实例的 system prompt；跳过 uiOnly 条目，它们没有正文）
 		const initialSystem = instance.messages.find((m) => m.role === 'system' && !m.uiOnly)?.content ?? '';
 		const result = await callLlm(
 			{
@@ -1109,6 +1100,11 @@ export class AgentRunner {
 					},
 				],
 				tools: [],
+				onChunk: (chunk) => {
+					if (chunk.textDelta) {
+						this.emitStream({ type: 'reflection_chunk', agentInstanceId: instance.agentInstanceId, chunk: chunk.textDelta });
+					}
+				},
 				signal: this.abortController.signal,
 			},
 			{
@@ -1123,9 +1119,6 @@ export class AgentRunner {
 				agentInstanceRound: instance.rounds,
 			},
 		);
-		// ⚠️ 反思也是一次真金白银的 LLM 请求，必须计入本实例的 token 账本。
-		// 漏掉它的后果是：界面上的「总消耗」比真实值少一大截（反思经常比正文还长）。
-		// （llmCalls 与 usage 条目由 usage emitter 统一记，这里不用管。）
 		instance.tokens = this.mergeTokens(instance.tokens, result.usage);
 		return result.text;
 	}

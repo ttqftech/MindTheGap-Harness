@@ -2,20 +2,21 @@
    内置 mock LLM —— 把「假模型」搬进后端进程（开发用）
 
    为什么留一个**真的 HTTP + SSE 服务**（而不是直接返回 LlmCallResult）：
-   - mock 的价值一半在覆盖 **解析层**。这个项目被「usage 末块 `choices: []`」「reasoning_content」
-     「并行 tool_calls 参数分片」坑过好几次，那些 bug 只有在真 SSE 字节流经过 `parseSseStream`
-     时才会暴露。直接合成结果会让这层失去覆盖。
-   - 顺带零成本：`genStreamUrl(baseUrl, 'chat/completions')` 只做「去尾斜杠 + 补 /v1」，
-     `Authorization` 它也不看，所以只要把 baseUrl 指过来就行，传输层一行都不用改。
+   - mock 的价值一半在覆盖 **解析层**。这个项目被「usage 末块 `choices: []`」「reasoning_content」「并行 tool_calls 参数分片」坑过好几次，那些 bug 只有在真 SSE 字节流经过 `parseSseStream` 时才会暴露。直接合成结果会让这层失去覆盖。
+   - 顺带零成本：`genStreamUrl(baseUrl, 'chat/completions')` 只做「去尾斜杠 + 补 /v1」，`Authorization` 它也不看，所以只要把 baseUrl 指过来就行，传输层一行都不用改。
 
-   ⚠️ 它只 mock **LLM**，工具是**真执行**的（`web_fetch` 会真发请求，`write_file` 会真写盘）。
-   这是故意的：要验的就是真实工具链路。所以别在 mock 模式下让它跑危险剧本。
+   ⚠️ 它只 mock **LLM**，工具是**真执行**的（`web_fetch` 会真发请求，`write_file` 会真写盘）。这是故意的：要验的就是真实工具链路。所以别在 mock 模式下让它跑危险剧本。
 
-   剧本按**请求内容**判断（不是按调用次数）：
-     - `tools` 为空                        → 反思请求，回哨兵「无」
+   剧本按**请求内容**判断（不是按调用次数），分支有顺序依赖：
+     - `tools` 为空                        → 反思请求，回哨兵「无」（reflect 剧本回真追问）
      - system 里有「相关性评审器」          → web_search 的打分请求，回分数对象
-     - 历史里已有 tool 结果                 → 回纯文本结论
+     - multi / task 剧本                   → 按 toolResults 计数分轮，可以连续发多个工具
+     - 历史里已有 tool 结果                 → 回纯文本结论（见下方 ⚠️）
      - 其余                                → 发一个 web_fetch 工具调用（由 runner 真去执行）
+
+   ⚠️ 「历史里已有 tool 结果」这一支的口径是**整个消息历史**里有没有 `role:'tool'`，
+   不是「本轮有没有新结果」—— 命中一次之后就对该会话永久生效，之后每轮新提问都只回文本、不再发工具。
+   这是 mock 的行为、不是产品 bug，输出文本里会显式把这件事讲出来；要验多轮发工具请用 multi / task 剧本。
    ========================================================================== */
 
 import { createServer, type Server } from 'node:http';
@@ -33,6 +34,7 @@ export const MOCK_SCENARIOS: { id: string; label: string }[] = [
 	{ id: 'ask_user', label: 'ask_user：提问卡片' },
 	{ id: 'multi', label: 'multi：多轮工具 + 提问 + 收尾' },
 	{ id: 'reflect', label: 'reflect：反思给出真追问' },
+	{ id: 'task', label: 'task：任务清单读写（add→read→update→read）' },
 	{ id: 'web_search', label: 'web_search：多引擎搜索' },
 ];
 
@@ -107,14 +109,14 @@ function sseHead(res: MockRes) {
 async function streamText(res: MockRes, text: string, reasoning?: string) {
 	sseHead(res);
 	if (reasoning) {
-		for (const piece of reasoning.match(/.{1,6}/g) ?? []) {
+		for (const piece of reasoning.match(/.{1,10}/g) ?? []) {
 			chunk(res, { reasoning_content: piece });
-			await sleep(30);
+			await sleep(100);
 		}
 	}
-	for (const piece of text.match(/.{1,8}/g) ?? []) {
+	for (const piece of text.match(/.{1,10}/g) ?? []) {
 		chunk(res, { content: piece });
-		await sleep(30);
+		await sleep(100);
 	}
 	chunk(res, {}, 'stop');
 	// ⚠️ 带 usage 的末块：`choices` 为空 —— 解析器必须认它，否则流式下 token 用量永远是 0
@@ -127,16 +129,16 @@ async function streamText(res: MockRes, text: string, reasoning?: string) {
 async function streamToolCall(res: MockRes, name: string, args: unknown, reasoning?: string) {
 	sseHead(res);
 	if (reasoning) {
-		for (const piece of reasoning.match(/.{1,6}/g) ?? []) {
+		for (const piece of reasoning.match(/.{1,10}/g) ?? []) {
 			chunk(res, { reasoning_content: piece });
-			await sleep(30);
+			await sleep(100);
 		}
 	}
 	const id = 'call_mock_' + Date.now();
 	chunk(res, { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: '' } }] });
 	for (const piece of JSON.stringify(args).match(/.{1,10}/g) ?? []) {
 		chunk(res, { tool_calls: [{ index: 0, function: { arguments: piece } }] });
-		await sleep(20);
+		await sleep(60);
 	}
 	chunk(res, {}, 'tool_calls');
 	res.write(`data: ${JSON.stringify({ choices: [], usage: nextUsage() })}\n\n`);
@@ -180,6 +182,8 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 			`toolResults=${msgs.filter((m) => m.role === 'tool').length} sub=${isSubAgent} ` +
 			`lastUser=${JSON.stringify(lastUser.slice(0, 30))}`,
 		);
+
+		await sleep(1000);
 
 		if (parsed.stream !== true) {
 			// 没走流式时的兜底（便于对比差异）
@@ -239,10 +243,54 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 			return;
 		}
 
+		// 1.6) 任务清单读写：add → add → read → update(done) → read → finish
+		// 同样按 toolResults 计数，且必须排在「有工具结果 → 给结论」之前，否则第二轮起就被它拦掉。
+		// ⚠️ task_list_write 只在 `mode.taskList.writable` 为 true 时才会进工具表（code 模式是 true，
+		// daily / empty 是 false），所以这个剧本要在 **code 模式**下跑，
+		// 否则模型侧根本看不到这两个工具，表现为「剧本没生效」而不是报错。
+		if (currentScenario === 'task') {
+			const toolResults = msgs.filter((m) => m.role === 'tool').length;
+			if (toolResults === 0) {
+				await streamToolCall(res, 'task_list_write', { op: 'add', item: '第一步：写一条任务，验证清单可写' }, '先加一条，确认清单能写。');
+				return;
+			}
+			if (toolResults === 1) {
+				await streamToolCall(res, 'task_list_write', { op: 'add', item: '第二步：再写一条，验证是追加而不是覆盖' }, '再加一条，看是不是追加。');
+				return;
+			}
+			if (toolResults === 2) {
+				await streamToolCall(res, 'task_list_read', {}, '读回全文，确认前两次写入都落盘了。');
+				return;
+			}
+			if (toolResults === 3) {
+				await streamToolCall(res, 'task_list_write', { op: 'update', index: 0, done: true, item: '第一步：写一条任务，验证清单可写' }, '把第一条标记完成，验 update + index。');
+				return;
+			}
+			if (toolResults === 4) {
+				await streamToolCall(res, 'task_list_read', {}, '再读一次，确认 done 标记写进去了。');
+				return;
+			}
+			await streamToolCall(res, 'finish', { reason: '清单的写入、读取、更新都验过了', summary: '任务清单读写通过：add ×2 → read 全文 → update 标记 done → read 复核。' }, '收尾。');
+			return;
+		}
+
 		// 2) 已有工具结果 → 给结论
+		// ⚠️ 这个分支的口径是「整个消息历史里出现过 tool 结果」，不是「本轮有没有新结果」，
+		// 所以第一轮发过工具之后，后续每一轮新提问都会停在这里只回文本、不再发工具。
+		// 这是 mock 的行为，不是产品 bug —— 输出里会显式把这件事讲出来，免得排查时误判。
 		if (hasToolResult) {
 			const last = String([...msgs].reverse().find((m) => m.role === 'tool')?.content ?? '');
-			await streamText(res, `查到了，结果如下：\n\n${last.slice(0, 300)}\n\n（mock 数据，仅供链路验证）`, '工具返回了，整理成一句话给用户。');
+			await streamText(
+				res,
+				`查到了，结果如下：\n\n${last.slice(0, 300)}\n\n` +
+					`———\n` +
+					`【mock 口径提示】命中了「历史里已有工具结果 → 直接给结论」分支（mock.ts 的 hasToolResult）。\n` +
+					`它判断的是**整个消息历史**里有没有 role:'tool'，不是「本轮有没有新结果」，` +
+					`所以第一轮发过工具之后，之后每一轮新提问都会停在这里、只回文本、不再发工具。\n` +
+					`要验「多轮连续发工具」，请改用 multi / task 这类按 toolResults 计数的剧本——它们排在本分支之前。\n` +
+					`（以上为 mock 数据，仅供链路验证）`,
+				'发现历史里已有工具结果，按本分支口径直接给结论，不再发新工具。',
+			);
 			return;
 		}
 

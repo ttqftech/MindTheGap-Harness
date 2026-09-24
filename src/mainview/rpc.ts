@@ -76,6 +76,12 @@ function initRealRpc(): RpcApi {
 	// 不能把 schema 当泛型实参——AppRPC 没有 setTransport，会报 TS2344
 	const ev = new Electroview({
 		rpc: Electroview.defineRPC<AppRPC>({
+			// electrobun 默认请求超时只有 1000ms（shared/rpc.ts 的 DEFAULT_MAX_REQUEST_TIME），
+			// 而 dialogOpen 会阻塞到用户选完路径——人手挑目录必然超过 1 秒，
+			// 于是对话框还开着请求就先超时报「RPC request timed out.」。
+			// 这里全部 RPC 都是本地能力（对话框 / shell / envInfo / 窗口），
+			// 由用户操作驱动，没有「该超时」的语义，直接关闭超时。
+			maxRequestTime: Infinity,
 			handlers: {
 				requests: {},
 				messages: {},

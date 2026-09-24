@@ -4,8 +4,7 @@
    渲染模型（2026-09-14 重构后）：
    - 界面内容 = `foldCtxToRenderTree(mergeOverlayCtx(ctx, overlay))`，**不再有 UI 消息**
    - ctx 是唯一真相（后端 Runner 写）；overlay 是组件内的「在飞」增量（SSE 翻译成 ctx 形状的条目）
-   - **一次 LLM 调用 = 一个块**（`RenderLlmBlock`）：思考 / 正文 / 各次工具调用都是它的**子块**，
-     工具结果贴在对应调用处（不单独成块），账本（usages）贴在块的下方
+   - **一次 LLM 调用 = 一个块**（`RenderLlmBlock`）：思考 / 正文 / 各次工具调用都是它的**子块**，工具结果贴在对应调用处（不单独成块），账本（usages）贴在块的下方
    - 子 Agent 不再靠 depth 缩进：委托工具的**子块**下面同级挂它的节点，一个实例 = 一个可整块折叠的块
    - ask_user 走 client_tool_call：渲染提问卡片，回答后 POST /api/agent/answer 续接
 
@@ -15,17 +14,17 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
-import styles from './ChatView.module.css';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
-import { emptyOverlay, foldCtxToRenderTree, mergeOverlayCtx } from '@shared/projection';
+import { createEmptyOverlay, foldCtxToRenderTree, mergeOverlayCtx } from '@shared/projection';
 import type { OverlayCtx, RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@shared/projection';
 import * as agentBridge from '@mainview/agentBridge';
 import type { AgentInstanceMessage, AgentStreamEvent, ToolResult, UsageEntry } from '@shared/agent';
 import { requestFolderPath } from '@mainview/localBridge';
-import { folderLabel } from '@shared/utils';
+import { folderLabel, sameFolderPath } from '@shared/utils';
 import { alertMsgbox } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
+import styles from './ChatView.module.css';
 
 // #region 图标
 
@@ -102,12 +101,12 @@ const MOCK_PLACEHOLDER_MODEL: ModelConfig = {
 
 // #region 工具函数
 
-/** 截断到 limit，并注明被省略的长度 */
+/** 截断到 limit（用于显示） */
 function truncateWithNote(text: string, limit: number): string {
 	if (text.length <= limit) return text;
 	const head = text.slice(0, Math.floor(limit * 0.8));
 	const tail = text.slice(-Math.floor(limit * 0.2));
-	return `${head}\n\n…（已省略 ${text.length - head.length - tail.length} 字符，完整内容见后端 ctx）\n\n${tail}`;
+	return `${head}\n\n…（已省略 ${text.length - head.length - tail.length} 字符）\n\n${tail}`;
 }
 
 /** 1234 → "1.2k"：账本里数字位数差别很大，统一压成短形式才不会把一行撑爆 */
@@ -124,33 +123,6 @@ function fmtDuration(ms?: number): string {
 	return ms < 100 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
-function buildModelConfig(): ModelConfig | null {
-	const ref = appState.currentStandardModel;
-	if (!ref) return null;
-	const provider = appState.providers.find((p) => p.id === ref.providerId);
-	if (!provider) return null;
-	const model = provider.models.find((m) => m.id === ref.modelId);
-	if (!model) return null;
-	return {
-		providerId: provider.id,
-		modelId: model.id,
-		apiFormat: provider.apiFormat,
-		baseUrl: provider.baseUrl,
-		apiKey: provider.apiKey,
-		customParams: { ...provider.customParams, ...model.customParams },
-	};
-}
-
-/** 工具结果 → 可读字符串（失败时把错误信息也带上） */
-function toolOutputText(result: ToolResult): string {
-	const body = result.content ?? '';
-	if (!result.success) {
-		return `[失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
-	}
-	return body;
-}
-
 // #endregion
 
 // #region SSE → 在飞 overlay
@@ -162,30 +134,48 @@ function toolOutputText(result: ToolResult): string {
  * delegate 块里，只能再写一套拼树逻辑 —— 那正是旧设计病根的复现。
  */
 function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
-	const ensure = (id: string) => {
-		if (!draft.instances[id]) draft.instances[id] = { messages: [] };
-		return draft.instances[id]!.messages;
+	const getInstanceMessagesByIdSafe = (instanceId: string) => {
+		if (!draft.instances[instanceId]) draft.instances[instanceId] = { messages: [] };
+		return draft.instances[instanceId]!.messages;
 	};
 
 	/**
-	 * 取「当前正在写」的 assistant 条目：
-	 * - 写工具调用：复用尾部的 assistant 条目（一条 assistant 消息可以带多个工具调用）
-	 * - 写正文/思考：若尾部那条已经有工具调用了，就另起一条（工具调用之后的文字属于下一轮）
+	 * 取「当前正在写」的 assistant 条目，通常是最后一条，根据尾部情况决定是否另起一条
 	 */
-	const assistantEntry = (id: string, kind: 'text' | 'toolCall'): AgentInstanceMessage => {
-		const messages = ensure(id);
+	const assistantEntry = (instanceId: string, kind: 'text' | 'toolCall'): AgentInstanceMessage => {
+		const messages = getInstanceMessagesByIdSafe(instanceId);
 		const tail = messages[messages.length - 1];
 		if (tail?.role === 'assistant') {
 			if (kind === 'toolCall') return tail;
 			if (!tail.toolCalls?.length) return tail;
 		}
+		// 尾部不是 assistant 消息，另起一条
 		messages.push({ role: 'assistant', content: '', updatedAt: Date.now() });
 		return messages[messages.length - 1]!;
 	};
 
-	/** 工具结果按 callId 覆盖写（同一个 callId 会来两次：占位 + 终态） */
+	/**
+	 * 工具结果按 callId 写（后到的覆盖先到的）。
+	 *
+	 * 同一个 callId 会来两次：`delegate` / `resume_*` 先发「占位」，等子实例全部终态后再来一次「终态」；
+	 * 其余工具只来一次。两次都走同一条「有则改、无则建」的分支，不必区分谁是谁。
+	 *
+	 * ⚠️ **「无则建」是正常路径，不是异常**：`tool_start` 只往 assistant 条目上挂了 `toolCalls`，overlay 里
+	 *    并没有对应的 `role:'tool'` 条目，所以第一次 `tool_end` 一定是「找不到」。
+	 *    早先这里写的是「找不到就抛错」，而 SSE 回调外面还有一层 try/catch（`agentBridge.subscribeStream`）
+	 *    把异常原样吞掉 —— 于是每条工具结果都在翻译时被丢掉，工具行一直停在「执行中…」，
+	 *    直到整轮跑完重拉 ctx（ctx 里有完整结果）才显示出来，界面上还不留任何报错。（2026-09-15）
+	 */
 	const upsertToolResult = (id: string, event: Extract<AgentStreamEvent, { type: 'tool_end' }>) => {
-		const messages = ensure(id);
+		function toolOutputText(result: ToolResult): string {
+			const body = result.content ?? '';
+			if (!result.success) {
+				return `[工具执行失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
+			}
+			return body;
+		}
+
+		const messages = getInstanceMessagesByIdSafe(id);
 		const content = toolOutputText(event.result);
 		const data = { success: event.result.success, structured: event.result.structured, error: event.result.error };
 		const existing = messages.find((m) => m.role === 'tool' && m.toolCallId === event.callId);
@@ -207,12 +197,12 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 	};
 
 	// done / error 已在 handleStreamEvent 里提前返回，但这里仍要防一手类型（它们没有 agentInstanceId）
-	const id = 'agentInstanceId' in event ? event.agentInstanceId ?? '' : '';
+	const instanceId = 'agentInstanceId' in event ? event.agentInstanceId ?? '' : '';
 	switch (event.type) {
 		case 'agent_start': {
-			ensure(id);
-			draft.meta[id] = {
-				agentInstanceId: id,
+			getInstanceMessagesByIdSafe(instanceId);
+			draft.meta[instanceId] = {
+				agentInstanceId: instanceId,
 				agentId: event.agentId,
 				agentName: event.agentName,
 				parentAgentInstanceId: event.parentAgentInstanceId,
@@ -221,32 +211,29 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				task: event.task,
 				startedAt: Date.now(),
 			};
-			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = id;
+			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = instanceId;
 			// 首条 user 条目 = 该实例的任务（与 ctx 里的形态一致）
-			ensure(id).push({
+			getInstanceMessagesByIdSafe(instanceId).push({
 				role: 'user',
 				content: event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? ''),
 				updatedAt: Date.now(),
 			});
 			break;
 		}
-
 		case 'text': {
-			const entry = assistantEntry(id, 'text');
+			const entry = assistantEntry(instanceId, 'text');
 			entry.content += event.chunk;
 			entry.updatedAt = Date.now();
 			break;
 		}
-
 		case 'reasoning': {
-			const entry = assistantEntry(id, 'text');
+			const entry = assistantEntry(instanceId, 'text');
 			entry.reasoningContent = (entry.reasoningContent ?? '') + event.chunk;
 			entry.updatedAt = Date.now();
 			break;
 		}
-
 		case 'tool_start': {
-			const entry = assistantEntry(id, 'toolCall');
+			const entry = assistantEntry(instanceId, 'toolCall');
 			if (!entry.toolCalls) entry.toolCalls = [];
 			entry.toolCalls.push({
 				id: event.callId,
@@ -256,17 +243,13 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			entry.updatedAt = Date.now();
 			break;
 		}
-
 		case 'tool_end': {
 			// ask_user 的「工具块」不渲染（它渲染成提问卡片），所以不必进 overlay
-			if (event.toolName !== 'ask_user') upsertToolResult(id, event);
+			if (event.toolName !== 'ask_user') upsertToolResult(instanceId, event);
 			break;
 		}
-
 		case 'usage': {
 			// 只记单次调用（scope='call'）；agentLoop 的「本段小计」是派生值，不落任何一处。
-			// 账本挂到**这次调用的 assistant 条目**上（与后端的 usages 字段一致：它是那次调用自带的数据），
-			// 不另起条目 —— 否则投影只能把它平铺成一条与调用脱节的流水。
 			if (event.scope === 'loop') break;
 			const data: UsageEntry = {
 				seq: event.seq ?? 0,
@@ -280,38 +263,43 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				total: event.tokens.total,
 				durationMs: event.durationMs ?? 0,
 			};
-			const entry = assistantEntry(id, 'text');
+			const messages = getInstanceMessagesByIdSafe(instanceId);
+			if (event.purpose === 'reflection') {
+				const refl = messages.findLast((m) => m.kind === 'reflection');
+				if (refl) {
+					refl.usages = [...(refl.usages ?? []), data];
+					refl.updatedAt = Date.now();
+					break;
+				}
+			}
+			const entry = assistantEntry(instanceId, 'text');
 			entry.usages = [...(entry.usages ?? []), data];
 			entry.updatedAt = Date.now();
 			break;
 		}
-
-		case 'reflection': {
-			// 反思的 usage 比反思正文先到，上面已经按「挂当前 assistant」处理了；
-			// 这里把它从那条 assistant 上**取回**，改挂到反思自己的条目上（与后端形态一致）。
-			const messages = ensure(id);
-			const tail = messages[messages.length - 1];
-			let usages: UsageEntry[] | undefined;
-			if (tail?.role === 'assistant') {
-				usages = tail.usages?.filter((u) => u.purpose === 'reflection');
-				const rest = tail.usages?.filter((u) => u.purpose !== 'reflection');
-				if (rest?.length) tail.usages = rest;
-				else delete tail.usages;
-			}
+		case 'reflection_start': {
+			const messages = getInstanceMessagesByIdSafe(instanceId);
 			messages.push({
 				role: 'system',
-				content: event.prompt,
+				content: '',
 				uiOnly: true,
 				kind: 'reflection',
 				data: { remaining: event.remaining },
-				usages,
 				updatedAt: Date.now(),
 			});
 			break;
 		}
-
+		case 'reflection_chunk': {
+			const messages = getInstanceMessagesByIdSafe(instanceId);
+			const refl = messages.findLast((m) => m.kind === 'reflection');
+			if (refl) {
+				refl.content += event.chunk;
+				refl.updatedAt = Date.now();
+			}
+			break;
+		}
 		case 'client_tool_call': {
-			ensure(id).push({
+			getInstanceMessagesByIdSafe(instanceId).push({
 				role: 'system',
 				content: '',
 				uiOnly: true,
@@ -321,41 +309,22 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			});
 			break;
 		}
-
 		case 'agent_end': {
-			const meta = draft.meta[id];
+			const meta = draft.meta[instanceId];
 			if (meta) meta.status = event.status;
 			break;
 		}
-
 		default:
 			break;
 	}
 }
 
-/** 在 overlay 里把某次提问的状态改掉（回答 / 跳过） */
-function setOverlayAskState(draft: OverlayCtx, callId: string, status: 'answered' | 'skipped', answer: string): void {
-	for (const instance of Object.values(draft.instances)) {
-		const entry = instance.messages.find(
-			(m) => m.kind === 'ask_user_state' && (m.data as { callId?: string })?.callId === callId,
-		);
-		if (entry) {
-			entry.data = { callId, status, answer };
-			entry.updatedAt = Date.now();
-			return;
-		}
-	}
-}
-
 // #endregion
 
-// #region ask_user 提问卡片
+// #region ask_user 组件
 
 /** 单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
-function AskUserCard(props: {
-	block: RenderAskInfo;
-	onSubmit: (text: string) => void;
-}) {
+function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => void }) {
 	const [choice, setChoice] = createSignal<string | null>(null);
 	const [extra, setExtra] = createSignal('');
 	const [freeText, setFreeText] = createSignal('');
@@ -434,34 +403,24 @@ function AskUserCard(props: {
 // #region 主组件
 
 export default function ChatView() {
-	// #region 局部状态
-
 	const [inputText, setInputText] = createSignal('');
 	const [isGenerating, setIsGenerating] = createSignal(false);
-	/** 本轮 run 的即时错误（重拉 ctx 后由实例的 interruptReason 接管显示） */
-	const [runError, setRunError] = createSignal<string | null>(null);
-	/** 任务清单面板 */
-	const [taskList, setTaskList] = createSignal('');
+	const [runError, setRunError] = createSignal<string | null>(null);	// 本轮 run 的即时错误（重拉 ctx 后由实例的 interruptReason 接管显示）
+	const [taskList, setTaskList] = createSignal('');	// 任务清单面板
 	const [taskListOpen, setTaskListOpen] = createSignal(false);
-	/** 在飞 overlay：SSE 事件翻译成的「ctx 形状的增量」 */
-	const [overlay, setOverlay] = createStore<OverlayCtx>(emptyOverlay());
-	/** 流式期间的滚动触发（overlay 是 store，深度访问不好追踪，用一个计数器带一下） */
-	const [streamTick, setStreamTick] = createSignal(0);
-	/** 取消订阅函数 */
-	let unsubscribeFn: (() => void) | null = null;
-
-	// #endregion
-
-	// #region 渲染树
+	const [overlay, setOverlay] = createStore<OverlayCtx>(createEmptyOverlay());	// 在飞 overlay：SSE 事件翻译成的「ctx 形状的增量」
+	const [streamTick, setStreamTick] = createSignal(0);	// 流式期间的滚动触发（overlay 是 store，深度访问不好追踪，用一个计数器带一下）
+	let unsubscribeFn: (() => void) | null = null;	// 取消订阅函数
 
 	/** 界面内容：已提交的 ctx + 在飞的 overlay，共用同一个投影函数 */
 	const renderTree = createMemo(() => {
 		const conversation = getActiveConversation();
 		streamTick();
-		return foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlay));
+		// overlay 只属于**它正在跑的那个会话**：切走之后不能再拿它去合成别的会话，
+		// 否则「上一轮还在跑的时候点了新建会话」会把上一个会话的在飞内容搬进新会话（看起来就像「没切过去、还停在那条会话上」）。
+		const overlayForActive = overlay.conversationId === appState.activeConversationId ? overlay : undefined;
+		return foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlayForActive));
 	});
-
-	// #endregion
 
 	// #region 显示文本
 
@@ -483,14 +442,11 @@ export default function ChatView() {
 
 	const conversationTitle = () => getActiveConversation()?.title || '新任务';
 
-	const parseTaskListLines = (text: string) =>
-		text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
+	const parseTaskListLines = (text: string) => text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
 
 	// #endregion
 
 	// #region 下拉菜单（文件夹 / 模式 / 模型）
-
-	let modelInput: FFBoxDropdownInput | undefined;
 
 	const folderMenu = createMemo<MenuItem[]>(() => {
 		const activeFolderId = getActiveConversation()?.folderId;
@@ -505,19 +461,28 @@ export default function ChatView() {
 			{ type: 'normal' as const, value: '__new__', label: '+ 添加文件夹…' },
 		];
 	});
-
 	const onFolderChange = (e: CustomEvent<string>) => {
 		if (isGenerating()) return;	// 运行期间不让改工作目录（下一轮才生效的那类改动统一锁住）
 		const value = e.detail;
 		if (value === '__new__') {
 			void (async () => {
-				const folderPath = await requestFolderPath();
-				if (!folderPath) return;
-				const folder = actions.addFolder(folderPath);
-				// 从这个下拉里新建文件夹，意图就是「把当前会话放进这个新目录」，顺手就切过去
-				if (folder) {
+				try {
+					const { path, error } = await requestFolderPath();
+					if (error) {
+						// 拿不到路径（对话框调不起来 / RPC 没接通）：以前这里静默 return，和「用户按了取消」在界面上完全一样 —— 就是「选完还停在本地」那个症状。
+						void alertMsgbox('选择文件夹失败', error);
+						return;
+					}
+					if (!path) return;	// 用户取消
+					// 从这个下拉里选目录，意图就是「把当前会话放进这个目录」，顺手就切过去。
+					// ⚠️ 同一个目录选第二次时 `addFolder()` 返回 null（它只负责「加进列表」）——这时必须复用已有的那个，否则这次选择静默失效。
+					const folder = appState.folders.find((f) => sameFolderPath(f.id, path)) ?? actions.addFolder(path);
+					if (!folder) return;
 					const conv = getActiveConversation();
 					if (conv) actions.setConversationFolder(conv.id, folder.id);
+				} catch (err) {
+					console.error('[ChatView] 选择文件夹出错', err);
+					void alertMsgbox('选择文件夹出错', String((err as Error)?.message ?? err));
 				}
 			})();
 			return;
@@ -534,12 +499,10 @@ export default function ChatView() {
 			checked: appState.currentModeId === m.id,
 		})),
 	);
-
 	const currentModeLabel = () => {
 		const mode = appState.modes.find((m) => m.id === appState.currentModeId);
 		return mode ? `${mode.ui?.icon ?? ''} ${mode.name}`.trim() : '🤖 默认';
 	};
-
 	const onModeChange = (e: CustomEvent<string>) => {
 		if (isGenerating()) return;	// 运行期间禁止改模式
 		const value = e.detail;
@@ -548,7 +511,32 @@ export default function ChatView() {
 		if (conv) void agentBridge.updateConversation(conv.id, { modeId: value });
 	};
 
-	/* === 模型选择：只读 DropdownInput === */
+	let modelInputRef: FFBoxDropdownInput | undefined;
+
+	/**
+	 * 文件夹 / 模式 / 剧本三个下拉框的实例句柄。
+	 *
+	 * ⚠️ **选中之后必须把显示文本显式写回去**：`<ffbox-dropdown-input>` 在选中一项时会**把自己的 text
+	 *   设成该菜单项的 `value`**（组件源码 `onSelect` 里就一句 `this.text = value`）。而它在我们这里是
+	 *   受控的（`prop:text={currentXxx()}`），Solid 只在表达式的**值发生变化**时才写回 —— 于是只要
+	 *   `onchange` 处理完没有改变「应该显示的值」，控件就会一直显示那个原始 value：
+	 *     · 没有激活会话时选「+ 添加文件夹…」→ `currentFolderDisplay()` 前后都是「选择文件夹...」
+	 *     · 目录对话框被取消、或选到已存在的文件夹（`addFolder()` 返回 null）
+	 *     · 重新选中当前已经选中的模式 / 剧本
+	 *   对带哨兵 value 的那一项，界面上就字面显示成 `__new__`（2026-09-15 用户报告的那个）。
+	 *   所以每个 `onchange` 处理完都要调一次 `resyncDropdownText()`。
+	 */
+	let folderInputRef: FFBoxDropdownInput | undefined;
+	let modeInputRef: FFBoxDropdownInput | undefined;
+	let scenarioInputRef: FFBoxDropdownInput | undefined;
+
+	/** 把三个下拉框的显示文本从状态里重新写回去（为什么必须显式写：见上面那段注释） */
+	function resyncDropdownText() {
+		if (folderInputRef) folderInputRef.text = currentFolderDisplay();
+		if (modeInputRef) modeInputRef.text = currentModeLabel();
+		if (scenarioInputRef) scenarioInputRef.text = currentScenarioLabel();
+	}
+
 	const modelMenu = createMemo<MenuItem[]>(() => {
 		const current = appState.currentStandardModel;
 		if (appState.providers.length === 0) {
@@ -566,7 +554,6 @@ export default function ChatView() {
 			})),
 		}));
 	});
-
 	const onModelChange = (e: CustomEvent<string>) => {
 		if (isGenerating()) return;	// 运行期间禁止改运行语义（同「回复过程中不能点发送」）
 		const value = e.detail;
@@ -574,8 +561,10 @@ export default function ChatView() {
 		const sep = value.indexOf('/');
 		if (sep <= 0) return;
 		actions.setCurrentStandardModel({ providerId: value.slice(0, sep), modelId: value.slice(sep + 1) });
-		if (modelInput) modelInput.text = currentModelDisplay();
+		if (modelInputRef) modelInputRef.text = currentModelDisplay();
 	};
+
+	// #endregion
 
 	// #region 内置 mock 开关（开发用）
 
@@ -607,37 +596,33 @@ export default function ChatView() {
 
 	// #endregion
 
-	// #endregion
-
 	// #region 滚动与后端刷新
 
+	const SCROLL_TO_BOTTOM_THRESHOLD = 100;
 	const chatAreaRef = (el: HTMLDivElement) => {
 		createEffect(() => {
 			getActiveConversation();
 			taskList();
 			streamTick();
+			const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 			queueMicrotask(() => {
-				el.scrollTop = el.scrollHeight;
+				if (distanceFromBottom <= SCROLL_TO_BOTTOM_THRESHOLD) {
+					el.scrollTop = el.scrollHeight;
+				}
 			});
 		});
-	};
-
-	/** 刷新任务清单面板 */
-	const refreshTaskList = async (convId: string) => {
-		const list = await agentBridge.getTaskList(convId);
-		setTaskList(list);
 	};
 
 	// #endregion
 
 	// #region 一轮 run 的开始与结束
-	//
+
 	// 生命周期只有两个动作：
 	//   beginRun —— 清空 overlay（清掉上一轮的残留）后发请求
 	//   endRun   —— 重拉 ctx（拿「已提交」的内容）+ 清空 overlay
 	// 中间不重拉：§6 决定了「在飞」的内容不在 ctx 里，靠 overlay 呈现即可。
 
-	const beginRun = (convId: string) => {
+	const beginRun = async (convId: string) => {
 		if (unsubscribeFn) {
 			unsubscribeFn();
 			unsubscribeFn = null;
@@ -645,9 +630,22 @@ export default function ChatView() {
 		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
 		openOverrides.clear();
 		setRunError(null);
-		setOverlay(emptyOverlay(convId, appState.currentModeId));
+		setOverlay(createEmptyOverlay(convId, appState.currentModeId));
 		setStreamTick((v) => v + 1);
-		unsubscribeFn = agentBridge.subscribeStream(convId, (event) => handleStreamEvent(convId, event));
+		// ⚠️ 必须**等 SSE 连接真的建立**再返回：EventSource 建连要几百 ms，而调用方紧接着就发 run，后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，会永久丢失。
+		// 丢了 `agent_start` 的后果：overlay 没有 `rootAgentInstanceId`，在飞期间`foldCtxToRenderTree()` 找不到根实例直接返回 null ⇒ 界面上既看不到用户那条消息、也看不到任何内容（2026-09-15 实测：overlay 里只有后续事件，整轮一片空白）。
+		// 超时兜底：连不上也照常返回，宁可丢事件也不能把「发送」卡死。
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, 2000);
+			unsubscribeFn = agentBridge.subscribeStream(
+				convId,
+				(event) => handleStreamEvent(convId, event),
+				() => {
+					clearTimeout(timer);
+					resolve();
+				},
+			);
+		});
 	};
 
 	const endRun = async (convId: string) => {
@@ -657,12 +655,18 @@ export default function ChatView() {
 			unsubscribeFn = null;
 		}
 		await loadConversationCtx(convId, true);
-		setOverlay(emptyOverlay(convId, appState.currentModeId));
+		setOverlay(createEmptyOverlay(convId, appState.currentModeId));
 	};
 
 	// #endregion
 
 	// #region 流式事件处理
+
+	/** 刷新任务清单面板 */
+	const refreshTaskList = async (convId: string) => {
+		const list = await agentBridge.getTaskList(convId);
+		setTaskList(list);
+	};
 
 	const handleStreamEvent = (convId: string, event: AgentStreamEvent) => {
 		if (event.type === 'done') {
@@ -689,6 +693,24 @@ export default function ChatView() {
 	const handleSend = async () => {
 		const text = inputText().trim();
 		if (!text || isGenerating()) return;
+
+		/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
+		function buildModelConfig(): ModelConfig | null {
+			const ref = appState.currentStandardModel;
+			if (!ref) return null;
+			const provider = appState.providers.find((p) => p.id === ref.providerId);
+			if (!provider) return null;
+			const model = provider.models.find((m) => m.id === ref.modelId);
+			if (!model) return null;
+			return {
+				providerId: provider.id,
+				modelId: model.id,
+				apiFormat: provider.apiFormat,
+				baseUrl: provider.baseUrl,
+				apiKey: provider.apiKey,
+				customParams: { ...provider.customParams, ...model.customParams },
+			};
+		}
 
 		// mock 开着时就算没配 provider 也能跑（后端会把请求转给内置 mock）
 		const modelConfig = buildModelConfig() ?? (appState.mock.enabled ? MOCK_PLACEHOLDER_MODEL : null);
@@ -717,7 +739,7 @@ export default function ChatView() {
 
 		setInputText('');
 		setIsGenerating(true);
-		beginRun(convId);
+		await beginRun(convId);
 
 		try {
 			const result = await agentBridge.runAgent({
@@ -755,9 +777,21 @@ export default function ChatView() {
 	};
 
 	/** 回答提问卡片：本地先把状态改成已回答，再 POST 续接（订阅还开着，后续输出继续进 overlay） */
-	const handleAskUserAnswer = async (convId: string, callId: string, text: string) => {
+	const handleAskUserCardSubmit = async (convId: string, callId: string, text: string) => {
 		const skipped = text === '用户已跳过此提问';
-		setOverlay(produce((draft) => setOverlayAskState(draft, callId, skipped ? 'skipped' : 'answered', text)));
+		setOverlay(produce((draft) => {
+			// 在 overlay 里把某次提问的状态改掉（回答 / 跳过）
+			for (const instance of Object.values(draft.instances)) {
+				const entry = instance.messages.find(
+					(m) => m.kind === 'ask_user_state' && (m.data as { callId?: string })?.callId === callId,
+				);
+				if (entry) {
+					entry.data = { callId, status: skipped ? 'skipped' : 'answered', answer: text };
+					entry.updatedAt = Date.now();
+					return;
+				}
+			}
+		}));
 		if (skipped) return;
 
 		setIsGenerating(true);
@@ -775,28 +809,25 @@ export default function ChatView() {
 	/**
 	 * 用户手动折叠/展开过的块。
 	 *
-	 * 投影每次重算都会**重建块对象**（流式期间每来一个增量就重算一次），DOM 上的 `<details>` 会被换掉，
-	 * 不把用户的意愿记在这里就会被弹回去。key 用块的稳定标识（工具用 callId、子 Agent 用实例 id）——
+	 * 投影每次重算都会**重建块对象**（流式期间每来一个增量就重算一次），DOM 上的 `<details>` 会被换掉，不把用户的意愿记在这里就会被弹回去。key 用块的稳定标识（工具用 callId、子 Agent 用实例 id）
 	 * ⚠️ 每轮 run 开始时清空：根实例是永续的，不清的话上一条轮次的展开状态会串到新轮次的同名块上。
 	 */
 	const openOverrides = new Map<string, boolean>();
-	const openState = (key: string, fallback: boolean) => openOverrides.get(key) ?? fallback;
-	const rememberOpen = (key: string, isOpen: boolean) => {
-		openOverrides.set(key, isOpen);
-	};
 
 	/** 一次 LLM 调用的账本：贴在所属块的**下方**（它是那次调用自带的一条数据，不是独立条目） */
 	const renderUsage = (usage: UsageEntry) => {
-		const parts: string[] = [`#${usage.seq ?? '?'}`];
-		if (usage.round) parts.push(`第 ${usage.round} 轮`);
+		const parts: string[] = []
+		parts.push(`#${usage.seq ?? '?'}`);	// 总调用 llm 的序号
+		if (usage.round) parts.push(`第 ${usage.round} 轮`);	// 不包含反思和子 Agent 的 llm 调用轮序号
 		parts.push(`↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)}`);
-		parts.push(`共 ${fmtTokens(usage.total)}`);
+		// parts.push(`共 ${fmtTokens(usage.total)}`);
 		if (usage.cached) parts.push(`缓存 ${fmtTokens(usage.cached)}`);
 		const duration = fmtDuration(usage.durationMs);
 		if (duration) parts.push(duration);
-		if (usage.purpose && usage.purpose !== 'agent_loop') {
-			parts.push(PURPOSE_LABEL[usage.purpose] ?? usage.purpose);
-		}
+		// if (usage.purpose && usage.purpose !== 'agent_loop') {
+		// 	parts.push(PURPOSE_LABEL[usage.purpose] ?? usage.purpose);
+		// }
+		parts.push(usage.model);
 		return (
 			<div class={styles['agent-block-usage']}>
 				<span class={styles['agent-usage-icon']}>🧮</span>
@@ -845,7 +876,7 @@ export default function ChatView() {
 					return (
 						<AskUserCard
 							block={tool.ask}
-							onSubmit={(text) => void handleAskUserAnswer(convId, tool.callId, text)}
+							onSubmit={(text) => void handleAskUserCardSubmit(convId, tool.callId, text)}
 						/>
 					);
 				}
@@ -858,8 +889,8 @@ export default function ChatView() {
 					<details
 						class={styles['agent-block-tool']}
 						classList={{ [styles['is-error']]: tool.status === 'error' }}
-						open={openState(`tool:${tool.callId}`, tool.status === 'error' || (!!tool.output && tool.output.length <= 240))}
-						ontoggle={(e) => rememberOpen(`tool:${tool.callId}`, e.currentTarget.open)}
+						open={openOverrides.get(`tool:${tool.callId}`) ?? (tool.status === 'error' || (!!tool.output && tool.output.length <= 240))}
+						ontoggle={(e) => openOverrides.set(`tool:${tool.callId}`, e.currentTarget.open)}
 					>
 						<summary class={styles['agent-tool-summary']}>
 							<span class={styles['agent-tool-icon']}>
@@ -991,8 +1022,8 @@ export default function ChatView() {
 				class={styles['agent-node']}
 				/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。
 				   曾经按 status 自动折（跑完就收起），结果是「子 Agent 一完成就从界面上消失」。 */
-				open={openState(`node:${node.agentInstanceId}`, true)}
-				ontoggle={(e) => rememberOpen(`node:${node.agentInstanceId}`, e.currentTarget.open)}
+				open={openOverrides.get(`node:${node.agentInstanceId}`) ?? true}
+				ontoggle={(e) => openOverrides.set(`node:${node.agentInstanceId}`, e.currentTarget.open)}
 			>
 				<summary class={styles['agent-node-header']}>
 					<span>🤖</span>
@@ -1099,6 +1130,7 @@ export default function ChatView() {
 				<div class={styles['input-wrapper']}>
 					<div class={styles['input-controls-top']}>
 						<ffbox-dropdown-input
+							ref={folderInputRef}
 							class={styles['folder-dropdown']}
 							title="运行文件夹"
 							placeholder="选择文件夹"
@@ -1106,9 +1138,13 @@ export default function ChatView() {
 							prop:disabled={isGenerating()}
 							prop:text={currentFolderDisplay()}
 							prop:list={folderMenu()}
-							onchange={onFolderChange}
+							onchange={(e) => {
+								onFolderChange(e);
+								resyncDropdownText();
+							}}
 						/>
 						<ffbox-dropdown-input
+							ref={modeInputRef}
 							class={styles['mode-dropdown']}
 							title="运行模式"
 							placeholder="选择模式"
@@ -1116,25 +1152,29 @@ export default function ChatView() {
 							prop:disabled={isGenerating()}
 							prop:text={currentModeLabel()}
 							prop:list={modeMenu()}
-							onchange={onModeChange}
+							onchange={(e) => {
+								onModeChange(e);
+								resyncDropdownText();
+							}}
 						/>
-						{/* 内置 mock 开关：常亮。开着时是红的 —— 假响应和真响应长得一模一样，
-						    忘了关很容易误以为 Agent 真在工作（工具是真执行的） */}
-						<button
-							class={styles['chip-btn']}
-							classList={{ [styles['is-mock']]: appState.mock.enabled }}
-							disabled={isGenerating()}
+						<ffbox-button
+							onclick={() => void toggleMock()}
+							prop:disabled={isGenerating()}
 							title={
 								appState.mock.enabled
 									? 'LLM 走内置 mock（工具仍真实执行）。运行期间不能切换'
 									: '点一下打开：LLM 走内置 mock，工具仍真实执行'
 							}
-							onclick={() => void toggleMock()}
 						>
+							<ffbox-checkbox
+								prop:checked={appState.mock.enabled}
+								prop:disabled={isGenerating()}
+							/>
 							🎭 {appState.mock.enabled ? `mock：${appState.mock.scenario}` : 'mock 关'}
-						</button>
+						</ffbox-button>
 						<Show when={appState.mock.enabled}>
 							<ffbox-dropdown-input
+								ref={scenarioInputRef}
 								class={styles['mock-scenario']}
 								title="mock 剧本"
 								placeholder="选择剧本"
@@ -1142,7 +1182,10 @@ export default function ChatView() {
 								prop:disabled={isGenerating()}
 								prop:text={currentScenarioLabel()}
 								prop:list={scenarioMenu()}
-								onchange={onScenarioChange}
+								onchange={(e) => {
+									void onScenarioChange(e);
+									resyncDropdownText();
+								}}
 							/>
 						</Show>
 					</div>
@@ -1167,7 +1210,7 @@ export default function ChatView() {
 						</button>
 
 						<ffbox-dropdown-input
-							ref={modelInput}
+							ref={modelInputRef}
 							class={styles['model-dropdown']}
 							title="选择模型"
 							placeholder="选择模型"

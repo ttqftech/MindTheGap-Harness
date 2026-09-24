@@ -6,7 +6,8 @@ import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
 import styles from './Sidebar.module.css';
 import { state, setState, actions } from '@mainview/store';
 import { requestFolderPath } from '@mainview/localBridge';
-import { folderLabel, getTimeString } from '@shared/utils';
+import { alertMsgbox } from '@mainview/ffboxBridge';
+import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
 
 function FolderIcon() {
 	return (
@@ -109,12 +110,25 @@ export default function Sidebar() {
 	};
 
 	const handleNewFolder = async () => {
-		const folderPath = await requestFolderPath();
-		if (!folderPath) return;  // 用户取消
-		// 文件夹没有「名字」：id 就是路径，显示名由 folderLabel() 现算
-		const folder = actions.addFolder(folderPath);
-		// 刚加的文件夹一定是空的，顺手展开，否则看起来像「点了没反应」
-		if (folder) setExpandedFolders((prev) => new Set(prev).add(folder.id));
+		try {
+			const { path, error } = await requestFolderPath();
+			if (error) {
+				// 拿不到路径（对话框调不起来 / RPC 没接通）：以前这里是静默 return，
+				// 和「用户按了取消」长得一模一样，于是表现为「点了没反应」。必须报出来。
+				void alertMsgbox('添加文件夹失败', error);
+				return;
+			}
+			if (!path) return;  // 用户取消
+			// 文件夹没有「名字」：id 就是路径，显示名由 folderLabel() 现算
+			// ⚠️ 同一个目录选第二次时 `addFolder()` 返回 null（它只负责「加进列表」）；
+			// 这时要复用已有的那个，否则这次点击静默失效。
+			const folder = state.folders.find((f) => sameFolderPath(f.id, path)) ?? actions.addFolder(path);
+			// 刚加的文件夹一定是空的，顺手展开，否则看起来像「点了没反应」
+			if (folder) setExpandedFolders((prev) => new Set(prev).add(folder.id));
+		} catch (err) {
+			console.error('[Sidebar] 添加文件夹出错', err);
+			void alertMsgbox('添加文件夹失败', String((err as Error)?.message ?? err));
+		}
 	};
 
 	// 会话按 folderId 分组（createMemo 确保 Solid 追踪 state.conversations 变化）
@@ -168,11 +182,11 @@ export default function Sidebar() {
 				</Show>
 			</div>
 
-			{/* 新建任务按钮 */}
+			{/* 新建会话按钮 */}
 			<Show when={!state.ui.sidebarCollapsed}>
 				<button class={styles['sidebar-new-task']} onclick={handleNewTask}>
 					<NewIcon />
-					<span class={styles['sidebar-new-task-text']}>新建任务</span>
+					<span class={styles['sidebar-new-task-text']}>新建会话</span>
 				</button>
 			</Show>
 
