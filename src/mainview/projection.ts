@@ -1,35 +1,16 @@
-/* ==========================================================================
-   投影：ctx → 渲染树（**纯函数，不落盘**）
+/**
+ * 投影：ctx → 渲染树（**纯函数，不落盘**）
+ *
+ * ① **一次 LLM 调用 = 一个块**（`role:'assistant'` 是一次调用，反思也是一次调用 —— 两者都走 `RenderLlmBlock`，不留例外）。这次调用的思考 / 正文 / 各次工具调用 / 反思，都是它的**子块**。
+ * ② 遇到 delegate / resume_* 的工具调用，就按该次调用创建的子实例递归下钻。
+ *
+ * ⚠️ 工具结果（`role:'tool'`）不单独成块 —— 它贴在对应 toolCall 子块里（调用请求 + 返回结果同处）。
+ * ⚠️ 账本（`usages`）不单独成块 —— 它是 assistant 条目自带的字段，渲染在该 LLM 块的下方。
+ *
+ * 设计稿：docs/设计-ctx唯一真相与动态投影.md §4
+ */
 
-   这是本次改造的技术核心：界面上的所有内容都由 ctx 现算，不再持久化一份「UI 消息」。
-   规则只有两条：
-
-   ① **一次 LLM 调用 = 一个块**（`role:'assistant'` 是一次调用，反思也是一次调用 —— 两者都走
-      `RenderLlmBlock`，不留例外）。这次调用的思考 / 正文 / 各次工具调用 / 反思，都是它的**子块**，
-      不允许平铺到外层。
-   ② 遇到 delegate / resume_* 的工具调用，就按该次调用创建的子实例递归下钻。
-      所以「嵌套」是结构本身，不需要 depth 缩进来假装。
-
-   ⚠️ 工具结果（`role:'tool'`）不单独成块 —— 它贴在对应 toolCall 子块里（调用请求 + 返回结果同处）。
-   ⚠️ 账本（`usages`）不单独成块 —— 它是 assistant 条目自带的字段，渲染在该 LLM 块的下方。
-
-   为什么放在 shared/：前后端共用同一个实现。前端流式期间自己在内存里拼的是「在飞 overlay」，
-   而「已提交」部分一律走这里 —— 两套实现就是旧设计病根的复现。
-
-   设计稿：docs/设计-ctx唯一真相与动态投影.md §4
-   ========================================================================== */
-
-import type {
-	AgentCtx,
-	AgentInstance,
-	AgentInstanceMessage,
-	AgentInstanceStatus,
-	AskUserState,
-	ReflectionInfo,
-	TokenUsage,
-	ToolResultInfo,
-	UsageEntry,
-} from './agent';
+import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserState, ReflectionInfo, TokenUsage, ToolResultInfo, UsageEntry } from '@shared/agent';
 
 // #region 渲染树类型
 
@@ -55,7 +36,7 @@ interface BlockBase {
 	key: string;
 }
 
-// ---------- LLM 调用块里的子块 ----------
+// #region 子块
 
 export interface RenderReasoningSub extends BlockBase {
 	type: 'reasoning';
@@ -81,31 +62,28 @@ export interface RenderToolSub extends BlockBase {
 	type: 'tool';
 	callId: string;
 	name: string;
-	/** 模型给出的调用理由（reason 参数） */
 	reason: string;
-	/** 还没有结果条目 = 正在执行 */
 	status: 'running' | 'success' | 'error';
-	/** 入参（JSON 文本；截断是渲染层的事，这里给全文） */
-	args: string;
+	args: string;	// 入参 JSON 文本
 	output: string;
 	error?: string;
 	/** 这次调用创建 / 唤醒的子实例，整块嵌套渲染（delegate 是挂载点） */
 	children?: RenderAgentNode[];
-	/** ask_user：渲染成提问卡片而不是工具块 */
-	ask?: RenderAskInfo;
+	ask?: RenderAskInfo;	// ask_user 渲染成提问卡片而不是工具块
 }
 
 /** 反思：它也是一次 LLM 调用，只是产出形态固定（一句追问），所以照样是 llm 块里的一个子块 */
 export interface RenderReflectionSub extends BlockBase {
 	type: 'reflection';
 	content: string;
-	/** 本轮反思后还剩几次 */
-	remaining?: number;
+	remaining?: number;	// 本轮反思后还剩几次
 }
 
 export type RenderSubBlock = RenderReasoningSub | RenderTextSub | RenderToolSub | RenderReflectionSub;
 
-// ---------- 顶层块 ----------
+// #endregion
+
+// #region 顶层块
 
 export interface RenderUserBlock extends BlockBase {
 	type: 'user';
@@ -116,13 +94,11 @@ export interface RenderUserBlock extends BlockBase {
  * ⭐ **一次 LLM 调用 = 一个块**。
  *
  * 子块 = 这次调用产出的思考 / 正文 / 各次工具调用（结果贴在调用处）；
- * 账本（`usages`）挂在本块**下方** —— 它是这次调用自带的一条数据，不是独立条目。
  */
 export interface RenderLlmBlock extends BlockBase {
 	type: 'llm';
 	subBlocks: RenderSubBlock[];
-	/** 本次调用花了多少（通常 1 条；工具内部发起的子请求会顺延挂到下一次调用上） */
-	usages?: UsageEntry[];
+	usages?: UsageEntry[];	// 本次调用花了多少（通常 1 条；工具内部发起的子请求会顺延挂到下一次调用上）
 }
 
 export interface RenderErrorBlock extends BlockBase {
@@ -194,9 +170,8 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 	const nextKey = (kind: string) => `${instance.agentInstanceId}:${kind}:${counter++}`;
 
 	for (const entry of entries) {
-		// ① 反思条目：正文在 content 里，它本身就是**一次 LLM 调用**（所以照样出一个 llm 块，
-		//    里面只有一个 reflection 子块）。有追问的那条同时进 LLM 上下文（没有 uiOnly 标记），
-		//    没追问的那条只给界面看 —— 两者都要渲染，所以这个判断必须放在 role 之前。
+		// ① 反思条目：正文在 content 里，它本身就是**一次 LLM 调用**（所以照样出一个 llm 块，里面只有一个 reflection 子块）。
+		//    有追问的那条同时进 LLM 上下文（没有 uiOnly 标记），没追问的那条只给界面看 —— 两者都要渲染，所以这个判断必须放在 role 之前。
 		if (entry.kind === 'reflection') {
 			blocks.push({
 				type: 'llm',
@@ -339,6 +314,144 @@ function parseArgs(raw: string): Record<string, unknown> | undefined {
 
 // #endregion
 
+// #region 渲染树 diff
+
+/**
+ * 深层 diff：让内容没变的节点保持旧引用，使 Solid <For> 能复用 DOM。
+ * 规则：按 key 匹配数组项 → 递归比较内容 → 全等返回旧引用，有变返回新对象（未变子字段用旧引用）。
+ */
+export function diffRenderTree(oldNode: RenderAgentNode | null, newNode: RenderAgentNode | null): RenderAgentNode | null {
+	if (oldNode === newNode) return oldNode;
+	if (!oldNode || !newNode) return newNode;
+
+	const blocks = diffKeyedArray(oldNode.blocks, newNode.blocks, diffBlock, (b) => b.key);
+	// 如果 blocks 没有变化，renderTree 所有属性也没变化，直接返回旧数组
+	if (
+		blocks === oldNode.blocks
+		&& oldNode.agentInstanceId === newNode.agentInstanceId
+		&& oldNode.agentId === newNode.agentId
+		&& oldNode.agentName === newNode.agentName
+		&& oldNode.depth === newNode.depth
+		&& oldNode.status === newNode.status
+		&& oldNode.task === newNode.task
+		&& oldNode.summary === newNode.summary
+		&& oldNode.rounds === newNode.rounds
+		&& oldNode.llmCalls === newNode.llmCalls
+		&& oldNode.tokens === newNode.tokens
+	) return oldNode;
+
+	return { ...newNode, blocks };
+}
+
+function diffBlock(old: RenderBlock, nu: RenderBlock): RenderBlock {
+	if (old.key !== nu.key || old.type !== nu.type) return nu;
+
+	switch (nu.type) {
+		case 'user': {
+			const o = old as RenderUserBlock;
+			if (o.content === nu.content) return old;
+			return nu;
+		}
+		case 'llm': {
+			const o = old as RenderLlmBlock;
+			const subBlocks = diffKeyedArray(o.subBlocks, nu.subBlocks, diffSubBlock, (s) => s.key);
+			if (subBlocks === o.subBlocks && o.usages === nu.usages) return old;
+			return { ...nu, subBlocks };
+		}
+		case 'error': {
+			const o = old as RenderErrorBlock;
+			if (o.message === nu.message) return old;
+			return nu;
+		}
+		case 'agent': {
+			const o = old as RenderAgentBlock;
+			const node = diffRenderTree(o.node, nu.node)!;
+			if (node === o.node) return old;
+			return { ...nu, node };
+		}
+	}
+}
+
+function diffSubBlock(oldNode: RenderSubBlock, newNode: RenderSubBlock): RenderSubBlock {
+	if (oldNode.key !== newNode.key || oldNode.type !== newNode.type) return newNode;
+
+	switch (newNode.type) {
+		case 'reasoning': {
+			const o = oldNode as RenderReasoningSub;
+			if (o.content === newNode.content) return oldNode;
+			return newNode;
+		}
+		case 'text': {
+			const o = oldNode as RenderTextSub;
+			if (o.content === newNode.content) return oldNode;
+			return newNode;
+		}
+		case 'reflection': {
+			const o = oldNode as RenderReflectionSub;
+			if (o.content === newNode.content && o.remaining === newNode.remaining) return oldNode;
+			return newNode;
+		}
+		case 'tool': {
+			const o = oldNode as RenderToolSub;
+			const children = diffKeyedArray(
+				o.children ?? [], newNode.children ?? [],
+				(old, nu) => diffRenderTree(old, nu)!,
+				(n) => n.agentInstanceId,
+			);
+			const sameChildren = children === (o.children ?? []);
+			if (
+				sameChildren
+				&& o.callId === newNode.callId
+				&& o.name === newNode.name
+				&& o.reason === newNode.reason
+				&& o.status === newNode.status
+				&& o.args === newNode.args
+				&& o.output === newNode.output
+				&& o.error === newNode.error
+				&& o.ask === newNode.ask
+			) return oldNode;
+			return { ...newNode, children: children.length > 0 ? children : undefined };
+		}
+	}
+}
+
+/**
+ * 数组元素发生了变化（新增、删除、数组内元素的修改（通过 differ 返回是否原始对象判断））：返回新的数组
+ * 完全没变化：返回旧数组（以保持引用稳定性）
+ *
+ * @param oldArr  旧数组
+ * @param newArr  新数组
+ * @param differ  差异函数，接收同一 key 的旧元素与新元素，返回合并后的元素（可以是新引用，可以是旧引用）
+ *                如果有其中一个元素 changed（或者只在 newArr 出现，oldArr 中没有），那么整个函数的返回值就是新的结果数组
+ * @param getKey  从元素中提取唯一 key 的函数（通常为 (item) => item.key）
+ * @returns 若有变化则返回新的结果数组，否则返回旧数组引用
+ */
+function diffKeyedArray<T>(oldArr: T[], newArr: T[], differ: (o: T, n: T) => T, getKey: (item: T) => string): T[] {
+	if (oldArr === newArr) return oldArr;
+	if (oldArr.length === 0 && newArr.length === 0) return oldArr;
+
+	const oldMap = new Map<string, T>();
+	for (const o of oldArr) oldMap.set(getKey(o), o);
+
+	let changed = oldArr.length !== newArr.length;
+	const result: T[] = [];
+	for (const newNode of newArr) {
+		const oldNode = oldMap.get(getKey(newNode));
+		if (oldNode) {
+			const diffed = differ(oldNode, newNode);
+			result.push(diffed);
+			if (diffed !== oldNode) changed = true;
+		} else {
+			result.push(newNode);
+			changed = true;
+		}
+	}
+
+	return changed ? result : oldArr;
+}
+
+// #endregion
+
 // #region 在飞 overlay（SSE 增量）
 
 /**
@@ -362,10 +475,7 @@ export function createEmptyOverlay(conversationId?: string, modeId?: string): Ov
  * 同名实例的 messages 是「已提交 + 在飞」拼接；overlay 里独有的实例用 meta 补成完整实例。
  * 纯函数，不改动入参（只做浅拷贝）。
  */
-export function mergeOverlayCtx(
-	ctx: AgentCtx | null | undefined,
-	overlay: OverlayCtx | null | undefined,
-): AgentCtx | null {
+export function mergeOverlayCtx(ctx: AgentCtx | null | undefined, overlay: OverlayCtx | null | undefined): AgentCtx | null {
 	if (!overlay || Object.keys(overlay.instances).length === 0) return ctx ?? null;
 
 	const base: AgentCtx = ctx ?? {
@@ -380,24 +490,26 @@ export function mergeOverlayCtx(
 		updatedAt: 0,
 	};
 
+	// 将 base 中已提交的实例浅拷贝一份，再逐个合入 overlay 中的增量数据
 	const agentInstances: Record<string, AgentInstance> = { ...base.agentInstances };
 	for (const [id, delta] of Object.entries(overlay.instances)) {
 		const committed = agentInstances[id];
 		agentInstances[id] = committed
+			// 实例已存在：保留已有字段，将增量消息追加到已有消息列表末尾
 			? { ...committed, messages: [...committed.messages, ...delta.messages] }
-			: overlayInstance(base, id, overlay.meta[id] ?? {}, delta.messages);
+			// 实例不存在（首次出现）：用 overlay.meta 中的展示信息创建空实例，再填入增量消息
+			: createEmptyAgentInstance(base, id, overlay.meta[id] ?? {}, delta.messages);
 	}
 
-	// 根实例 id：ctx 优先，其次 overlay 记下的 agent_start。**两者都没有时要兜底推断** ——
-	// 前端订阅 SSE 比 run 启动晚时（EventSource 建连要几百 ms），第一条 `agent_start` 会丢，
-	// `overlay.rootAgentInstanceId` 就是空。此时若不推断，下面的 fold 会因
-	// `agentInstances['']` 不存在而返回 null ⇒ **整个在飞期间界面一片空白**（2026-09-15 实测）。
-	// 推断规则：深度为 0 的实例，或仅有一个实例时那一个。
+	// 根实例 id 取值顺序：ctx 已提交的 → overlay 记下的 → 推断
+	// 推断场景：SSE 建连超时（2s）导致 agent_start 丢失，overlay.rootAgentInstanceId 为空，
+	// fold 会因 agentInstances[''] 不存在而返回 null，界面一片空白。
+	// 推断规则：取 depth=0 的实例，或仅有一个实例时取那一个。
 	let rootAgentInstanceId = base.rootAgentInstanceId || overlay.rootAgentInstanceId || '';
 	if (!rootAgentInstanceId) {
 		const ids = Object.keys(agentInstances);
-		const depthZero = ids.find((id) => (overlay.meta[id]?.depth ?? 0) === 0);
-		rootAgentInstanceId = depthZero ?? (ids.length === 1 ? ids[0] : '');
+		const depthZeroInstanceId = ids.find((id) => (overlay.meta[id]?.depth ?? 0) === 0);
+		rootAgentInstanceId = depthZeroInstanceId ?? (ids.length === 1 ? ids[0] : '');
 	}
 
 	return {
@@ -408,12 +520,7 @@ export function mergeOverlayCtx(
 }
 
 /** 用 overlay 的 meta 补出一个完整实例（本轮新建、ctx 里还没有的那个） */
-function overlayInstance(
-	base: AgentCtx,
-	id: string,
-	meta: Partial<AgentInstance>,
-	messages: AgentInstanceMessage[],
-): AgentInstance {
+function createEmptyAgentInstance(base: AgentCtx, id: string, meta: Partial<AgentInstance>, messages: AgentInstanceMessage[]): AgentInstance {
 	return {
 		agentInstanceId: id,
 		conversationId: base.conversationId,

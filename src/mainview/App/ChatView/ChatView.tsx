@@ -16,8 +16,8 @@ import { createStore, produce } from 'solid-js/store';
 import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
-import { createEmptyOverlay, foldCtxToRenderTree, mergeOverlayCtx } from '@shared/projection';
-import type { OverlayCtx, RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@shared/projection';
+import { createEmptyOverlay, diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
+import type { OverlayCtx, RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
 import * as agentBridge from '@mainview/agentBridge';
 import type { AgentInstanceMessage, AgentStreamEvent, ToolResult, UsageEntry } from '@shared/agent';
 import { requestFolderPath } from '@mainview/localBridge';
@@ -413,13 +413,18 @@ export default function ChatView() {
 	let unsubscribeFn: (() => void) | null = null;	// 取消订阅函数
 
 	/** 界面内容：已提交的 ctx + 在飞的 overlay，共用同一个投影函数 */
+	const ENABLE_RENDER_TREE_DIFF = false;
+	let prevTree: RenderAgentNode | null = null;
 	const renderTree = createMemo(() => {
 		const conversation = getActiveConversation();
 		streamTick();
 		// overlay 只属于**它正在跑的那个会话**：切走之后不能再拿它去合成别的会话，
 		// 否则「上一轮还在跑的时候点了新建会话」会把上一个会话的在飞内容搬进新会话（看起来就像「没切过去、还停在那条会话上」）。
 		const overlayForActive = overlay.conversationId === appState.activeConversationId ? overlay : undefined;
-		return foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlayForActive));
+		const newTree = foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlayForActive));
+		const result = ENABLE_RENDER_TREE_DIFF ? diffRenderTree(prevTree, newTree) : newTree;
+		prevTree = result;
+		return result;
 	});
 
 	// #region 显示文本
@@ -629,6 +634,7 @@ export default function ChatView() {
 		}
 		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
 		openOverrides.clear();
+		prevTree = null;
 		setRunError(null);
 		setOverlay(createEmptyOverlay(convId, appState.currentModeId));
 		setStreamTick((v) => v + 1);
@@ -861,7 +867,11 @@ export default function ChatView() {
 			case 'reflection':
 				// 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定，折叠起来看
 				return (
-					<details class={styles['agent-block-reflection']}>
+					<details
+						class={styles['agent-block-reflection']}
+						open={openOverrides.get(`reflection:${sub.key}`) ?? false}
+						ontoggle={(e) => openOverrides.set(`reflection:${sub.key}`, e.currentTarget.open)}
+					>
 						<summary>🪞 反思轮{sub.remaining !== undefined ? `（剩 ${sub.remaining} 次）` : ''}</summary>
 						<div class={styles['agent-block-reflection-body']}>{sub.content}</div>
 					</details>
@@ -1078,12 +1088,29 @@ export default function ChatView() {
 							<SparkleIcon />
 						</div>
 						<h2>MindTheGap-Harness</h2>
-						<p>告诉我你想做什么，我来帮你搞定 ✨</p>
+						<p>请小心间隙！Please Mind The Gap！嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟📢</p>
 					</div>
 				</Show>
 
 				<Show when={appState.ui.viewMode === 'chat' && renderTree()}>
-					<div class={styles['message-list']}>
+					<div
+						class={styles['message-list']}
+						ref={(el) => {
+							// 以下代码用于性能测试。不需要时可整个都去掉
+							let domMutations = 0;
+							let lastLogTime = 0;
+							const obs = new MutationObserver((mutations) => {
+								for (const m of mutations) domMutations += m.addedNodes.length + m.removedNodes.length;
+								const now = performance.now();
+								if (now - lastLogTime >= 50) {
+									console.log(`[dom-mutations] diff=${ENABLE_RENDER_TREE_DIFF} mutations=${domMutations}`);
+									lastLogTime = now;
+								}
+							});
+							obs.observe(el, { childList: true, subtree: true });
+							onCleanup(() => obs.disconnect());
+						}}
+					>
 						{/* 任务清单小面板（可折叠） */}
 						<Show when={parseTaskListLines(taskList()).length > 0}>
 							<div class={styles['task-panel']}>
@@ -1099,8 +1126,21 @@ export default function ChatView() {
 							</div>
 						</Show>
 
-						{/* 转写：从根实例开始递归渲染 */}
-						{renderNode(renderTree()!, true)}
+						{/* 转写：根实例直接内联渲染，让 <For> 持久化以支持 reconciliation */}
+						<div class={styles['agent-reply']}>
+							<For each={renderTree()!.blocks}>{(block) => renderBlock(block, true)}</For>
+							<Show when={renderTree()!.tokens || renderTree()!.llmCalls > 0}>
+								<div class={styles['agent-msg-usage']}>
+									共 {renderTree()!.llmCalls} 次 LLM 调用 · tokens ↑{fmtTokens(renderTree()!.tokens?.input)} ↓{fmtTokens(renderTree()!.tokens?.output)}
+									<Show when={renderTree()!.tokens?.inputCached}>
+										{' '}· 缓存 {fmtTokens(renderTree()!.tokens!.inputCached)}
+									</Show>
+									<Show when={renderTree()!.rounds > 0}>
+										{' '}· {renderTree()!.rounds} 轮
+									</Show>
+								</div>
+							</Show>
+						</div>
 
 						{/* 本轮即时错误（重拉 ctx 后由失败的实例自己带错误块） */}
 						<Show when={runError()}>

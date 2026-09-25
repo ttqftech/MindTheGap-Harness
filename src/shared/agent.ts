@@ -12,7 +12,7 @@
  * - 新增 §8 LLM 层请求日志类型（LlmRequestRecord / LlmPurpose / LlmTrigger）
  *
  * 注意：界面**没有独立的 UI 消息模型**（2026-09-14 起）。渲染完全由 ctx 现算：
- * `src/shared/projection.ts` 的 `foldCtxToRenderTree()` 从根实例出发，遇到 delegate 工具调用
+ * `src/mainview/projection.ts` 的 `foldCtxToRenderTree()` 从根实例出发，遇到 delegate 工具调用
  * 就下钻到子实例递归渲染。所以这里的 `AgentInstance.messages` 就是唯一的转写真相，
  * 其中带 `uiOnly` 标记的条目只给界面看、不下发给模型。设计稿见
  * `docs/设计-ctx唯一真相与动态投影.md`。
@@ -512,7 +512,7 @@ export interface ConversationMeta {
  * 后端完整会话数据。
  *
  * ⚠️ **没有 `messages` 字段**（2026-09-14 删除）：界面上的内容一律由 ctx 现算 ——
- * 见 `src/shared/projection.ts` 的 `foldCtxToRenderTree()`。历史遗留的 `Message` /
+ * 见 `src/mainview/projection.ts` 的 `foldCtxToRenderTree()`。历史遗留的 `Message` /
  * `MessageBlock` / `MessageRole`（前端自己拼一份 UI 转写再回写后端）已一并删除。
  */
 export interface ServiceConversation extends ConversationMeta {
