@@ -14,6 +14,7 @@ import { localSettings, isElectrobunEnv } from '@mainview/localBridge';
 import * as agentBridge from '@mainview/agentBridge';
 import type { AgentCtx, ConversationMeta, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
+import type { Density, Accent } from '@mainview/theme/theme';
 
 // 转发共享类型（UI 侧统一从 store 引入，避免到处写相对路径）
 export type { ModelProvider, ModelProviderModel, ModeSummary, AgentStreamEvent } from '@shared/agent';
@@ -41,9 +42,15 @@ export type UIConversation = ConversationMeta & {
 
 export type ViewMode = 'chat' | 'diagram';
 
+/** 侧边栏任务列表的排序方式 */
+export type ConversationSort = 'updated' | 'created' | 'title';
+
 export type UIState = {
 	sidebarWidth: number;
 	sidebarCollapsed: boolean;
+	density: Density;
+	accent: Accent;
+	conversationSort: ConversationSort;
 	settingsOpen: boolean;
 	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 	viewMode: ViewMode;
@@ -83,6 +90,9 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const initialUI: UIState = {
 	sidebarWidth: 260,
 	sidebarCollapsed: false,
+	density: 'standard',
+	accent: 'amber',
+	conversationSort: 'updated',
 	settingsOpen: false,
 	activeSettingsTab: '通用',
 	viewMode: 'chat',
@@ -127,6 +137,9 @@ function saveLocalSettings() {
 	localSettings.set('ui', {
 		sidebarWidth: state.ui.sidebarWidth,
 		sidebarCollapsed: state.ui.sidebarCollapsed,
+		density: state.ui.density,
+		accent: state.ui.accent,
+		conversationSort: state.ui.conversationSort,
 		viewMode: state.ui.viewMode,
 	});
 	localSettings.set('themeMode', state.themeMode);
@@ -262,6 +275,24 @@ export async function refreshConversationMeta(conversationId: string): Promise<v
 export const actions = {
 	setThemeMode(mode: 'light' | 'dark' | 'system') {
 		setState('themeMode', mode);
+		saveLocalSettings();
+	},
+
+	/** 界面密度（紧凑 / 标准 / 宽松）—— 生效靠 App.tsx 的 createEffect 落到 <html> 类名 */
+	setDensity(density: Density) {
+		setState('ui', 'density', density);
+		saveLocalSettings();
+	},
+
+	/** 强调色 —— 同上 */
+	setAccent(accent: Accent) {
+		setState('ui', 'accent', accent);
+		saveLocalSettings();
+	},
+
+	/** 任务列表排序方式（侧边栏「列表选项」菜单） */
+	setConversationSort(sort: ConversationSort) {
+		setState('ui', 'conversationSort', sort);
 		saveLocalSettings();
 	},
 

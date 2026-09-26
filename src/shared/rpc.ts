@@ -55,6 +55,12 @@ export interface AppRPC {
                     appVersion: string;
                 }>;
             };
+            /** 读工作目录的 git 状态（会话头部的分支 / 短 commit 面包屑用）。
+             *  不是 git 仓库、没装 git、路径不存在都返回 data: null —— 这些都不是错误 */
+            gitInfo: {
+                params: { path: string };
+                response: RpcResult<{ branch: string; shortCommit: string } | null>;
+            };
             windowMinimize: {
                 params: undefined;
                 response: RpcResult<void>;

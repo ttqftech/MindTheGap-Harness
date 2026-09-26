@@ -36,6 +36,8 @@ const mockHandlers = {
 			appVersion: '0.1.0',
 		},
 	}),
+	// 浏览器里读不到本地 git，返回 null 即可（界面会隐藏面包屑那一段）
+	gitInfo: (): RpcResult<null> => ({ ok: true, data: null }),
 	// 浏览器里没有原生窗口，标题栏也不会渲染，这里只需不报错即可
 	windowMinimize: (): RpcResult<void> => ({ ok: true, data: undefined }),
 	windowToggleMaximize: (): RpcResult<boolean> => ({ ok: true, data: false }),
@@ -57,6 +59,7 @@ interface RpcApi {
 		shellOpenPath: RequestFn<{ path: string }, RpcResult<void>>;
 		shellOpenExternal: RequestFn<{ url: string }, RpcResult<void>>;
 		envInfo: RequestFn<undefined, RpcResult<any>>;
+		gitInfo: RequestFn<{ path: string }, RpcResult<{ branch: string; shortCommit: string } | null>>;
 		windowMinimize: RequestFn<undefined, RpcResult<void>>;
 		windowToggleMaximize: RequestFn<undefined, RpcResult<boolean>>;
 		windowClose: RequestFn<undefined, RpcResult<void>>;

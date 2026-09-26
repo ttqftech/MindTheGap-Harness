@@ -17,12 +17,11 @@ html, body, #root {
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-                 "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--font-ui);
     font-size: 14px;
     line-height: 1.5;
-    color: var(--fontColor);
-    background-color: var(--ff);
+    color: var(--text-primary);
+    background-color: var(--bg-app);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
@@ -35,11 +34,11 @@ body {
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: var(--c0);
+    background: var(--border-strong);
     border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--88);
+    background: var(--text-quiet);
 }
 
 button {

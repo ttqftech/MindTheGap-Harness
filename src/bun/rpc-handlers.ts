@@ -99,6 +99,25 @@ export const systemHandlers = {
                 execSync(`xdg-open "${url}"`);
             }
         }),
+
+    /**
+     * 读工作目录的 git 状态，供会话头部面包屑显示「branch / 短 commit」。
+     * 不是 git 仓库 / 没装 git / 路径不存在 → 返回 null（**不是错误**，界面上那一段直接不显示）。
+     */
+    gitInfo: ({ path }: { path: string }): RpcResult<{ branch: string; shortCommit: string } | null> =>
+        safe(() => {
+            const cwd = resolve(path);
+            if (!existsSync(cwd)) return null;
+            const run = (args: string) =>
+                execSync(`git -C "${cwd}" ${args}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+            try {
+                const branch = run("rev-parse --abbrev-ref HEAD");
+                const shortCommit = run("rev-parse --short HEAD");
+                return branch && shortCommit ? { branch, shortCommit } : null;
+            } catch {
+                return null;
+            }
+        }),
 };
 
 /* ---------- 窗口控制（无边框窗口的三大金刚键） ---------- */
@@ -135,6 +154,7 @@ export function buildRpcHandlers() {
             shellOpenPath: systemHandlers.shellOpenPath,
             shellOpenExternal: systemHandlers.shellOpenExternal,
             envInfo: systemHandlers.envInfo,
+            gitInfo: systemHandlers.gitInfo,
             windowMinimize: windowHandlers.windowMinimize,
             windowToggleMaximize: windowHandlers.windowToggleMaximize,
             windowClose: windowHandlers.windowClose,

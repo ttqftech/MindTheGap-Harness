@@ -9,7 +9,8 @@ import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
 import { state, actions } from '@mainview/store';
-import { setTheme, getCurrentThemeMode } from '@mainview/theme/theme';
+import { getCurrentThemeMode } from '@mainview/theme/theme';
+import { setAppTheme } from '@mainview/appCommands';
 import { z } from 'zod';
 import type { ModelProvider } from '@mainview/store';
 import type {
@@ -58,52 +59,88 @@ function XIcon() {
 /* ---------- 通用 Tab ---------- */
 
 const THEME_OPTIONS = [
-	{ value: 'system', label: '跟随系统' },
-	{ value: 'light', label: '浅色' },
 	{ value: 'dark', label: '深色' },
+	{ value: 'light', label: '浅色' },
+	{ value: 'system', label: '跟随系统' },
 ] as const;
 
-const LANG_OPTIONS = [{ value: 'zh', label: '简体中文' }] as const;
+const DENSITY_OPTIONS = [
+	{ value: 'compact', label: '紧凑' },
+	{ value: 'standard', label: '标准' },
+	{ value: 'comfortable', label: '宽松' },
+] as const;
+
+const ACCENT_OPTIONS = [
+	{ value: 'amber', label: '琥珀' },
+	{ value: 'blue', label: '靛蓝' },
+	{ value: 'teal', label: '青碧' },
+	{ value: 'violet', label: '紫罗兰' },
+] as const;
+
+/** 分段控件（设计稿里主题 / 密度 / 强调色都长这样） */
+function Segmented<T extends string>(props: {
+	options: ReadonlyArray<{ value: T; label: string }>;
+	value: T;
+	onChange: (value: T) => void;
+}) {
+	return (
+		<div class={styles['segmented']}>
+			<For each={props.options}>
+				{(opt) => (
+					<button
+						class={styles['segmented-item']}
+						classList={{ [styles.active]: props.value === opt.value }}
+						onclick={() => props.onChange(opt.value)}
+					>
+						{opt.label}
+					</button>
+				)}
+			</For>
+		</div>
+	);
+}
 
 function GeneralTab() {
 	return (
-		<div>
+		<>
 			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>主题</div>
-				<div class={styles['setting-group-desc']}>选择应用的外观模式</div>
-				{/* readonly 模式下只能下拉选择，不能手动输入 */}
-				<ffbox-dropdown-input
-					class={styles['ffbox-dropdown']}
-					prop:list={toMenuItems(THEME_OPTIONS)}
-					prop:text={labelOf(THEME_OPTIONS, state.themeMode)}
-					prop:readonly={true}
-					onchange={(e) => {
-						const mode = e.detail as "light" | "dark" | "system";
-						actions.setThemeMode(mode);
-						setTheme(mode);
-					}}
-				/>
-			</div>
+				<div class={styles['setting-group-label']}>外观</div>
 
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>语言</div>
-				<div class={styles['setting-group-desc']}>应用界面语言（暂只支持中文）</div>
-				<ffbox-dropdown-input
-					class={styles['ffbox-dropdown']}
-					prop:list={toMenuItems(LANG_OPTIONS)}
-					prop:text={LANG_OPTIONS[0].label}
-					prop:readonly={true}
-					prop:disabled={true}
-				/>
+				<div class={styles['setting-row']}>
+					<span class={styles['setting-row-title']}>主题</span>
+					<Segmented options={THEME_OPTIONS} value={state.themeMode} onChange={(mode) => setAppTheme(mode)} />
+				</div>
+
+				<div class={styles['setting-row']}>
+					<div class={styles['setting-row-label']}>
+						<span class={styles['setting-row-title']}>界面密度</span>
+						<span class={styles['setting-row-desc']}>影响列表行高、区块间距与正文字号</span>
+					</div>
+					<Segmented options={DENSITY_OPTIONS} value={state.ui.density} onChange={(v) => actions.setDensity(v)} />
+				</div>
+
+				<div class={styles['setting-row']}>
+					<div class={styles['setting-row-label']}>
+						<span class={styles['setting-row-title']}>强调色</span>
+						<span class={styles['setting-row-desc']}>按钮、选中态与运行指示灯的颜色</span>
+					</div>
+					<Segmented options={ACCENT_OPTIONS} value={state.ui.accent} onChange={(v) => actions.setAccent(v)} />
+				</div>
+
+				<div class={styles['setting-row']}>
+					<div class={styles['setting-row-label']}>
+						<span class={styles['setting-row-title']}>语言</span>
+						<span class={styles['setting-row-desc']}>应用界面语言（暂只支持中文）</span>
+					</div>
+					<span class={styles['setting-row-value']}>简体中文</span>
+				</div>
 			</div>
 
 			{/* 构建信息：前端是打包时注入的常量，后端是 Agent Service 自报的（GET /api/health）。
 			    两边不一致 = 前端/后端没一起重编；后端显示旧提交 = 18999 端口上还跑着旧进程。 */}
 			<div class={styles['setting-group']}>
 				<div class={styles['setting-group-label']}>构建信息</div>
-				<div class={styles['setting-group-desc']}>
-					提交号带 * 表示构建时工作区有未提交改动
-				</div>
+				<div class={styles['setting-group-desc']}>提交号带 * 表示构建时工作区有未提交改动</div>
 				<div class={styles['info-list']}>
 					<InfoRow
 						label="前端"
@@ -129,7 +166,7 @@ function GeneralTab() {
 					</button>
 				</div>
 			</div>
-		</div>
+		</>
 	);
 }
 
@@ -1435,13 +1472,13 @@ function McpEditor(props: {
 
 type TabId = '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 
-const TABS: Array<{ id: TabId; label: string; icon: string }> = [
-	{ id: '通用', label: '通用', icon: '⚙️' },
-	{ id: '模型', label: '模型', icon: '🧠' },
-	{ id: '提示词', label: '提示词', icon: '📝' },
-	{ id: '用量', label: '用量', icon: '📊' },
-	{ id: '插件 / 模式', label: '插件 / 模式', icon: '🧩' },
-	{ id: 'MCP', label: 'MCP', icon: '🔌' },
+const TABS: Array<{ id: TabId; label: string }> = [
+	{ id: '通用', label: '通用' },
+	{ id: '模型', label: '模型' },
+	{ id: '提示词', label: '提示词' },
+	{ id: '用量', label: '用量' },
+	{ id: '插件 / 模式', label: '插件 / 模式' },
+	{ id: 'MCP', label: 'MCP' },
 ];
 
 export default function Settings() {
@@ -1451,9 +1488,19 @@ export default function Settings() {
 		<Show when={open()}>
 			<div class={styles['settings-overlay']} onclick={() => actions.closeSettings()}>
 				<div class={styles['settings-panel']} onclick={(e) => e.stopPropagation()}>
-					{/* 左侧 Tab */}
-					<div class={styles['settings-sidebar']}>
-						<h3>设置</h3>
+					{/* 头部：标题 + 面包屑 + 关闭 */}
+					<div class={styles['settings-header']}>
+						<div class={styles['settings-title-block']}>
+							<div class={styles['settings-title']}>设置</div>
+							<div class={styles['settings-breadcrumb']}>偏好设置 / 本地运行时 / 修改即时生效</div>
+						</div>
+						<button class={styles['settings-close-btn']} onclick={() => actions.closeSettings()}>
+							<XIcon />
+						</button>
+					</div>
+
+					{/* 分页栏（沿用原有 6 个 Tab，只换成设计稿的横排样式）+ 完成 */}
+					<div class={styles['settings-tabs']}>
 						<For each={TABS}>
 							{(tab) => (
 								<button
@@ -1461,22 +1508,19 @@ export default function Settings() {
 									classList={{ [styles.active]: state.ui.activeSettingsTab === tab.id }}
 									onclick={() => actions.setSettingsTab(tab.id)}
 								>
-									<span>{tab.icon}</span>
-									<span>{tab.label}</span>
+									{tab.label}
 								</button>
 							)}
 						</For>
+						<span class={styles['settings-tabs-spacer']} />
+						<button class={styles['settings-done-btn']} onclick={() => actions.closeSettings()}>
+							完成
+						</button>
 					</div>
 
-					{/* 右侧内容 */}
-					<div class={styles['settings-content']}>
-						<div class={styles['settings-header']}>
-							<h2>{state.ui.activeSettingsTab}</h2>
-							<button class={styles['settings-close-btn']} onclick={() => actions.closeSettings()}>
-								<XIcon />
-							</button>
-						</div>
+					<div class={styles['settings-divider']} />
 
+					<div class={styles['settings-content']}>
 						{state.ui.activeSettingsTab === "通用" && <GeneralTab />}
 						{state.ui.activeSettingsTab === "模型" && <ModelsTab />}
 						{state.ui.activeSettingsTab === "提示词" && <PromptTab />}

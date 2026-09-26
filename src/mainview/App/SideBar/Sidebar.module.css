@@ -1,296 +1,349 @@
 /* ==========================================================================
-   侧边栏样式
+   侧边栏样式（设计稿：264px 宽，列表行 30px，分组 6px 圆角）
+
+   行高 / 内边距都走密度令牌（--row-h / --section-pad），
+   换 .densityXxx 时整条侧栏一起变。
    ========================================================================== */
 
 .sidebar {
     display: flex;
     flex-direction: column;
     height: 100%;
-    background-color: hwb(var(--bg95) / 1);
-    border-right: 1px solid var(--borderLight);
-    transition: width 0.15s ease;
     flex-shrink: 0;
     overflow: hidden;
+    background-color: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    transition: width 0.16s var(--ease);
 }
 
+/* 收起时整条栏归零：连分隔线也不留，否则会留下一条 1px 的竖线 */
 .sidebar.collapsed {
-    width: 48px !important;
+    border-right: none;
 }
 
-.sidebar.collapsed .sidebar-header {
-    justify-content: center;
-    padding: 12px 8px;
-}
+/* ---------- 顶部 ---------- */
 
-.sidebar.collapsed .app-logo:not(.logo-collapsed) {
-    display: none;
-}
-
-.sidebar.collapsed .logo-collapsed {
+.sidebar-top {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    background: transparent;
-    border: none;
-    color: var(--textLight);
-    cursor: pointer;
-    font-size: 16px;
-    font-weight: 700;
-    transition: background 0.15s;
-}
-
-.sidebar.collapsed .logo-collapsed:hover {
-    background: var(--hoverBg);
-    color: var(--primary);
-}
-
-.sidebar-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 12px;
     padding: 12px;
-    border-bottom: 1px solid var(--borderLight);
-}
-
-.app-logo {
-    width: 28px;
-    height: 28px;
     flex-shrink: 0;
-    border-radius: 6px;
-    background: linear-gradient(135deg, hwb(220 50% 0%), hwb(280 40% 5%));
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    font-size: 14px;
-    color: #fff;
 }
 
-.app-title {
-    flex: 1;
-    font-weight: 600;
-    font-size: 14px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.sidebar-toggle-btn {
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--fontColorDim);
-    transition: background 0.1s;
-}
-.sidebar-toggle-btn:hover {
-    background-color: hwb(var(--bg90) / 1);
-    color: var(--fontColor);
-}
-
-.sidebar-new-task {
+.new-task-btn {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 10px 12px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    background-color: var(--primary);
-    color: #fff;
-    font-weight: 500;
-    font-size: 13px;
-    transition: background 0.15s;
-    white-space: nowrap;
+    height: 38px;
+    padding: 0 10px 0 12px;
+    border-radius: var(--r-lg);
+    background-color: var(--accent);
+    color: var(--accent-ink);
+    font-family: var(--font-ui);
+    font-size: var(--fs-lg);
+    font-weight: 600;
+    transition: background-color var(--dur-fast);
 }
-.sidebar-new-task:hover {
-    background-color: var(--primaryHover);
+.new-task-btn:hover {
+    background-color: var(--accent-hover);
 }
-.sidebar-new-task:active {
-    background-color: var(--primaryActive);
+.new-task-btn:active {
+    transform: translateY(0.5px);
 }
 
-.sidebar-section-header {
+.new-task-spacer {
+    flex: 1;
+}
+
+.new-task-shortcut {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xxs);
+    opacity: 0.62;
+    white-space: nowrap;
+}
+
+/* ---------- 列表表头 ---------- */
+
+.list-header {
     display: flex;
     align-items: center;
-    padding: 12px 12px 6px;
-    gap: 4px;
+    gap: 2px;
+    height: 16px;
+    padding: 0 3px 0 6px;
 }
 
-.section-title {
+.list-header-title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+}
+
+.list-header-spacer {
     flex: 1;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--fontColorMuted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    white-space: nowrap;
 }
 
-.section-actions {
-    display: flex;
-    gap: 4px;
+.list-header-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: var(--r-sm);
+    color: var(--text-faint);
+    transition: background-color var(--dur-fast), color var(--dur-fast);
 }
+.list-header-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-tertiary);
+}
+
+.search-input {
+    width: 100%;
+    height: 26px;
+    padding: 0 8px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border-input);
+    background-color: var(--bg-input);
+    color: var(--text-body);
+    font-size: var(--fs-md);
+    outline: none;
+    transition: border-color var(--dur-fast);
+}
+.search-input::placeholder {
+    color: var(--text-disabled);
+}
+.search-input:focus {
+    border-color: var(--accent);
+}
+
+/* ---------- 树 ---------- */
 
 .sidebar-tree {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 0 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 8px 8px;
 }
 
 .tree-folder {
-    margin-bottom: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
 .tree-folder-header {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 6px;
-    border-radius: 6px;
+    gap: 7px;
+    height: var(--row-h);
+    padding: 0 7px 0 6px;
+    border-radius: var(--r-md);
     cursor: pointer;
-    transition: background 0.1s;
-    font-size: 13px;
-    color: var(--fontColorDim);
-    user-select: none;
+    transition: background-color var(--dur-fast);
 }
 .tree-folder-header:hover {
-    background-color: hwb(var(--bg90) / 1);
-    color: var(--fontColor);
+    background-color: var(--bg-hover);
 }
 
 .tree-expand-indicator {
-    width: 12px;
-    height: 12px;
-    flex-shrink: 0;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: transform 0.15s;
-    font-size: 10px;
-    color: var(--fontColorMuted);
-}
-.tree-folder.expanded .tree-expand-indicator {
-    transform: rotate(90deg);
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+    color: var(--text-quiet);
 }
 
 .tree-folder-name {
-    flex: 1;
+    font-size: var(--fs-md);
+    font-weight: 500;
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.tree-folder-delete {
-    display: none;
+.tree-folder-spacer {
+    flex: 1;
+    min-width: 4px;
+}
+
+.tree-folder-count {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xxs);
+    color: var(--text-disabled);
     flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--fontColorMuted);
-    cursor: pointer;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-}
-.tree-folder-header:hover .tree-folder-delete {
-    display: inline-flex;
-}
-.tree-folder-delete:hover {
-    background: hwb(var(--bg90) / 1);
-    color: var(--dangerColor, #e5484d);
 }
 
 .tree-items {
-    margin-left: 12px;
-    overflow: hidden;
-}
-.tree-folder:not(.expanded) .tree-items {
-    display: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
+/* 任务行：状态标记占最左侧 3px，标题自适应，右侧时间 */
 .tree-item {
     display: flex;
     align-items: center;
-    padding: 6px 8px;
-    border-radius: 6px;
+    gap: 8px;
+    height: var(--row-h);
+    padding: 0 8px 0 26px;
+    border-radius: var(--r-md);
     cursor: pointer;
-    transition: background 0.1s;
-    font-size: 13px;
-    color: var(--fontColorDim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    user-select: none;
-    position: relative;
+    transition: background-color var(--dur-fast);
 }
 .tree-item:hover {
-    background-color: hwb(var(--bg90) / 1);
-    color: var(--fontColor);
+    background-color: var(--bg-hover);
 }
 .tree-item.active {
-    background-color: var(--selectedBg);
-    color: var(--fontColor);
-    font-weight: 500;
+    background-color: var(--bg-active);
+}
+
+/* 状态标记：默认灰条，本轮在飞时点亮成强调色 */
+.tree-item-marker {
+    width: 3px;
+    height: 14px;
+    border-radius: 1.5px;
+    flex-shrink: 0;
+    background-color: var(--text-disabled);
+}
+.tree-item.is-running .tree-item-marker {
+    background-color: var(--accent);
 }
 
 .tree-item-title {
     flex: 1;
+    min-width: 0;
+    font-size: var(--fs-md);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.tree-item.active .tree-item-title {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.tree-item-time {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xxs);
+    color: var(--text-disabled);
+    flex-shrink: 0;
+}
+
+.tree-empty {
+    padding: 6px 8px 6px 26px;
+    font-size: var(--fs-md);
+    color: var(--text-disabled);
+}
+
+/* 行内操作（删除）：平时不占视觉，悬停整行时出现 */
+.row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    border-radius: var(--r-sm);
+    color: var(--text-quiet);
+    opacity: 0;
+    transition: opacity var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast);
+}
+.tree-item:hover .row-action,
+.tree-folder-header:hover .row-action {
+    opacity: 1;
+}
+.row-action:hover {
+    background-color: var(--bg-active);
+    color: var(--danger);
+}
+
+/* ---------- 底部 ---------- */
+
+.sidebar-footer-divider {
+    height: 1px;
+    flex-shrink: 0;
+    background-color: var(--border);
+}
+
+.sidebar-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px 12px;
+    flex-shrink: 0;
+}
+
+.runtime-status {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--r-full);
+    background-color: var(--success);
+    flex-shrink: 0;
+}
+
+.runtime-text {
+    font-size: var(--fs-sm);
+    color: var(--text-tertiary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.tree-item-delete {
-    display: none;
-    flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--fontColorMuted);
-    cursor: pointer;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    margin-left: 4px;
-}
-.tree-item:hover .tree-item-delete {
-    display: inline-flex;
-}
-.tree-item-delete:hover {
-    background: hwb(var(--bg90) / 1);
-    color: var(--dangerColor, #e5484d);
-}
-
-.sidebar-footer {
-    padding: 8px;
-    border-top: 1px solid var(--borderLight);
-    display: flex;
-    gap: 4px;
-}
-
-.sidebar-footer :global(.icon-btn) {
+.runtime-spacer {
     flex: 1;
-    height: 32px;
 }
 
-@media (max-width: 768px) {
-    .sidebar {
-        width: 64px !important;
-    }
-    .sidebar .app-title,
-    .sidebar .section-title,
-    .sidebar .sidebar-new-task-text,
-    .sidebar .tree-folder-name {
-        display: none;
-    }
+.runtime-version {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xxs);
+    color: var(--text-disabled);
+    flex-shrink: 0;
+}
+
+.settings-btn {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: var(--r-lg);
+    background-color: var(--bg-chip);
+    border: 1px solid var(--border-input);
+    color: var(--text-tertiary);
+    transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+.settings-btn:hover {
+    background-color: var(--bg-active);
+    color: var(--text-secondary);
+}
+
+.settings-text {
+    font-size: var(--fs-md);
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.settings-spacer {
+    flex: 1;
+}
+
+.settings-chevron {
+    display: inline-flex;
+    color: var(--text-disabled);
 }

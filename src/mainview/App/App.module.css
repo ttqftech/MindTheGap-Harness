@@ -25,7 +25,7 @@
     min-height: 0;
     width: 100%;
     overflow: hidden;
-    background-color: var(--ff);
+    background-color: var(--bg-app);
 }
 
 .sidebar-resizer {
@@ -37,5 +37,5 @@
 }
 .sidebar-resizer:hover,
 .sidebar-resizer.dragging {
-    background-color: var(--primary);
+    background-color: var(--accent);
 }

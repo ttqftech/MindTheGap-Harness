@@ -9,17 +9,17 @@
          目的：main.tsx 下载执行前（以及 hutch 抽风白屏时）给用户一个像样的画面，而不是一片白。颜色与 theme/theme.css 的深/浅主题手动对齐。 -->
     <style>
       :root {
-        --boot-bg: #1a1a1a; /* 深色 --ff */
-        --boot-fg: #eee; /* 深色 --fontColor */
-        --boot-dim: #888; /* 深色 --fontColorMuted */
-        --boot-accent: #6699ff; /* --primary: hwb(220 40% 0%) */
-        --boot-track: #2e2e2e; /* 深色 --e7 */
+        --boot-bg: #0c0d10; /* 深色 --bg-app */
+        --boot-fg: #e9e9e7; /* 深色 --text-primary */
+        --boot-dim: #6e7278; /* 深色 --text-quiet */
+        --boot-accent: #e8a33c; /* --accent */
+        --boot-track: #1b1f25; /* 深色 --border */
       }
       html.boot-light {
-        --boot-bg: #ffffff; /* 浅色 --ff */
-        --boot-fg: #222;
-        --boot-dim: #888;
-        --boot-track: #e7e7e7;
+        --boot-bg: #ffffff; /* 浅色 --bg-app */
+        --boot-fg: #1b1f24; /* 浅色 --text-primary */
+        --boot-dim: #767c85; /* 浅色 --text-quiet */
+        --boot-track: #e4e7ea; /* 浅色 --border */
       }
 
       html,
@@ -50,29 +50,16 @@
         pointer-events: none;
       }
 
-      /* Logo：MindTheGap —— 两段被「间隙」隔开的圆角块，中间一颗点来回穿过 */
+      /* Logo：与标题栏同款的应用标志（两根立柱 + 下方两道强调色横杠），尺寸放大 */
       .boot-logo {
-        width: 76px;
-        height: 76px;
+        width: 68px;
+        height: 68px;
       }
-      .boot-dot {
-        animation: boot-cross 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+      .boot-mark {
+        fill: var(--boot-fg);
       }
-      @keyframes boot-cross {
-        0% {
-          transform: translateX(-20px);
-          opacity: 0.35;
-        }
-        45% {
-          opacity: 1;
-        }
-        55% {
-          opacity: 1;
-        }
-        100% {
-          transform: translateX(20px);
-          opacity: 0.35;
-        }
+      .boot-mark-accent {
+        fill: var(--boot-accent);
       }
 
       #boot-title {
@@ -129,15 +116,8 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .boot-dot,
         .boot-bar::after {
           animation: none;
-        }
-        .boot-dot {
-          transform: translateX(0);
-          opacity: 1;
-        }
-        .boot-bar::after {
           width: 100%;
           transform: none;
         }
@@ -148,10 +128,31 @@
   <body>
     <!-- 启动加载页（main.tsx 挂载后淡出移除） -->
     <div id="boot">
-      <svg class="boot-logo" viewBox="0 0 76 76" fill="none" aria-hidden="true">
-        <rect x="2" y="28" width="30" height="20" rx="7" fill="var(--boot-track)" />
-        <rect x="44" y="28" width="30" height="20" rx="7" fill="var(--boot-track)" />
-        <circle class="boot-dot" cx="38" cy="38" r="7" fill="var(--boot-accent)" />
+      <svg class="boot-logo" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+        <path
+          class="boot-mark"
+          fill-rule="evenodd"
+          transform="matrix(1 0 0 1 3 4.6)"
+          d="M-1.1 16.5L-1.1 3.3278L4.0399 -1.5551L5.5551 0.0399L4.7576 0.7975L1.1 4.2722L1.1 16.5L-1.1 16.5Z"
+        />
+        <path
+          class="boot-mark"
+          fill-rule="evenodd"
+          transform="matrix(1 0 0 1 15 4.6)"
+          d="M2.9 16.5L2.9 4.2722L-1.5551 0.0399L-0.0399 -1.5551L0.7576 -0.7975L5.1 3.3278L5.1 16.5L2.9 16.5Z"
+        />
+        <path
+          class="boot-mark-accent"
+          fill-rule="evenodd"
+          transform="matrix(1 0 0 1 1.8 13.2)"
+          d="M5.4 -1.1L6.5 -1.1L6.5 1.1L-1.1 1.1L-1.1 -1.1L5.4 -1.1Z"
+        />
+        <path
+          class="boot-mark-accent"
+          fill-rule="evenodd"
+          transform="matrix(1 0 0 1 14.8 13.2)"
+          d="M5.4 -1.1L6.5 -1.1L6.5 1.1L-1.1 1.1L-1.1 -1.1L5.4 -1.1Z"
+        />
       </svg>
       <div id="boot-title">MindTheGap-Harness</div>
       <div id="boot-bar"></div>

@@ -3,11 +3,51 @@
    - 检测系统深浅色
    - 切换主题
    - 持久化用户选择
+
+   界面密度与强调色由 store 持有（见 store 的 ui.density / ui.accent），
+   这里只提供「值 → 类名」的映射与应用函数，不重复持久化。
+   令牌定义见 theme/theme.css。
    ========================================================================== */
 
 import { createSignal } from 'solid-js';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+
+/** 界面密度 */
+export type Density = 'compact' | 'standard' | 'comfortable';
+
+/** 强调色 */
+export type Accent = 'amber' | 'blue' | 'teal' | 'violet';
+
+export const DENSITY_CLASS: Record<Density, string> = {
+	compact: 'densityCompact',
+	standard: 'densityStandard',
+	comfortable: 'densityComfortable',
+};
+
+export const ACCENT_CLASS: Record<Accent, string> = {
+	amber: 'accentAmber',
+	blue: 'accentBlue',
+	teal: 'accentTeal',
+	violet: 'accentViolet',
+};
+
+export const ALL_DENSITY_CLASSES = Object.values(DENSITY_CLASS);
+export const ALL_ACCENT_CLASSES = Object.values(ACCENT_CLASS);
+
+/** 应用界面密度（替换而非累加，保证同时只有一个） */
+export function applyDensity(density: Density) {
+	const root = document.documentElement;
+	root.classList.remove(...ALL_DENSITY_CLASSES);
+	root.classList.add(DENSITY_CLASS[density] ?? DENSITY_CLASS.standard);
+}
+
+/** 应用强调色（替换而非累加） */
+export function applyAccent(accent: Accent) {
+	const root = document.documentElement;
+	root.classList.remove(...ALL_ACCENT_CLASSES);
+	root.classList.add(ACCENT_CLASS[accent] ?? ACCENT_CLASS.amber);
+}
 
 const THEME_KEY = 'colorTheme';
 

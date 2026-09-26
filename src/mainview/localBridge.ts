@@ -87,6 +87,35 @@ export const windowControls = {
 	},
 };
 
+/* ---------- Git（会话头部的分支面包屑） ---------- */
+
+export interface GitInfo {
+	branch: string;
+	shortCommit: string;
+}
+
+/** path → 结果 + 取回时刻；给个 TTL，避免切分支后一直显示旧值，也避免每轮渲染都起一次 git 进程 */
+const gitInfoCache = new Map<string, { at: number; value: Promise<GitInfo | null> }>();
+const GIT_INFO_TTL_MS = 10_000;
+
+export function getGitInfo(path: string): Promise<GitInfo | null> {
+	const hit = gitInfoCache.get(path);
+	if (hit && Date.now() - hit.at < GIT_INFO_TTL_MS) return hit.value;
+
+	// 用一个 async 包装而不是裸 promise：主进程可能还是旧构建（不认识 gitInfo 请求），
+	// 那种情况下 `rpc.request.gitInfo` 本身就是 undefined，直接调用会同步抛错。
+	const value = (async () => {
+		try {
+			const result = await rpc.request.gitInfo({ path });
+			return result?.ok ? result.data : null;
+		} catch {
+			return null;
+		}
+	})();
+	gitInfoCache.set(path, { at: Date.now(), value });
+	return value;
+}
+
 /* ---------- 环境 ---------- */
 
 export async function getEnvInfo() {

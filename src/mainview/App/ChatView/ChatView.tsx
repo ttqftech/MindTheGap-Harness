@@ -11,25 +11,52 @@
    设计稿：docs/设计-ctx唯一真相与动态投影.md（§5.3 是 SSE → 条目的翻译表）
    ========================================================================== */
 
-import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
-import type { FFBoxDropdownInput, MenuItem } from 'ffbox-ui';
-import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx } from '@mainview/store';
+import type { MenuItem } from 'ffbox-ui';
+import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
 import { createEmptyOverlay, diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
 import type { OverlayCtx, RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
 import * as agentBridge from '@mainview/agentBridge';
 import type { AgentInstanceMessage, AgentStreamEvent, ToolResult, UsageEntry } from '@shared/agent';
-import { requestFolderPath } from '@mainview/localBridge';
+import { requestFolderPath, getGitInfo, type GitInfo } from '@mainview/localBridge';
+import { mirrorRunning, registerStop } from '@mainview/runState';
 import { folderLabel, sameFolderPath } from '@shared/utils';
-import { alertMsgbox } from '@mainview/ffboxBridge';
+import { alertMsgbox, showMenu } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
 import styles from './ChatView.module.css';
 
 // #region 图标
 
-function UserIcon() {
-	return <span>U</span>;
+/** 上下文标记（运行文件夹）用的小目录图标 */
+function FolderChipIcon() {
+	return (
+		<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+		</svg>
+	);
+}
+
+/** 反思卡片的图标：一个带靶心的圆 */
+function ReflectionIcon() {
+	return (
+		<svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.2">
+			<circle cx="6.5" cy="6.5" r="5.1" />
+			<circle cx="6.5" cy="6.5" r="1.5" fill="currentColor" stroke="none" />
+		</svg>
+	);
+}
+
+/** MCP 服务图标：两层「服务器」+ 中间一根连线 */
+function McpIcon() {
+	return (
+		<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.1">
+			<rect x="1.6" y="1.8" width="8.8" height="3.2" rx="1" />
+			<rect x="1.6" y="7" width="8.8" height="3.2" rx="1" />
+			<line x1="3.8" y1="3.4" x2="3.8" y2="8.6" />
+		</svg>
+	);
 }
 
 function SendIcon() {
@@ -121,6 +148,24 @@ function fmtTokens(n?: number): string {
 function fmtDuration(ms?: number): string {
 	if (!ms && ms !== 0) return '';
 	return ms < 100 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** 字节数 → "1.2 KB" / "820 B"（MCP 卡的响应行要显示体量） */
+function fmtSize(bytes: number): string {
+	if (bytes < 1000) return `${bytes} B`;
+	return `${(bytes / 1000).toFixed(1)} KB`;
+}
+
+/**
+ * MCP 工具的命名是 `mcp__<server>__<tool>`（见 `tools.ts` 的注册约定）。
+ * 拆开是为了让 MCP 调用按设计稿渲染成「服务名 + 方法」两段。
+ */
+function parseMcpName(name: string): { server: string; method: string } | null {
+	if (!name.startsWith('mcp__')) return null;
+	const rest = name.slice(5);
+	const sep = rest.indexOf('__');
+	if (sep <= 0) return null;
+	return { server: rest.slice(0, sep), method: rest.slice(sep + 2) };
 }
 
 // #endregion
@@ -323,12 +368,30 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 
 // #region ask_user 组件
 
-/** 单选选项（每个可带描述）+ 自动附加的「其他」自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过 */
+/**
+ * 提问卡片：序号选项（可按数字键选）+ 自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过本轮。
+ * 等待期间右上角显示已阻塞多久 —— 数据是前端自己数出来的，不依赖后端。
+ */
 function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => void }) {
 	const [choice, setChoice] = createSignal<string | null>(null);
 	const [extra, setExtra] = createSignal('');
 	const [freeText, setFreeText] = createSignal('');
+	const [elapsed, setElapsed] = createSignal(0);
 	const answered = () => props.block.status !== 'waiting';
+	const options = () => props.block.options;
+
+	// 阻塞计时：只在等待时走
+	const timer = setInterval(() => {
+		if (!answered()) setElapsed((v) => v + 1);
+	}, 1000);
+	onCleanup(() => clearInterval(timer));
+
+	const elapsedText = () => {
+		const total = elapsed();
+		const mm = String(Math.floor(total / 60)).padStart(2, '0');
+		const ss = String(total % 60).padStart(2, '0');
+		return `阻塞中 ${mm}:${ss}`;
+	};
 
 	const submit = () => {
 		const parts: string[] = [];
@@ -338,59 +401,92 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 		props.onSubmit(parts.join('\n') || '(未填写内容)');
 	};
 
+	// 数字键直接选第 N 项（设计稿「按 1 / 2 选择」）。只在等待中生效，且不抢输入框里的数字。
+	const onKeyDown = (e: KeyboardEvent) => {
+		if (answered()) return;
+		const target = e.target as HTMLElement | null;
+		if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return;
+		const n = Number(e.key);
+		if (!Number.isInteger(n) || n < 1 || n > options().length) return;
+		e.preventDefault();
+		setChoice(options()[n - 1].label);
+	};
+
+	onMount(() => {
+		window.addEventListener('keydown', onKeyDown);
+	});
+	onCleanup(() => window.removeEventListener('keydown', onKeyDown));
+
 	return (
 		<div class={styles['ask-card']} classList={{ [styles['is-answered']]: answered() }}>
-			<div class={styles['ask-card-question']}>❓ {props.block.question}</div>
+			<div class={styles['ask-card-head']}>
+				<span class={styles['ask-card-icon']}>
+					<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+						<path d="M4.3 4.4a1.7 1.7 0 1 1 2.2 1.9c-.4.15-.6.5-.6.9v.3" />
+						<circle cx="6" cy="9.4" r="0.7" fill="currentColor" stroke="none" />
+					</svg>
+				</span>
+				<span class={styles['ask-card-title']}>需要你的确认</span>
+				<Show when={!answered()}>
+					<span class={styles['ask-card-timer']}>{elapsedText()}</span>
+				</Show>
+			</div>
+
+			<div class={styles['ask-card-question']}>{props.block.question}</div>
+
 			<Show when={!answered()}>
-				<Show when={props.block.options.length > 0}>
+				<Show when={options().length > 0}>
 					<div class={styles['ask-card-options']}>
-						<For each={props.block.options}>
-							{(opt) => (
-								<label class={styles['ask-card-option']}>
-									<input
-										type="radio"
-										name={`ask-${props.block.callId}`}
-										checked={choice() === opt.label}
-										onchange={() => setChoice(opt.label)}
-									/>
+						<For each={options()}>
+							{(opt, index) => (
+								<button
+									class={styles['ask-card-option']}
+									classList={{ [styles['is-picked']]: choice() === opt.label }}
+									onclick={() => setChoice(opt.label)}
+								>
+									<span class={styles['ask-card-option-index']}>{index() + 1}</span>
 									<span class={styles['ask-card-option-label']}>{opt.label}</span>
 									<Show when={opt.description}>
 										<span class={styles['ask-card-option-desc']}>{opt.description}</span>
 									</Show>
-								</label>
+								</button>
 							)}
 						</For>
-						<label class={styles['ask-card-option']}>
-							<input type="radio" name={`ask-${props.block.callId}`} checked={choice() === '__other__'} onchange={() => setChoice('__other__')} />
-							<span class={styles['ask-card-option-label']}>其他</span>
-						</label>
 					</div>
 				</Show>
 
-				<Show when={props.block.options.length === 0 || choice() === '__other__'}>
-					<textarea
-						class={styles['ask-card-input']}
-						placeholder="直接输入你的回答..."
-						rows={2}
-						value={freeText()}
-						oninput={(e) => setFreeText(e.currentTarget.value)}
-					/>
-				</Show>
-
-				<div class={styles['ask-card-extra-label']}>还有什么要补充的吗？</div>
+				{/* 自由输入常驻：选项之外总能自己写一句（设计稿的「其它数值直接输入」） */}
 				<textarea
 					class={styles['ask-card-input']}
-					placeholder="可留空。补充说明会一起交给 Agent。"
+					placeholder="或直接输入你的回答..."
+					rows={2}
+					value={freeText()}
+					oninput={(e) => setFreeText(e.currentTarget.value)}
+				/>
+
+				<div class={styles['ask-card-extra-label']}>还有什么要补充的吗？（可留空）</div>
+				<textarea
+					class={styles['ask-card-input']}
+					placeholder="补充说明会一起交给 Agent。"
 					rows={2}
 					value={extra()}
 					oninput={(e) => setExtra(e.currentTarget.value)}
 				/>
 
-				<div class={styles['ask-card-actions']}>
-					<button class={styles['ask-card-submit']} onclick={submit}>提交</button>
-					<button class={styles['ask-card-skip']} onclick={() => props.onSubmit('用户已跳过此提问')}>跳过</button>
+				<div class={styles['ask-card-foot']}>
+					<span class={styles['ask-card-hint']}>
+						{options().length > 0 ? `按 1 - ${options().length} 选择 · 也可以直接输入` : '直接输入回答 · esc 跳过本轮'}
+					</span>
+					<span class={styles['ask-card-foot-spacer']} />
+					<button class={styles['ask-card-submit']} onclick={submit}>
+						提交
+					</button>
+					<button class={styles['ask-card-skip']} onclick={() => props.onSubmit('用户已跳过此提问')}>
+						跳过本轮
+					</button>
 				</div>
 			</Show>
+
 			<Show when={answered()}>
 				<div class={styles['ask-card-answer']}>{props.block.answer}</div>
 			</Show>
@@ -447,7 +543,77 @@ export default function ChatView() {
 
 	const conversationTitle = () => getActiveConversation()?.title || '新任务';
 
+	/**
+	 * 会话头部面包屑的第二段：当前工作目录的 git 状态。
+	 * 不是 git 仓库 / 「本地」分组（没有 path）时为 null，那一段直接不显示。
+	 */
+	const [gitInfo, setGitInfo] = createSignal<GitInfo | null>(null);
+	createEffect(() => {
+		const folderId = getActiveConversation()?.folderId;
+		const path = appState.folders.find((f) => f.id === folderId)?.path;
+		setGitInfo(null);
+		if (!path) return;
+		void getGitInfo(path).then((info) => setGitInfo(info));
+	});
+
+	// 把「有没有 run 在飞」和「停止入口」交给外壳（标题栏菜单 / 全局快捷键 / 侧边栏状态点）
+	createEffect(() => mirrorRunning(isGenerating()));
+	onMount(() => registerStop(() => void handleStop()));
+	onCleanup(() => registerStop(null));
+
 	const parseTaskListLines = (text: string) => text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
+
+	/** 会话头部「更多」菜单：视图模式 + 重新同步 */
+	const openSessionMenu = (el: HTMLElement) => {
+		const conv = getActiveConversation();
+		const menu: MenuItem[] = [
+			{
+				type: 'submenu',
+				label: '视图模式',
+				subMenu: [
+					{ type: 'radio', value: 'chat', checked: appState.ui.viewMode === 'chat', label: '聊天', onClick: () => actions.setViewMode('chat') },
+					{ type: 'radio', value: 'diagram', checked: appState.ui.viewMode === 'diagram', label: '图示', onClick: () => actions.setViewMode('diagram') },
+				],
+			},
+			{ type: 'separator' },
+			{
+				type: 'normal',
+				value: 'resync',
+				label: '重新同步当前会话',
+				disabled: !conv,
+				onClick: () => {
+					if (!conv) return;
+					void loadConversationCtx(conv.id, true);
+					void refreshConversationMeta(conv.id);
+				},
+			},
+		];
+		const rect = el.getBoundingClientRect();
+		showMenu({
+			menu,
+			type: 'action',
+			triggerRect: { xMin: rect.left, yMin: rect.bottom, xMax: rect.right, yMax: rect.bottom },
+		});
+	};
+
+	/**
+	 * 输入区那排「标记」chip 的通用弹菜单。
+	 *
+	 * 用 chip + 命令式菜单取代了原来的 `<ffbox-dropdown-input>`：那个控件选中后会把
+	 * 自己的 text 设成菜单项的 `value`（我们又是受控写法），导致「选完显示成 __new__」
+	 * 这类问题必须靠 `resyncDropdownText()` 手工兜。改成 chip 之后显示值只由 state 决定。
+	 */
+	const openChipMenu = (menu: MenuItem[], onPick: (value: string) => void, el: HTMLElement) => {
+		const rect = el.getBoundingClientRect();
+		showMenu({
+			menu,
+			type: 'action',
+			triggerRect: { xMin: rect.left, yMin: rect.bottom, xMax: rect.right, yMax: rect.bottom },
+			onSelect: (_event, value) => {
+				onPick(String(value));
+			},
+		});
+	};
 
 	// #endregion
 
@@ -466,9 +632,12 @@ export default function ChatView() {
 			{ type: 'normal' as const, value: '__new__', label: '+ 添加文件夹…' },
 		];
 	});
-	const onFolderChange = (e: CustomEvent<string>) => {
+	/**
+	 * 选中一个运行文件夹。
+	 * 哨兵值 `__new__` = 去开目录对话框，并把当前会话切到新目录下。
+	 */
+	const onFolderChange = (value: string) => {
 		if (isGenerating()) return;	// 运行期间不让改工作目录（下一轮才生效的那类改动统一锁住）
-		const value = e.detail;
 		if (value === '__new__') {
 			void (async () => {
 				try {
@@ -479,7 +648,7 @@ export default function ChatView() {
 						return;
 					}
 					if (!path) return;	// 用户取消
-					// 从这个下拉里选目录，意图就是「把当前会话放进这个目录」，顺手就切过去。
+					// 从这个菜单里选目录，意图就是「把当前会话放进这个目录」，顺手就切过去。
 					// ⚠️ 同一个目录选第二次时 `addFolder()` 返回 null（它只负责「加进列表」）——这时必须复用已有的那个，否则这次选择静默失效。
 					const folder = appState.folders.find((f) => sameFolderPath(f.id, path)) ?? actions.addFolder(path);
 					if (!folder) return;
@@ -508,39 +677,12 @@ export default function ChatView() {
 		const mode = appState.modes.find((m) => m.id === appState.currentModeId);
 		return mode ? `${mode.ui?.icon ?? ''} ${mode.name}`.trim() : '🤖 默认';
 	};
-	const onModeChange = (e: CustomEvent<string>) => {
+	const applyMode = (value: string) => {
 		if (isGenerating()) return;	// 运行期间禁止改模式
-		const value = e.detail;
 		actions.setCurrentModeId(value);
 		const conv = getActiveConversation();
 		if (conv) void agentBridge.updateConversation(conv.id, { modeId: value });
 	};
-
-	let modelInputRef: FFBoxDropdownInput | undefined;
-
-	/**
-	 * 文件夹 / 模式 / 剧本三个下拉框的实例句柄。
-	 *
-	 * ⚠️ **选中之后必须把显示文本显式写回去**：`<ffbox-dropdown-input>` 在选中一项时会**把自己的 text
-	 *   设成该菜单项的 `value`**（组件源码 `onSelect` 里就一句 `this.text = value`）。而它在我们这里是
-	 *   受控的（`prop:text={currentXxx()}`），Solid 只在表达式的**值发生变化**时才写回 —— 于是只要
-	 *   `onchange` 处理完没有改变「应该显示的值」，控件就会一直显示那个原始 value：
-	 *     · 没有激活会话时选「+ 添加文件夹…」→ `currentFolderDisplay()` 前后都是「选择文件夹...」
-	 *     · 目录对话框被取消、或选到已存在的文件夹（`addFolder()` 返回 null）
-	 *     · 重新选中当前已经选中的模式 / 剧本
-	 *   对带哨兵 value 的那一项，界面上就字面显示成 `__new__`（2026-09-15 用户报告的那个）。
-	 *   所以每个 `onchange` 处理完都要调一次 `resyncDropdownText()`。
-	 */
-	let folderInputRef: FFBoxDropdownInput | undefined;
-	let modeInputRef: FFBoxDropdownInput | undefined;
-	let scenarioInputRef: FFBoxDropdownInput | undefined;
-
-	/** 把三个下拉框的显示文本从状态里重新写回去（为什么必须显式写：见上面那段注释） */
-	function resyncDropdownText() {
-		if (folderInputRef) folderInputRef.text = currentFolderDisplay();
-		if (modeInputRef) modeInputRef.text = currentModeLabel();
-		if (scenarioInputRef) scenarioInputRef.text = currentScenarioLabel();
-	}
 
 	const modelMenu = createMemo<MenuItem[]>(() => {
 		const current = appState.currentStandardModel;
@@ -559,14 +701,12 @@ export default function ChatView() {
 			})),
 		}));
 	});
-	const onModelChange = (e: CustomEvent<string>) => {
+	const applyModel = (value: string) => {
 		if (isGenerating()) return;	// 运行期间禁止改运行语义（同「回复过程中不能点发送」）
-		const value = e.detail;
 		if (typeof value !== 'string') return;
 		const sep = value.indexOf('/');
 		if (sep <= 0) return;
 		actions.setCurrentStandardModel({ providerId: value.slice(0, sep), modelId: value.slice(sep + 1) });
-		if (modelInputRef) modelInputRef.text = currentModelDisplay();
 	};
 
 	// #endregion
@@ -593,10 +733,32 @@ export default function ChatView() {
 		if (!result.ok) void alertMsgbox('切换 mock 失败', result.error ?? '未知错误');
 	};
 
-	const onScenarioChange = async (e: CustomEvent<string>) => {
+	const applyMockScenario = async (value: string) => {
 		if (isGenerating()) return;
-		const result = await actions.setMock({ scenario: e.detail });
+		const result = await actions.setMock({ scenario: value });
 		if (!result.ok) void alertMsgbox('切换剧本失败', result.error ?? '未知错误');
+	};
+
+	/** mock chip 的菜单：开关 + 剧本选择 */
+	const openMockMenu = (el: HTMLElement) => {
+		openChipMenu(
+			[
+				{
+					type: 'checkbox',
+					value: '__toggle__',
+					checked: appState.mock.enabled,
+					label: '启用内置 mock',
+					tooltip: 'LLM 走内置 mock，工具仍真实执行',
+				},
+				{ type: 'separator' },
+				{ type: 'submenu', label: 'mock 剧本', subMenu: scenarioMenu() },
+			],
+			(value) => {
+				if (value === '__toggle__') void toggleMock();
+				else void applyMockScenario(value);
+			},
+			el,
+		);
 	};
 
 	// #endregion
@@ -836,7 +998,6 @@ export default function ChatView() {
 		parts.push(usage.model);
 		return (
 			<div class={styles['agent-block-usage']}>
-				<span class={styles['agent-usage-icon']}>🧮</span>
 				<span class={styles['agent-usage-text']}>{parts.join(' · ')}</span>
 			</div>
 		);
@@ -852,28 +1013,42 @@ export default function ChatView() {
 				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
 				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
 				return (
-					<details class={styles['agent-block-reasoning']}>
-						<summary>
-							<span class={styles['agent-reasoning-label']}>💭 思考中</span>
-							<span class={styles['agent-reasoning-peek']}>{sub.content.slice(-72)}</span>
-						</summary>
-						<div class={styles['agent-block-reasoning-body']}>{sub.content}</div>
-					</details>
+					<div class={styles['reasoning']}>
+						<span class={styles['reasoning-rail']} />
+						<details class={styles['reasoning-main']}>
+							<summary class={styles['reasoning-head']}>
+								<span class={styles['reasoning-caret']}>▶</span>
+								<span class={styles['reasoning-label']}>思考</span>
+								<span class={styles['reasoning-peek']}>{sub.content.slice(-72)}</span>
+							</summary>
+							<div class={styles['reasoning-body']}>{sub.content}</div>
+						</details>
+					</div>
 				);
 
 			case 'text':
 				return <div class={styles['agent-block-text']}>{sub.content}</div>;
 
 			case 'reflection':
-				// 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定，折叠起来看
+				// 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定。
+				// 默认展开：设计稿就是展开态，而且它本来就只有一两句话。
 				return (
 					<details
-						class={styles['agent-block-reflection']}
-						open={openOverrides.get(`reflection:${sub.key}`) ?? false}
+						class={styles['reflection']}
+						open={openOverrides.get(`reflection:${sub.key}`) ?? true}
 						ontoggle={(e) => openOverrides.set(`reflection:${sub.key}`, e.currentTarget.open)}
 					>
-						<summary>🪞 反思轮{sub.remaining !== undefined ? `（剩 ${sub.remaining} 次）` : ''}</summary>
-						<div class={styles['agent-block-reflection-body']}>{sub.content}</div>
+						<summary class={styles['reflection-head']}>
+							<span class={styles['reflection-icon']}>
+								<ReflectionIcon />
+							</span>
+							<span class={styles['reflection-title']}>REFLECTION</span>
+							<Show when={sub.remaining !== undefined}>
+								<span class={styles['reflection-chip']}>剩 {sub.remaining} 次</span>
+							</Show>
+							<span class={styles['reflection-caret']}>▶</span>
+						</summary>
+						<div class={styles['reflection-body']}>{sub.content}</div>
 					</details>
 				);
 
@@ -893,51 +1068,87 @@ export default function ChatView() {
 
 				// 工具调用 = 一行摘要（状态 + 工具名 + 理由 + 输出预览）+ 可展开的入参与完整输出。
 				const childCount = tool.children?.length ?? 0;
+				const mcp = parseMcpName(tool.name);
 				// 普通工具：输出短就直接展开（一眼看到结果），长的折起来。
 				// 子节点不再影响展开态 —— 它们已经不在这个 <details> 里了（见下面的注释）。
 				const toolBlock = (
 					<details
-						class={styles['agent-block-tool']}
-						classList={{ [styles['is-error']]: tool.status === 'error' }}
+						class={styles['tool-card']}
+						classList={{
+							[styles['is-error']]: tool.status === 'error',
+							[styles['is-mcp']]: !!mcp,
+						}}
 						open={openOverrides.get(`tool:${tool.callId}`) ?? (tool.status === 'error' || (!!tool.output && tool.output.length <= 240))}
 						ontoggle={(e) => openOverrides.set(`tool:${tool.callId}`, e.currentTarget.open)}
 					>
-						<summary class={styles['agent-tool-summary']}>
-							<span class={styles['agent-tool-icon']}>
+						<summary class={styles['tool-head']}>
+							<span class={styles['tool-head-caret']}>▶</span>
+							<span class={styles['tool-status']}>
 								{tool.status === 'running' ? '⏳' : tool.status === 'success' ? '✓' : '✗'}
 							</span>
-							<span class={styles['agent-tool-name']}>{tool.name}</span>
+							<Show
+								when={mcp}
+								fallback={<span class={styles['tool-name']}>{tool.name}</span>}
+							>
+								<span class={styles['tool-icon']}>
+									<McpIcon />
+								</span>
+								<span class={styles['tool-name']}>mcp:{mcp!.server}</span>
+								<span class={styles['tool-name-sub']}>tools/call · {mcp!.method}</span>
+							</Show>
 							<Show when={childCount > 0}>
 								{/* 子 Agent 渲染在这个块**下面**（同级），这里只提示它委托出去了几个 */}
-								<span class={styles['agent-tool-owner']}>↳ {childCount} 个子 Agent</span>
+								<span class={styles['tool-owner']}>↳ {childCount} 个子 Agent</span>
 							</Show>
 							<Show when={tool.reason}>
-								<span class={styles['agent-tool-reason']}>{tool.reason}</span>
+								<span class={styles['tool-reason']}>{tool.reason}</span>
+							</Show>
+							<Show when={mcp}>
+								<span class={styles['tool-chip']}>JSON-RPC</span>
 							</Show>
 							<Show
 								when={tool.output}
 								fallback={
 									<Show when={tool.status === 'running'}>
-										<span class={styles['agent-tool-preview']}>执行中…</span>
+										<span class={styles['tool-preview']}>执行中…</span>
 									</Show>
 								}
 							>
-								<span class={styles['agent-tool-preview']}>
+								<span class={styles['tool-preview']}>
 									{tool.output.replace(/\s+/g, ' ').trim().slice(0, 120)}
 								</span>
 							</Show>
 						</summary>
-						<div class={styles['agent-tool-body']}>
-							<Show when={tool.args}>
-								<div class={styles['agent-tool-section']}>入参</div>
-								<pre class={styles['agent-tool-pre']}>{truncateWithNote(tool.args, TOOL_ARGS_LIMIT)}</pre>
-							</Show>
-							<Show when={tool.output}>
-								<div class={styles['agent-tool-section']}>输出</div>
-								<pre class={styles['agent-tool-pre']}>{truncateWithNote(tool.output, TOOL_OUTPUT_LIMIT)}</pre>
+						<div class={styles['tool-body']}>
+							{/* MCP 卡用设计稿的「→ request / ← response」行；普通工具用「入参 / 输出」小标 */}
+							<Show
+								when={mcp}
+								fallback={
+									<>
+										<Show when={tool.args}>
+											<div class={styles['tool-section']}>入参</div>
+											<pre class={styles['tool-pre']}>{truncateWithNote(tool.args, TOOL_ARGS_LIMIT)}</pre>
+										</Show>
+										<Show when={tool.output}>
+											<div class={styles['tool-section']}>输出</div>
+											<pre class={styles['tool-pre']}>{truncateWithNote(tool.output, TOOL_OUTPUT_LIMIT)}</pre>
+										</Show>
+									</>
+								}
+							>
+								<Show when={tool.args}>
+									<div class={styles['tool-line']}>→ request</div>
+									<pre class={styles['tool-pre']}>{truncateWithNote(tool.args, TOOL_ARGS_LIMIT)}</pre>
+								</Show>
+								<Show when={tool.output}>
+									<div class={`${styles['tool-line']} ${styles['is-response']}`}>
+										← response · {tool.status === 'success' ? '200 OK' : tool.status} · {fmtSize(tool.output.length)}
+									</div>
+									<pre class={styles['tool-pre']}>{truncateWithNote(tool.output, TOOL_OUTPUT_LIMIT)}</pre>
+								</Show>
 							</Show>
 							<Show when={!tool.args && !tool.output}>
-								<div class={styles['agent-tool-hint']}>
+								<div class={styles['tool-hint']}>
 									{tool.status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
 								</div>
 							</Show>
@@ -961,17 +1172,67 @@ export default function ChatView() {
 		}
 	};
 
+	/**
+	 * 用户发言之后的第一个块下标 —— AGENT 头就插在它前面。
+	 * （头部必须跟在用户消息**下面**，不能跑到整段对话的最上面。）
+	 */
+	function getFirstNonUserIndex(node: RenderAgentNode): number {
+		let i = 0;
+		while (i < node.blocks.length && node.blocks[i].type === 'user') i++;
+		return i;
+	}
+
+	/** 消息头 / AGENT：指示灯 + AGENT + Agent 名 + 状态标记 */
+	const renderAgentHeaderFor = (node: RenderAgentNode) => (
+		<div class={styles['message-head']}>
+			<span class={styles['message-head-dot']} />
+			<span class={`${styles['message-head-label']} ${styles['is-agent']}`}>AGENT</span>
+			<span class={styles['message-head-meta']}>{node.agentName || node.agentId}</span>
+			<span class={styles['message-head-chip']}>{STATUS_LABEL[node.status] ?? node.status}</span>
+			<span class={styles['message-head-spacer']} />
+		</div>
+	);
+
+	/** 运行摘要：设计稿的指标胶囊（耗时 / 工具调用 / 重入我们暂时拿不到，只出这四项） */
+	const renderRunSummaryFor = (node: RenderAgentNode) => (
+		<Show when={node.tokens || node.llmCalls > 0}>
+			<div class={styles['run-summary']}>
+				<span class={styles['summary-chip']}>
+					<span class={styles['summary-chip-key']}>LLM 调用</span>
+					{node.llmCalls}
+				</span>
+				<span class={styles['summary-chip']}>
+					<span class={styles['summary-chip-key']}>tokens</span>
+					↑{fmtTokens(node.tokens?.input)} ↓{fmtTokens(node.tokens?.output)}
+				</span>
+				<Show when={node.tokens?.inputCached}>
+					<span class={styles['summary-chip']}>
+						<span class={styles['summary-chip-key']}>缓存</span>
+						{fmtTokens(node.tokens!.inputCached)}
+					</span>
+				</Show>
+				<Show when={node.rounds > 0}>
+					<span class={styles['summary-chip']}>
+						<span class={styles['summary-chip-key']}>轮次</span>
+						{node.rounds}
+					</span>
+				</Show>
+			</div>
+		</Show>
+	);
+
 	/** 单个顶层块（`isRoot` 决定用户发言是否渲染成气泡：子 Agent 的任务已在头部显示） */
 	const renderBlock = (block: RenderBlock, isRoot: boolean) => {
 		switch (block.type) {
 			case 'user':
 				if (!isRoot) return null;
+				// 设计稿里用户消息没有头像：一个「用户」小标 + 一个静态气泡
 				return (
-					<div class={`${styles.message} ${styles.user}`}>
-						<div class={styles['message-avatar']}>
-							<UserIcon />
+					<div class={styles['user-message']}>
+						<div class={styles['message-head']}>
+							<span class={styles['message-head-label']}>用户</span>
 						</div>
-						<div class={styles['message-content']}>{block.content}</div>
+						<div class={styles['user-bubble']}>{block.content}</div>
 					</div>
 				);
 
@@ -987,7 +1248,12 @@ export default function ChatView() {
 				);
 
 			case 'error':
-				return <div class={styles['agent-block-error']}>❌ {block.message}</div>;
+				return (
+					<div class={styles['agent-block-error']}>
+						<span>✗</span>
+						<span>{block.message}</span>
+					</div>
+				);
 
 			case 'agent':
 				return renderNode(block.node, false);
@@ -996,33 +1262,25 @@ export default function ChatView() {
 
 	/**
 	 * 一个 Agent 实例 = 一个块序列（含它的子节点）。
-	 * 子 Agent 用 `<details>` 整块折叠（状态 + 名字 + 任务在头部，展开才是它自己的产出）。
+	 * 子 Agent 用 `<details>` 整块折叠（名字 + 状态 + 任务在头部，展开才是它自己的产出）。
 	 */
 	const renderNode = (node: RenderAgentNode, isRoot: boolean) => {
 		const blockList = () => (
-			<>
-				<For each={node.blocks}>{(block) => renderBlock(block, isRoot)}</For>
-			</>
-		);
-		const usageFootnote = () => (
-			<Show when={node.tokens || node.llmCalls > 0}>
-				<div class={styles['agent-msg-usage']}>
-					共 {node.llmCalls} 次 LLM 调用 · tokens ↑{fmtTokens(node.tokens?.input)} ↓{fmtTokens(node.tokens?.output)}
-					<Show when={node.tokens?.inputCached}>
-						{' '}· 缓存 {fmtTokens(node.tokens!.inputCached)}
-					</Show>
-					<Show when={node.rounds > 0}>
-						{' '}· {node.rounds} 轮
-					</Show>
-				</div>
-			</Show>
+			<For each={node.blocks}>
+				{(block, index) => (
+					<>
+						<Show when={index() === getFirstNonUserIndex(node)}>{renderAgentHeaderFor(node)}</Show>
+						{renderBlock(block, true)}
+					</>
+				)}
+			</For>
 		);
 
 		if (isRoot) {
 			return (
 				<div class={styles['agent-reply']}>
 					{blockList()}
-					{usageFootnote()}
+					{renderRunSummaryFor(node)}
 				</div>
 			);
 		}
@@ -1036,15 +1294,17 @@ export default function ChatView() {
 				ontoggle={(e) => openOverrides.set(`node:${node.agentInstanceId}`, e.currentTarget.open)}
 			>
 				<summary class={styles['agent-node-header']}>
-					<span>🤖</span>
+					<span class={styles['agent-node-caret']}>▶</span>
 					<span class={styles['agent-node-name']}>{node.agentName || node.agentId}</span>
-					<span>{STATUS_LABEL[node.status] ?? node.status}</span>
+					<span class={styles['agent-node-status']}>{STATUS_LABEL[node.status] ?? node.status}</span>
 					<Show when={node.task}>
 						<span class={styles['agent-node-task']}>{node.task}</span>
 					</Show>
 				</summary>
-				{blockList()}
-				{usageFootnote()}
+				<div class={styles['agent-node-body']}>
+					<For each={node.blocks}>{(block) => renderBlock(block, false)}</For>
+					{renderRunSummaryFor(node)}
+				</div>
 			</details>
 		);
 	};
@@ -1061,23 +1321,62 @@ export default function ChatView() {
 
 	return (
 		<div class={styles['main-content']}>
-			{/* 顶部栏 */}
-			<div class={styles['main-header']}>
-				<div class={styles['conversation-title']}>{conversationTitle()}</div>
-				<div class={styles['mode-toggle']}>
-					<button
-						classList={{ active: appState.ui.viewMode === 'chat' }}
-						onclick={() => actions.setViewMode('chat')}
+			{/* 会话头部：标题 + 面包屑 + 状态 / 操作 */}
+			<div class={styles['session-header']}>
+				<div class={styles['session-title-block']}>
+					<div class={styles['session-title']}>{conversationTitle()}</div>
+					<div class={styles['session-breadcrumb']}>
+						<span class={styles['breadcrumb-item']}>{currentFolderDisplay()}</span>
+						<Show when={gitInfo()}>
+							<span class={styles['breadcrumb-sep']}>/</span>
+							<span class={styles['breadcrumb-item']}>branch {gitInfo()!.branch}</span>
+							<span class={styles['breadcrumb-sep']}>/</span>
+							<span class={styles['breadcrumb-item']}>{gitInfo()!.shortCommit}</span>
+						</Show>
+					</div>
+				</div>
+
+				<div class={styles['session-actions']}>
+					<Show
+						when={isGenerating()}
+						fallback={
+							<Show when={renderTree()}>
+								<span class={styles['session-status']}>等待输入</span>
+							</Show>
+						}
 					>
-						💬 聊天
-					</button>
+						<span class={`${styles['session-status']} ${styles['is-running']}`}>
+							<span class={styles['session-status-dot']} />
+							运行中
+						</span>
+					</Show>
+
+					<Show when={isGenerating()}>
+						<button class={styles['session-btn']} onclick={() => void handleStop()}>
+							停止
+						</button>
+					</Show>
+
 					<button
-						classList={{ active: appState.ui.viewMode === 'diagram' }}
-						onclick={() => actions.setViewMode('diagram')}
+						class={styles['session-icon-btn']}
+						title="更多"
+						aria-label="更多"
+						onclick={(e) => openSessionMenu(e.currentTarget)}
 					>
-						🔥 图示
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+							<circle cx="2.4" cy="7" r="1.4" />
+							<circle cx="7" cy="7" r="1.4" />
+							<circle cx="11.6" cy="7" r="1.4" />
+						</svg>
 					</button>
 				</div>
+			</div>
+
+			{/* 运行进度条：2px 底槽常驻，在飞时跑一段不确定进度 */}
+			<div class={styles['progress-track']}>
+				<Show when={isGenerating()}>
+					<div class={styles['progress-bar']} />
+				</Show>
 			</div>
 
 			{/* 聊天区域 */}
@@ -1126,25 +1425,26 @@ export default function ChatView() {
 							</div>
 						</Show>
 
-						{/* 转写：根实例直接内联渲染，让 <For> 持久化以支持 reconciliation */}
+						{/* 转写：根实例直接内联渲染，让 <For> 持久化以支持 reconciliation
+						    （AGENT 头插在用户发言之后，运行摘要贴在最下面） */}
 						<div class={styles['agent-reply']}>
-							<For each={renderTree()!.blocks}>{(block) => renderBlock(block, true)}</For>
-							<Show when={renderTree()!.tokens || renderTree()!.llmCalls > 0}>
-								<div class={styles['agent-msg-usage']}>
-									共 {renderTree()!.llmCalls} 次 LLM 调用 · tokens ↑{fmtTokens(renderTree()!.tokens?.input)} ↓{fmtTokens(renderTree()!.tokens?.output)}
-									<Show when={renderTree()!.tokens?.inputCached}>
-										{' '}· 缓存 {fmtTokens(renderTree()!.tokens!.inputCached)}
-									</Show>
-									<Show when={renderTree()!.rounds > 0}>
-										{' '}· {renderTree()!.rounds} 轮
-									</Show>
-								</div>
-							</Show>
+							<For each={renderTree()!.blocks}>
+								{(block, index) => (
+									<>
+										<Show when={index() === getFirstNonUserIndex(renderTree()!)}>{renderAgentHeaderFor(renderTree()!)}</Show>
+										{renderBlock(block, true)}
+									</>
+								)}
+							</For>
+							{renderRunSummaryFor(renderTree()!)}
 						</div>
 
 						{/* 本轮即时错误（重拉 ctx 后由失败的实例自己带错误块） */}
 						<Show when={runError()}>
-							<div class={styles['agent-block-error']}>❌ {runError()}</div>
+							<div class={styles['agent-block-error']}>
+								<span>✗</span>
+								<span>{runError()}</span>
+							</div>
 						</Show>
 
 						<Show when={isGenerating()}>
@@ -1168,98 +1468,62 @@ export default function ChatView() {
 			{/* 输入区域 */}
 			<div class={styles['input-area']}>
 				<div class={styles['input-wrapper']}>
-					<div class={styles['input-controls-top']}>
-						<ffbox-dropdown-input
-							ref={folderInputRef}
-							class={styles['folder-dropdown']}
-							title="运行文件夹"
-							placeholder="选择文件夹"
-							prop:readonly={true}
-							prop:disabled={isGenerating()}
-							prop:text={currentFolderDisplay()}
-							prop:list={folderMenu()}
-							onchange={(e) => {
-								onFolderChange(e);
-								resyncDropdownText();
-							}}
-						/>
-						<ffbox-dropdown-input
-							ref={modeInputRef}
-							class={styles['mode-dropdown']}
-							title="运行模式"
-							placeholder="选择模式"
-							prop:readonly={true}
-							prop:disabled={isGenerating()}
-							prop:text={currentModeLabel()}
-							prop:list={modeMenu()}
-							onchange={(e) => {
-								onModeChange(e);
-								resyncDropdownText();
-							}}
-						/>
-						<ffbox-button
-							onclick={() => void toggleMock()}
-							prop:disabled={isGenerating()}
-							title={
-								appState.mock.enabled
-									? 'LLM 走内置 mock（工具仍真实执行）。运行期间不能切换'
-									: '点一下打开：LLM 走内置 mock，工具仍真实执行'
-							}
+					<textarea
+						class={styles['input-textarea']}
+						placeholder="描述任务，或输入 / 唤起指令；shift + enter 换行"
+						value={inputText()}
+						oninput={(e) => setInputText(e.currentTarget.value)}
+						onkeydown={handleKeyDown}
+						rows={1}
+					/>
+
+					<div class={styles['input-toolbar']}>
+						{/* 运行文件夹 */}
+						<button
+							class={styles['ctx-chip']}
+							title="运行文件夹（决定 Agent 的工作目录）"
+							disabled={isGenerating()}
+							onclick={(e) => openChipMenu(folderMenu(), onFolderChange, e.currentTarget)}
 						>
-							<ffbox-checkbox
-								prop:checked={appState.mock.enabled}
-								prop:disabled={isGenerating()}
-							/>
-							🎭 {appState.mock.enabled ? `mock：${appState.mock.scenario}` : 'mock 关'}
-						</ffbox-button>
-						<Show when={appState.mock.enabled}>
-							<ffbox-dropdown-input
-								ref={scenarioInputRef}
-								class={styles['mock-scenario']}
-								title="mock 剧本"
-								placeholder="选择剧本"
-								prop:readonly={true}
-								prop:disabled={isGenerating()}
-								prop:text={currentScenarioLabel()}
-								prop:list={scenarioMenu()}
-								onchange={(e) => {
-									void onScenarioChange(e);
-									resyncDropdownText();
-								}}
-							/>
-						</Show>
-					</div>
-
-					<div class={styles['input-textarea-wrapper']}>
-						<textarea
-							class={styles['input-textarea']}
-							placeholder="按 Enter 发送，Shift+Enter 换行..."
-							value={inputText()}
-							oninput={(e) => setInputText(e.currentTarget.value)}
-							onkeydown={handleKeyDown}
-							rows={1}
-						/>
-					</div>
-
-					<div class={styles['input-controls-bottom']}>
-						<button class={styles['input-add-btn']} title="添加图片/文件">
-							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-								<line x1="12" y1="5" x2="12" y2="19"/>
-								<line x1="5" y1="12" x2="19" y2="12"/>
-							</svg>
+							<FolderChipIcon />
+							<span class={styles['ctx-chip-text']}>{currentFolderDisplay()}</span>
 						</button>
 
-						<ffbox-dropdown-input
-							ref={modelInputRef}
-							class={styles['model-dropdown']}
+						{/* 运行模式 */}
+						<button
+							class={styles['ctx-chip']}
+							title="运行模式"
+							disabled={isGenerating()}
+							onclick={(e) => openChipMenu(modeMenu(), applyMode, e.currentTarget)}
+						>
+							<span class={styles['ctx-chip-text']}>{currentModeLabel()}</span>
+						</button>
+
+						{/* 模型 */}
+						<button
+							class={styles['ctx-chip']}
 							title="选择模型"
-							placeholder="选择模型"
-							prop:readonly={true}
-							prop:disabled={isGenerating()}
-							prop:text={currentModelDisplay()}
-							prop:list={modelMenu()}
-							onchange={onModelChange}
-						/>
+							disabled={isGenerating()}
+							onclick={(e) => openChipMenu(modelMenu(), applyModel, e.currentTarget)}
+						>
+							<span class={styles['state-dot']} />
+							<span class={styles['ctx-chip-text']}>{currentModelDisplay()}</span>
+						</button>
+
+						{/* 内置 mock（开发用） */}
+						<button
+							class={`${styles['ctx-chip']} ${styles['mock-chip']}`}
+							classList={{ [styles['is-on']]: appState.mock.enabled }}
+							title="内置 mock：LLM 走假模型，工具仍真实执行"
+							disabled={isGenerating()}
+							onclick={(e) => openMockMenu(e.currentTarget)}
+						>
+							<span class={styles['ctx-chip-text']}>
+								{appState.mock.enabled ? `mock · ${currentScenarioLabel()}` : 'mock 关'}
+							</span>
+						</button>
+
+						<span class={styles['input-toolbar-spacer']} />
 
 						<Show when={!isGenerating()}>
 							<button
@@ -1282,6 +1546,8 @@ export default function ChatView() {
 						</Show>
 					</div>
 				</div>
+
+				<div class={styles['input-hint']}>enter 发送 · shift + enter 换行 · esc 中断运行</div>
 			</div>
 		</div>
 	);

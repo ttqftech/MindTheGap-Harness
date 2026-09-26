@@ -1,155 +1,465 @@
 /* ==========================================================================
-   MindTheGap-Harness — 主题系统
-   参考 FFBox 的 HWB 色系设计
-   
-   深浅色通过给 <html> 或根元素加 .themeLight / .themeDark 切换
-   HWB = Hue-Whiteness-Blackness，空间比 HSL 更直观
+   MindTheGap-Harness — 设计令牌与主题系统
+
+   令牌来源：Ardot 设计稿「MindTheGap-Harness 重设计」（file 726312878203831）。
+
+   分层：
+     0. :root                 与主题无关的令牌（字型 / 字号 / 圆角 / 动效 / 密度兜底）
+     1. .themeDark            深色颜色令牌
+     2. .themeLight           浅色颜色令牌
+     3. .density*             界面密度令牌（紧凑 / 标准 / 宽松）
+     4. .accent*              强调色令牌
+     5. 旧 HWB 变量            以 hwb(var(--bgXX) / a) 消费，必须保持三元组格式
+     6. 兼容别名               旧变量名 → 新语义令牌，供未迁移组件过渡
+     7. FFBox-UI 变量          保持原值，勿动
+
+   切换方式：在 <html> 上加类名 —— themeLight / themeDark + densityXxx + accentXxx。
+   多个类同时存在时靠选择器特异性与源码顺序取胜，故层序不可随意调整。
    ========================================================================== */
 
-/* ---------- 浅色主题 ---------- */
-.themeLight {
-    --fontColor: #222;
-    --fontColorDim: #888;
-    --fontColorMuted: #aaa;
+/* ---------- 内嵌字体 ----------
+   设计稿用 Archivo（品牌）/ Inter（界面）/ JetBrains Mono（等宽元信息）。这里只内嵌 **latin 子集的可变字体**（三个合计约 120 KB，OFL 许可）：
+   - 中文没有对应字型，按 font stack 落到系统字体（设计稿里的中文本来也是系统字体）
+   - 可变字体一个文件覆盖全部字重，省得按 weight 拆好几份
+   文件来源与重新拉取方式见 scripts/fetch-fonts.mjs。 */
 
-    /* 背景色系（HWB 格式: H W B） */
-    --bg100: 0 100% 0%;   /* 纯黑占位 */
-    --bg99: 0 100% 1%;
-    --bg98: 0 100% 2%;
-    --bg97: 0 100% 3%;
-    --bg96: 0 100% 4%;
-    --bg95: 0 100% 5%;
-    --bg90: 0 100% 10%;
-
-    /* 反向色系（白底上的组件边框/分割线） */
-    --ff: #FFFFFF;
-    --f7: #F7F7F7;
-    --e7: #E7E7E7;
-    --d0: #D0D0D0;
-    --c0: #C0C0C0;
-    --88: #888;
-    --55: #555;
-    --33: #333;
-
-    /* 主题色 */
-    --primary: hwb(220 40% 0%);
-    --primaryHover: hwb(220 35% 0%);
-    --primaryActive: hwb(220 30% 0%);
-    --accent: hwb(140 50% 0%);
-
-    /* 状态色 */
-    --success: hwb(140 50% 0%);
-    --warning: hwb(40 50% 0%);
-    --error: hwb(0 50% 0%);
-    --info: hwb(220 50% 0%);
-
-    /* 组件状态 */
-    --hoverBg: hwb(0 95% 2%);
-    --activeBg: hwb(0 90% 5%);
-    --selectedBg: hwb(220 92% 3%);
-
-    /* 阴影 */
-    --shadowSm: 0 1px 2px rgba(0, 0, 0, 0.06);
-    --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    --shadowLg: 0 4px 16px rgba(0, 0, 0, 0.12);
-    --shadowXl: 0 8px 32px rgba(0, 0, 0, 0.16);
-
-    /* 边框 */
-    --border: hwb(0 92% 5%);
-    --borderLight: hwb(0 95% 3%);
-
-    /* 代码高亮 */
-    --codeBg: hwb(220 96% 2%);
-    --codeBorder: hwb(220 88% 10%);
-
-    /* ---------- FFBox-UI 组件所需（本项目主题未覆盖的部分） ----------
-       变量取值来自 vendor/ffbox-ui/dist/themes/light.css。
-       FFBox-UI 组件在 shadow DOM 中通过继承拿到这些变量，所以必须定义在
-       主题类上（组件库自带的 themes/*.css 会连带覆盖 :root，
-       且同时引入 light/dark 两份会互相打架，因此这里只补齐缺失的变量）。 */
-    --bg94: 0 94% 6%;
-    --66: #666;
-    --errorBorder: #E77;
-    --errorBg: #F7E7E7;
-    --errorBgActive: #FEE;
-    --highlight: 0 100% 0%;
-    --hoverLightBg: 0 100% 0%;
-    --hoverShadow: 0 0% 100%;
-    --menuItemHovered: 210 80% 0%;
-    --menuItemSelected: 210 60% 0%;
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("../fonts/inter-var-latin.woff2") format("woff2");
 }
 
-/* ---------- 深色主题 ---------- */
+@font-face {
+	font-family: "JetBrains Mono";
+	font-style: normal;
+	font-weight: 100 800;
+	font-display: swap;
+	src: url("../fonts/jetbrains-mono-var-latin.woff2") format("woff2");
+}
+
+@font-face {
+	font-family: "Archivo";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("../fonts/archivo-var-latin.woff2") format("woff2");
+}
+
+/* ---------- 0. 与主题无关的令牌 ---------- */
+
+:root {
+	/* 字型：设计稿用 Archivo（品牌）/ Inter（界面）/ JetBrains Mono（等宽元信息）。
+	   本机没装时按栈回退，不内嵌字体文件。 */
+	--font-brand: "Archivo", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+	--font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+	/* 字号：设计稿的等宽元信息压得很小（10 / 10.5），正文 12.8 */
+	--fs-xxs: 10px;
+	--fs-xs: 10.5px;
+	--fs-sm: 11.5px;
+	--fs-md: 12.5px;
+	--fs-base: 12.8px;
+	--fs-lg: 13px;
+	--fs-title: 14.5px;
+
+	--lh-body: 21px;
+	--lh-tight: 1.3;
+
+	/* 圆角 */
+	--r-xs: 3px;
+	--r-sm: 4px;
+	--r-md: 6px;
+	--r-lg: 7px;
+	--r-xl: 8px;
+	--r-2xl: 10px;
+	--r-full: 999px;
+
+	/* 动效 */
+	--dur-fast: 0.12s;
+	--dur: 0.18s;
+	--ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+	/* 窗口尺寸：标题栏高 44、窗口控制按钮宽 46（设计稿） */
+	--titlebar-h: 44px;
+	--win-btn-w: 46px;
+
+	/* 密度兜底（= 标准）；未加 densityXxx 类时生效。必须放在密度段之前。 */
+	--row-h: 32px;
+	--ctrl-h: 30px;
+	--section-pad: 16px;
+	--block-gap: 16px;
+	--stream-pad-y: 18px;
+
+	/* 焦点圈：颜色跟着强调色走，由 .accent* 覆盖 --ring-color */
+	--ring-color: rgba(232, 163, 60, 0.4);
+	--ring: 0 0 0 2px var(--ring-color);
+}
+
+/* ---------- 1. 深色令牌 ---------- */
+
 .themeDark {
-    --fontColor: #EEE;
-    --fontColorDim: #BBB;
-    --fontColorMuted: #888;
+	/* 背景 / 表面 */
+	--bg-app: #0C0D10;              /* 主工作区 */
+	--bg-sidebar: #101216;          /* 侧边栏 */
+	--bg-titlebar-from: #171A1F;    /* 标题栏渐变起（上） */
+	--bg-titlebar-to: #121418;      /* 标题栏渐变止（下） */
+	--bg-surface: #101317;          /* 卡片 / 消息体 */
+	--bg-surface-header: #151922;   /* 卡片头部 / 内嵌标记 */
+	--bg-input: #12151A;            /* 输入框 */
+	--bg-bubble-user: #14171C;      /* 用户消息气泡 */
+	--bg-chip: #171B21;             /* 小徽标（LOCAL / 上下文标记） */
+	--bg-progress-track: #16191E;   /* 进度条底槽 */
+	--bg-hover: rgba(255, 255, 255, 0.04);
+	--bg-active: rgba(255, 255, 255, 0.07);
+	--bg-selected: rgba(232, 163, 60, 0.12);
+	--bg-scrim: rgba(0, 0, 0, 0.55);
 
-    /* 背景色系 */
-    --bg100: 0 0% 100%;   /* 纯白占位 */
-    --bg99: 0 2% 98%;
-    --bg98: 0 4% 96%;
-    --bg97: 0 6% 94%;
-    --bg96: 0 8% 92%;
-    --bg95: 0 10% 90%;
-    --bg90: 0 14% 86%;
+	/* 描边 */
+	--border-app: #21262E;
+	--border: #1B1F25;              /* 分隔线（默认） */
+	--border-input: #262B32;
+	--border-strong: #2A2F36;
 
-    /* 反向色系（深色背景上的组件） */
-    --ff: #1a1a1a;
-    --f7: #222;
-    --e7: #2e2e2e;
-    --d0: #3a3a3a;
-    --c0: #444;
-    --88: #888;
-    --55: #BBB;
-    --33: #DDD;
+	/* 文字 */
+	--text-primary: #E9E9E7;
+	--text-body: #D5D5D3;
+	--text-secondary: #C9C9C7;
+	--text-tertiary: #8E8E8C;
+	--text-quiet: #6E7278;
+	--text-faint: #62666D;
+	--text-disabled: #4E535A;
 
-    /* 主题色 */
-    --primary: hwb(220 40% 0%);
-    --primaryHover: hwb(220 45% 5%);
-    --primaryActive: hwb(220 50% 10%);
-    --accent: hwb(140 50% 0%);
+	/* 强调 / 状态 */
+	--accent: #E8A33C;
+	--accent-hover: #F0B255;
+	--accent-ink: #161819;          /* 压在强调色上的文字 */
+	--accent-soft: #2A2113;
+	--accent-soft-border: #5C4720;
 
-    /* 状态色 */
-    --success: hwb(140 50% 0%);
-    --warning: hwb(40 60% 0%);
-    --error: hwb(0 60% 0%);
-    --info: hwb(220 50% 0%);
+	--success: #8FB08A;
+	--success-soft: #1A2118;
+	--success-soft-border: #36432F;
 
-    /* 组件状态 */
-    --hoverBg: hwb(0 15% 85%);
-    --activeBg: hwb(0 20% 78%);
-    --selectedBg: hwb(220 20% 75%);
+	--warn-bg: #17140E;             /* 反思卡 */
+	--warn-border: #3D3218;
+	--warn-text: #E8A33C;
+	--warn-chip-bg: #241D0F;
+	--warn-chip-text: #C9A05A;
 
-    /* 阴影（深色主题下阴影更明显） */
-    --shadowSm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-    --shadowLg: 0 4px 16px rgba(0, 0, 0, 0.5);
-    --shadowXl: 0 8px 32px rgba(0, 0, 0, 0.6);
+	--ask-bg: #131518;              /* 提问卡片 */
+	--ask-border: #2E3540;
 
-    /* 边框 */
-    --border: hwb(0 15% 85%);
-    --borderLight: hwb(0 10% 90%);
+	--mcp-bg: #0F1419;              /* MCP 调用卡 */
+	--mcp-border: #1E2A33;
+	--mcp-text: #7FA8BF;
+	--mcp-header: #121A21;
+	--mcp-title: #DCE6EC;
+	--mcp-chip-bg: #131F29;
+	--mcp-chip-border: #27404D;
 
-    /* 代码高亮 */
-    --codeBg: hwb(220 8% 88%);
-    --codeBorder: hwb(220 12% 82%);
+	--danger: #D9705F;
+	--danger-soft: #2A1714;
+	--danger-soft-border: #5A2E27;
 
-    /* ---------- FFBox-UI 组件所需（本项目主题未覆盖的部分） ----------
-       变量取值来自 vendor/ffbox-ui/dist/themes/dark.css，说明见上方浅色主题。 */
-    --bg94: 0 11% 89%;
-    --66: #B7B7B7;
-    --errorBorder: #D66;
-    --errorBg: #472727;
-    --errorBgActive: #522;
-    --highlight: 0 25% 75%;
-    --hoverLightBg: 0 20% 80%;
-    --hoverShadow: 0 0% 100%;
-    --menuItemHovered: 210 20% 60%;
-    --menuItemSelected: 210 10% 30%;
+	--info: #6E9BD1;
+
+	/* 阴影 */
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+	--shadow-lg: 0 6px 16px -4px rgba(0, 0, 0, 0.4);
+	--shadow-xl: 0 12px 32px -8px rgba(0, 0, 0, 0.5);
+	--shadow-window: 0 24px 60px -12px rgba(0, 0, 0, 0.55), 0 6px 16px -4px rgba(0, 0, 0, 0.4);
+
+	/* 代码 / 骨架屏 */
+	--codeBg: #0F1419;
+	--codeBorder: #1E2A33;
+	--skeleton: #151922;
+	--skeleton-weak: #12151A;
+
+	/* 分段控件（设置页的主题 / 密度 / 强调色切换） */
+	--segmented-track: #14171C;
+	--segmented-active: #2A3038;
 }
 
-/* 默认深色主题（如果没有设置类名） */
+/* ---------- 2. 浅色令牌 ---------- */
+
+.themeLight {
+	/* 背景 / 表面 */
+	--bg-app: #FFFFFF;
+	--bg-sidebar: #F4F5F7;
+	--bg-titlebar-from: #FAFBFC;
+	--bg-titlebar-to: #F2F4F6;
+	--bg-surface: #F7F8FA;
+	--bg-surface-header: #EFF1F4;
+	--bg-input: #FFFFFF;
+	--bg-bubble-user: #F4F5F7;
+	--bg-chip: #F1F3F5;
+	--bg-progress-track: #EDEFF2;
+	--bg-hover: rgba(16, 20, 28, 0.04);
+	--bg-active: rgba(16, 20, 28, 0.07);
+	--bg-selected: rgba(232, 163, 60, 0.14);
+	--bg-scrim: rgba(16, 20, 28, 0.18);
+
+	/* 描边 */
+	--border-app: #E0E3E8;
+	--border: #E4E7EA;
+	--border-input: #E0E3E8;
+	--border-strong: #D3D8DE;
+
+	/* 文字 */
+	--text-primary: #1B1F24;
+	--text-body: #33383F;
+	--text-secondary: #4A5058;
+	--text-tertiary: #5A6068;
+	--text-quiet: #767C85;
+	--text-faint: #8C929B;
+	--text-disabled: #AAB0B8;
+
+	/* 强调 / 状态 */
+	--accent: #E8A33C;
+	--accent-hover: #D8931F;
+	--accent-ink: #161819;
+	--accent-soft: #FDF3E2;
+	--accent-soft-border: #EFD5A6;
+
+	--success: #5E8A57;
+	--success-soft: #F0F5EE;
+	--success-soft-border: #CFE0C9;
+
+	--warn-bg: #FDF8EE;
+	--warn-border: #EEDDBB;
+	--warn-text: #A8701A;
+	--warn-chip-bg: #F7EDDA;
+	--warn-chip-text: #8A6520;
+
+	--ask-bg: #F7F8FA;
+	--ask-border: #DDE2E8;
+
+	--mcp-bg: #F5F8FA;
+	--mcp-border: #D7E2EA;
+	--mcp-text: #3D6B85;
+	--mcp-header: #EAF2F7;
+	--mcp-title: #1F4658;
+	--mcp-chip-bg: #E4EFF6;
+	--mcp-chip-border: #BFD8E6;
+
+	--danger: #C0503F;
+	--danger-soft: #FDF0EE;
+	--danger-soft-border: #EFCFC9;
+
+	--info: #3B6EA5;
+
+	/* 阴影 */
+	--shadow-sm: 0 1px 2px rgba(16, 20, 28, 0.06);
+	--shadow: 0 2px 8px rgba(16, 20, 28, 0.08);
+	--shadow-lg: 0 6px 16px -4px rgba(16, 20, 28, 0.12);
+	--shadow-xl: 0 12px 32px -8px rgba(16, 20, 28, 0.16);
+	--shadow-window: 0 24px 60px -12px rgba(16, 20, 28, 0.18), 0 6px 16px -4px rgba(16, 20, 28, 0.12);
+
+	/* 代码 / 骨架屏 */
+	--codeBg: #F7F8FA;
+	--codeBorder: #E4E7EA;
+	--skeleton: #EFF1F4;
+	--skeleton-weak: #F4F5F7;
+
+	/* 分段控件 */
+	--segmented-track: #EFF1F4;
+	--segmented-active: #FFFFFF;
+}
+
+/* 没设置主题类名时的兜底：按深色走 */
 html:not(.themeLight):not(.themeDark) {
-    /* fallback: 使用深色 */
+	--bg-app: #0C0D10;
+	--bg-sidebar: #101216;
+	--text-primary: #E9E9E7;
+}
+
+/* ---------- 3. 界面密度 ---------- */
+
+.densityCompact {
+	--row-h: 28px;          /* 会话行 / 列表行 */
+	--ctrl-h: 26px;         /* 控件高度 */
+	--titlebar-h: 38px;
+	--section-pad: 12px;    /* 区块左右内边距 */
+	--block-gap: 12px;      /* 对话流块间距 */
+	--stream-pad-y: 14px;
+	--fs-base: 12.2px;
+}
+
+.densityStandard {
+	--row-h: 32px;
+	--ctrl-h: 30px;
+	--titlebar-h: 44px;
+	--section-pad: 16px;
+	--block-gap: 16px;
+	--stream-pad-y: 18px;
+	--fs-base: 12.8px;
+}
+
+.densityComfortable {
+	--row-h: 38px;
+	--ctrl-h: 34px;
+	--titlebar-h: 50px;
+	--section-pad: 20px;
+	--block-gap: 20px;
+	--stream-pad-y: 24px;
+	--fs-base: 13.6px;
+}
+
+/* ---------- 4. 强调色 ----------
+   两个类同时挂在 <html> 上，故用复合选择器保证在浅色下也能覆盖。 */
+
+.accentAmber {
+	--accent: #E8A33C;
+	--accent-hover: #F0B255;
+	--accent-ink: #161819;
+	--accent-soft: #2A2113;
+	--accent-soft-border: #5C4720;
+	--ring-color: rgba(232, 163, 60, 0.4);
+}
+.accentAmber.themeLight {
+	--accent-hover: #D8931F;
+	--accent-soft: #FDF3E2;
+	--accent-soft-border: #EFD5A6;
+	--ring-color: rgba(232, 163, 60, 0.45);
+}
+
+.accentBlue {
+	--accent: #5B8DEF;
+	--accent-hover: #7099F2;
+	--accent-ink: #0E1524;
+	--accent-soft: #131B2A;
+	--accent-soft-border: #2A3E60;
+	--ring-color: rgba(91, 141, 239, 0.4);
+}
+.accentBlue.themeLight {
+	--accent-hover: #4379E0;
+	--accent-soft: #EDF3FE;
+	--accent-soft-border: #C6D8FA;
+	--ring-color: rgba(91, 141, 239, 0.45);
+}
+
+.accentTeal {
+	--accent: #3FB6A8;
+	--accent-hover: #55C5B7;
+	--accent-ink: #08201D;
+	--accent-soft: #10211F;
+	--accent-soft-border: #245049;
+	--ring-color: rgba(63, 182, 168, 0.4);
+}
+.accentTeal.themeLight {
+	--accent-hover: #319E91;
+	--accent-soft: #EAF7F5;
+	--accent-soft-border: #BFE5DF;
+	--ring-color: rgba(49, 158, 145, 0.45);
+}
+
+.accentViolet {
+	--accent: #9B7BE8;
+	--accent-hover: #AC90EE;
+	--accent-ink: #17122A;
+	--accent-soft: #1B1628;
+	--accent-soft-border: #40355C;
+	--ring-color: rgba(155, 123, 232, 0.4);
+}
+.accentViolet.themeLight {
+	--accent-hover: #8562DE;
+	--accent-soft: #F3EFFD;
+	--accent-soft-border: #D8CCF7;
+	--ring-color: rgba(133, 98, 222, 0.45);
+}
+
+/* ---------- 5. 旧 HWB 变量 ----------
+   以 hwb(var(--bgXX) / a) 的形式被大量消费，必须保持 HWB 三元组格式，
+   值取自设计稿同位置的色值（见注释），随主题切换。 */
+
+.themeDark {
+	--bg100: 0 0% 100%;
+	--bg99: 0 2% 98%;
+	--bg98: 0 4% 96%;
+	--bg97: 0 6% 94%;
+	--bg96: 0 8% 92%;
+	--bg95: 214 6.3% 91.0%;     /* ≈ #101317 卡片面 */
+	--bg94: 216 9.0% 87.1%;     /* ≈ #171B21 徽标面 */
+	--bg92: 218 8.6% 88.2%;     /* ≈ #16191E */
+	--bg90: 216 10.6% 85.5%;    /* ≈ #1B1F25 悬停 */
+	--bg88: 215 12.2% 83.1%;    /* ≈ #1F242B 激活 */
+	--bg85: 215 16.5% 78.8%;    /* ≈ #2A2F36 次级描边 */
+	--highlight: 0 25% 75%;
+}
+
+.themeLight {
+	--bg100: 0 100% 0%;
+	--bg99: 0 100% 1%;
+	--bg98: 0 100% 2%;
+	--bg97: 0 100% 3%;
+	--bg96: 0 100% 4%;
+	--bg95: 216 92.9% 5.1%;     /* ≈ #EDEFF2 */
+	--bg94: 210 94.5% 3.9%;     /* ≈ #F1F3F5 */
+	--bg92: 210 92.9% 4.7%;     /* ≈ #EDF0F3 */
+	--bg90: 216 93.7% 4.3%;     /* ≈ #EFF1F4 */
+	--bg88: 218 87.8% 9.0%;     /* ≈ #E0E3E8 */
+	--bg85: 210 89.4% 8.2%;     /* ≈ #E4E7EA */
+	--highlight: 0 100% 0%;
+}
+
+/* ---------- 6. 兼容别名 ----------
+   旧变量名 → 新语义令牌。纯 var 引用，跟随所在元素解析，故可定义在 :root。
+   ⚠️ 只允许「别名 → 新令牌」的单向引用，别在这里重新定义新令牌本身（会成环）。
+   ⚠️ --border / --primary / --accent 等已在新令牌段定义过，不可再出现在此。 */
+
+:root {
+	--fontColor: var(--text-primary);
+	--fontColorDim: var(--text-tertiary);
+	--fontColorMuted: var(--text-quiet);
+	--textLight: var(--text-tertiary);
+	--dangerColor: var(--danger);
+	--monoFont: var(--font-mono);
+
+	--ff: var(--bg-app);
+	--f7: var(--bg-surface);
+	--e7: var(--bg-surface-header);
+	--d0: var(--border-strong);
+	--c0: var(--border-strong);
+	--88: var(--text-tertiary);
+	--55: var(--text-primary);
+	--33: var(--text-primary);
+	--66: var(--text-quiet);
+
+	--primary: var(--accent);
+	--primaryHover: var(--accent-hover);
+	--primaryActive: var(--accent-hover);
+	--borderLight: var(--border);
+	--error: var(--danger);
+	--errorBorder: var(--danger-soft-border);
+	--errorBg: var(--danger-soft);
+	--errorBgActive: var(--danger-soft);
+	--warning: var(--warn-text);
+
+	--hoverBg: var(--bg-hover);
+	--activeBg: var(--bg-active);
+	--selectedBg: var(--bg-selected);
+}
+
+/* ---------- 7. FFBox-UI 组件所需 ----------
+   取值来自 vendor/ffbox-ui/dist/themes/*.css。组件在 shadow DOM 中通过继承拿到
+   这些变量，必须定义在主题类上（组件库自带 themes/*.css 会连带覆盖 :root，
+   且同时引入 light/dark 两份会互相打架，因此这里只补齐缺失的变量）。
+   本段与设计稿无关，请勿顺手改动。 */
+
+.themeLight {
+	--hoverLightBg: 0 100% 0%;
+	--hoverShadow: 0 0% 100%;
+	--menuItemHovered: 210 80% 0%;
+	--menuItemSelected: 210 60% 0%;
+}
+
+.themeDark {
+	--hoverLightBg: 0 20% 80%;
+	--hoverShadow: 0 0% 100%;
+	--menuItemHovered: 210 20% 60%;
+	--menuItemSelected: 210 10% 30%;
 }
