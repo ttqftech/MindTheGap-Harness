@@ -6,9 +6,9 @@ import Sidebar from './SideBar/Sidebar';
 import ChatView from './ChatView/ChatView';
 import Settings from './Settings/Settings';
 import { setFFBoxContainer } from '../ffboxBridge';
-import { state, setState, actions, initApp } from '../store';
+import { state, setState, actions, initApp, getActiveConversation, isConversationAlive } from '../store';
 import { newTask } from '../appCommands';
-import { running, stopRun } from '../runState';
+import { stopRun, initRunController } from '../runController';
 import styles from './App.module.css';
 
 export default function App() {
@@ -22,6 +22,9 @@ export default function App() {
     onMount(() => {
         // 初始化应用（加载持久化状态）
         initApp();
+
+        // 把「刷新页面时后端仍在跑」的会话接回 SSE（订阅是应用级的，见 runController 的说明）
+        initRunController();
 
         // 初始化主题
         const mode = initTheme();
@@ -57,8 +60,9 @@ export default function App() {
             actions.openSettings();
             return;
         }
-        // esc 中断运行：只在真的有 run 在飞时接管，避免抢掉弹窗 / 下拉的关闭手势
-        if (e.key === 'Escape' && running()) {
+        // esc 中断运行：只在**当前会话**真的有 run 在飞时接管（running 或 waiting），
+        //   避免抢掉弹窗 / 下拉的关闭手势
+        if (e.key === 'Escape' && isConversationAlive(getActiveConversation())) {
             e.stopPropagation();
             stopRun();
         }

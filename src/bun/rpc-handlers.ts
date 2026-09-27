@@ -1,13 +1,9 @@
-/* ==========================================================================
-   主进程 RPC Handlers — MindTheGap-Harness（精简版）
-
-   重构后：RPC 只保留对话框、Shell、环境信息、日志、窗口控制。
-   文件操作、AppData、Agent 运行全部移除（Agent 工具在主进程内部直接用 node:fs，
-   Agent 运行走 HTTP API，AppData 由 Agent Service 的 storage 层管理）。
-
-   窗口控制需要拿到 BrowserWindow 实例，但它是在 index.ts 里创建的（晚于 RPC 定义），
-   所以这里用一个模块级引用 + setMainWindow() 在窗口创建后再注入。
-   ========================================================================== */
+/**
+ * 主进程 RPC Handlers — MindTheGap-Harness（精简版）
+ *
+ * 窗口控制需要拿到 BrowserWindow 实例，但它是在 index.ts 里创建的（晚于 RPC 定义），
+ * 所以这里用一个模块级引用 + setMainWindow() 在窗口创建后再注入。
+ */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve, dirname, basename } from "node:path";
@@ -17,7 +13,7 @@ import { Utils } from "electrobun/main";
 import type { BrowserWindow } from "electrobun/main";
 import type { AppRPC, RpcResult } from "../shared/rpc";
 
-/* ---------- 主窗口引用（见文件头说明） ---------- */
+// #region 主窗口引用（见文件头说明）
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -99,28 +95,11 @@ export const systemHandlers = {
                 execSync(`xdg-open "${url}"`);
             }
         }),
-
-    /**
-     * 读工作目录的 git 状态，供会话头部面包屑显示「branch / 短 commit」。
-     * 不是 git 仓库 / 没装 git / 路径不存在 → 返回 null（**不是错误**，界面上那一段直接不显示）。
-     */
-    gitInfo: ({ path }: { path: string }): RpcResult<{ branch: string; shortCommit: string } | null> =>
-        safe(() => {
-            const cwd = resolve(path);
-            if (!existsSync(cwd)) return null;
-            const run = (args: string) =>
-                execSync(`git -C "${cwd}" ${args}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-            try {
-                const branch = run("rev-parse --abbrev-ref HEAD");
-                const shortCommit = run("rev-parse --short HEAD");
-                return branch && shortCommit ? { branch, shortCommit } : null;
-            } catch {
-                return null;
-            }
-        }),
 };
 
-/* ---------- 窗口控制（无边框窗口的三大金刚键） ---------- */
+// #endregion
+
+// #region 窗口控制（无边框窗口的三大金刚键）
 
 export const windowHandlers = {
     windowMinimize: (): RpcResult<void> =>
@@ -146,6 +125,8 @@ export const windowHandlers = {
         safe(() => mainWindow?.isMaximized() ?? false),
 };
 
+// #endregion
+
 export function buildRpcHandlers() {
     return {
         requests: {
@@ -154,7 +135,6 @@ export function buildRpcHandlers() {
             shellOpenPath: systemHandlers.shellOpenPath,
             shellOpenExternal: systemHandlers.shellOpenExternal,
             envInfo: systemHandlers.envInfo,
-            gitInfo: systemHandlers.gitInfo,
             windowMinimize: windowHandlers.windowMinimize,
             windowToggleMaximize: windowHandlers.windowToggleMaximize,
             windowClose: windowHandlers.windowClose,

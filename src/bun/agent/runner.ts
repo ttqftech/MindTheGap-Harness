@@ -1,49 +1,29 @@
-/* ==========================================================================
-   Agent Runner — MindTheGap-Harness（替代 v1 的 engine.ts）
+/**
+ * Agent Runner — MindTheGap-Harness（替代 v1 的 engine.ts）
+ *
+ * 核心不变式：**执行工具即退出 agentLoop**，由调度器按状态重入。
+ * 全篇没有 Promise 等待链：一个实例在等谁，只由「status + pendingCallIds」表达，
+ * 写进 ctx.json，所以「用户中途打断 → 稍后继续」和「进程重启」都能成立。
+ *
+ * agentLoop(agentInstanceId) 的一轮：
+ *   1. 重建 system prompt、取该实例可见工具
+ *   2. 调 LLM（流式）
+ *   3. 把 assistant 消息（含 tool_calls）写入实例消息
+ *   4. 没有 tool_call → 走结束路径（可能先反思）
+ *   5. 有 tool_call → 全部落 pending → 交给调度器 → **立刻 return**
+ * 调度器执行完一批工具后判断是否满足重入条件，满足则再次 agentLoop。
+ *
+ * 状态全部在 ctx 里；本类只在一次 run 期间做「内存中的调度缓存」（busy 集合、delegate 分组），进程重启后这些缓存可以安全地重新推导。
+ */
 
-   核心不变式：**执行工具即退出 agentLoop**，由调度器按状态重入。
-   全篇没有 Promise 等待链：一个实例在等谁，只由「status + pendingCallIds」表达，
-   写进 ctx.json，所以「用户中途打断 → 稍后继续」和「进程重启」都能成立。
-
-   agentLoop(agentInstanceId) 的一轮：
-     1. 重建 system prompt、取该实例可见工具
-     2. 调 LLM（流式）
-     3. 把 assistant 消息（含 tool_calls）写入实例消息
-     4. 没有 tool_call → 走结束路径（可能先反思）
-     5. 有 tool_call → 全部落 pending → 交给调度器 → **立刻 return**
-   调度器执行完一批工具后判断是否满足重入条件，满足则再次 agentLoop。
-
-   状态全部在 ctx 里；本类只在一次 run 期间做「内存中的调度缓存」
-   （busy 集合、delegate 分组），进程重启后这些缓存可以安全地重新推导。
-   ========================================================================== */
-
-import type {
-	AgentCtx,
-	AgentDefinition,
-	AgentInstance,
-	AgentInstanceMessage,
-	AgentInstanceStatus,
-	AgentRunRequest,
-	AgentStreamEvent,
-	AskUserState,
-	LlmMessage,
-	LlmTrigger,
-	ModeDefinition,
-	ModelConfig,
-	TokenUsage,
-	ToolResult,
-	ToolResultInfo,
-} from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, AskUserState, ConversationRunStatus, LlmMessage, LlmTrigger, ModeDefinition, ModelConfig, TokenUsage, ToolResult, ToolResultInfo } from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
 import { conversations, ensureConversationDir, settings } from '../storage';
 import { logMsg } from '../utils';
 import { renderSystemPrompt } from './prompt';
-import {
-	executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools,
-	type AgentTool, type TaskListOp, type ToolContext, type ToolLlmRequest, type ToolLlmResult,
-} from './tools';
+import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type TaskListOp, type ToolContext, type ToolLlmRequest, type ToolLlmResult } from './tools';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
 const now = () => Date.now();
@@ -181,7 +161,7 @@ export class AgentRunner {
 		});
 	}
 
-	// ---------- 对外接口 ----------
+	// #region 对外接口
 
 	getCtx(): AgentCtx {
 		return this.ctx;
@@ -191,9 +171,19 @@ export class AgentRunner {
 		return this.donePromise;
 	}
 
-	isRunning(): boolean {
+	/**
+	 * 会话级运行状态（三态）—— 从根实例 status 推导。
+	 *
+	 * 这是 `GET /api/conversations` 里 `runStatus` 的唯一真值源。
+	 * ⚠️ `pending`（等 ask_user / 等子 Agent）算 `waiting`，不算 `stopped`：
+	 *   run 还活着，只是不在主动产出，UI 要显示成「等待输入」。
+	 */
+	runStatus(): ConversationRunStatus {
 		const root = this.ctx.agentInstances[this.ctx.rootAgentInstanceId];
-		return !!root && !isTerminal(root.status);
+		if (!root) return 'stopped';
+		if (root.status === 'running') return 'running';
+		if (root.status === 'pending') return 'waiting';
+		return 'stopped';
 	}
 
 	cancel(): void {
@@ -249,7 +239,9 @@ export class AgentRunner {
 		}
 	}
 
-	// ---------- 启动 ----------
+	// #endregion
+
+	// #region 启动
 
 	/**
 	 * 发起一轮 run。
@@ -306,7 +298,9 @@ export class AgentRunner {
 		this.enterLoop(root.agentInstanceId, 'user_message');
 	}
 
-	// ---------- 实例管理 ----------
+	// #endregion
+
+	// #region 实例管理
 
 	private limits() {
 		const limits = this.mode.limits ?? {};
@@ -384,7 +378,9 @@ export class AgentRunner {
 		return instance;
 	}
 
-	// ---------- agentLoop ----------
+	// #endregion
+
+	// #region agentLoop
 
 	private enterLoop(agentInstanceId: string, trigger: LlmTrigger): void {
 		void this.agentLoop(agentInstanceId, trigger).catch((e) => {
@@ -601,7 +597,9 @@ export class AgentRunner {
 	/** 上一次 LLM 请求是在回填哪些 tool_call 的结果之后发出的（写进 requestLog） */
 	private lastResolvedCallIds: string[] | undefined;
 
-	// ---------- 调度器 ----------
+	// #endregion
+
+	// #region 调度器
 
 	/** 执行一批工具调用；返回「若为 null 表示不需要重入」 */
 	private async dispatch(
@@ -793,7 +791,9 @@ export class AgentRunner {
 		}
 	}
 
-	// ---------- 编排原语实现 ----------
+	// #endregion
+
+	// #region 编排原语实现
 
 	private primitiveDelegate(
 		parent: AgentInstance,
@@ -975,7 +975,9 @@ export class AgentRunner {
 		}
 	}
 
-	// ---------- 任务清单 ----------
+	// #endregion
+
+	// #region 任务清单
 
 	private applyTaskListOp(op: TaskListOp): string {
 		const items = parseTaskList(this.ctx.taskList);
@@ -1002,7 +1004,9 @@ export class AgentRunner {
 		return this.ctx.taskList;
 	}
 
-	// ---------- 结束路径（含反思） ----------
+	// #endregion
+
+	// #region 结束路径（含反思）
 
 	/** 结束路径。返回值 = 结束后要重入的触发类型（反思轮），null = 真结束 */
 	private async endPath(instance: AgentInstance, summary: string, opts: { forced?: boolean } = {}): Promise<LlmTrigger | null> {
@@ -1192,7 +1196,9 @@ export class AgentRunner {
 		}
 	}
 
-	// ---------- 消息 / 事件 / 落盘 ----------
+	// #endregion
+
+	// #region 消息 / 事件 / 落盘
 
 	/**
 	 * 写回（或追加）某次工具调用的结果。

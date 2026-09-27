@@ -12,16 +12,15 @@
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from 'solid-js';
-import { createStore, produce } from 'solid-js/store';
 import type { MenuItem } from 'ffbox-ui';
-import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta } from '@mainview/store';
+import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick, getTaskList } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
-import { createEmptyOverlay, diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
-import type { OverlayCtx, RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
+import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
+import type { RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
 import * as agentBridge from '@mainview/agentBridge';
-import type { AgentInstanceMessage, AgentStreamEvent, ToolResult, UsageEntry } from '@shared/agent';
-import { requestFolderPath, getGitInfo, type GitInfo } from '@mainview/localBridge';
-import { mirrorRunning, registerStop } from '@mainview/runState';
+import type { UsageEntry } from '@shared/agent';
+import { requestFolderPath } from '@mainview/localBridge';
+import { startRun, stopRun, answerAskUser } from '@mainview/runController';
 import { folderLabel, sameFolderPath } from '@shared/utils';
 import { alertMsgbox, showMenu } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
@@ -170,202 +169,6 @@ function parseMcpName(name: string): { server: string; method: string } | null {
 
 // #endregion
 
-// #region SSE → 在飞 overlay
-
-/**
- * 把一条 SSE 事件翻译成「ctx 形状」的在飞条目（翻译表见设计稿 §5.3）。
- *
- * ⚠️ overlay 必须与 ctx 同形状（实例 → 条目），否则子 Agent 的在飞内容就没法嵌进上级的
- * delegate 块里，只能再写一套拼树逻辑 —— 那正是旧设计病根的复现。
- */
-function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
-	const getInstanceMessagesByIdSafe = (instanceId: string) => {
-		if (!draft.instances[instanceId]) draft.instances[instanceId] = { messages: [] };
-		return draft.instances[instanceId]!.messages;
-	};
-
-	/**
-	 * 取「当前正在写」的 assistant 条目，通常是最后一条，根据尾部情况决定是否另起一条
-	 */
-	const assistantEntry = (instanceId: string, kind: 'text' | 'toolCall'): AgentInstanceMessage => {
-		const messages = getInstanceMessagesByIdSafe(instanceId);
-		const tail = messages[messages.length - 1];
-		if (tail?.role === 'assistant') {
-			if (kind === 'toolCall') return tail;
-			if (!tail.toolCalls?.length) return tail;
-		}
-		// 尾部不是 assistant 消息，另起一条
-		messages.push({ role: 'assistant', content: '', updatedAt: Date.now() });
-		return messages[messages.length - 1]!;
-	};
-
-	/**
-	 * 工具结果按 callId 写（后到的覆盖先到的）。
-	 *
-	 * 同一个 callId 会来两次：`delegate` / `resume_*` 先发「占位」，等子实例全部终态后再来一次「终态」；
-	 * 其余工具只来一次。两次都走同一条「有则改、无则建」的分支，不必区分谁是谁。
-	 *
-	 * ⚠️ **「无则建」是正常路径，不是异常**：`tool_start` 只往 assistant 条目上挂了 `toolCalls`，overlay 里
-	 *    并没有对应的 `role:'tool'` 条目，所以第一次 `tool_end` 一定是「找不到」。
-	 *    早先这里写的是「找不到就抛错」，而 SSE 回调外面还有一层 try/catch（`agentBridge.subscribeStream`）
-	 *    把异常原样吞掉 —— 于是每条工具结果都在翻译时被丢掉，工具行一直停在「执行中…」，
-	 *    直到整轮跑完重拉 ctx（ctx 里有完整结果）才显示出来，界面上还不留任何报错。（2026-09-15）
-	 */
-	const upsertToolResult = (id: string, event: Extract<AgentStreamEvent, { type: 'tool_end' }>) => {
-		function toolOutputText(result: ToolResult): string {
-			const body = result.content ?? '';
-			if (!result.success) {
-				return `[工具执行失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
-			}
-			return body;
-		}
-
-		const messages = getInstanceMessagesByIdSafe(id);
-		const content = toolOutputText(event.result);
-		const data = { success: event.result.success, structured: event.result.structured, error: event.result.error };
-		const existing = messages.find((m) => m.role === 'tool' && m.toolCallId === event.callId);
-		if (existing) {
-			existing.content = content;
-			existing.kind = 'tool_result';
-			existing.data = data;
-			existing.updatedAt = Date.now();
-		} else {
-			messages.push({
-				role: 'tool',
-				content,
-				toolCallId: event.callId,
-				kind: 'tool_result',
-				data,
-				updatedAt: Date.now(),
-			});
-		}
-	};
-
-	// done / error 已在 handleStreamEvent 里提前返回，但这里仍要防一手类型（它们没有 agentInstanceId）
-	const instanceId = 'agentInstanceId' in event ? event.agentInstanceId ?? '' : '';
-	switch (event.type) {
-		case 'agent_start': {
-			getInstanceMessagesByIdSafe(instanceId);
-			draft.meta[instanceId] = {
-				agentInstanceId: instanceId,
-				agentId: event.agentId,
-				agentName: event.agentName,
-				parentAgentInstanceId: event.parentAgentInstanceId,
-				depth: event.depth,
-				status: 'running',
-				task: event.task,
-				startedAt: Date.now(),
-			};
-			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = instanceId;
-			// 首条 user 条目 = 该实例的任务（与 ctx 里的形态一致）
-			getInstanceMessagesByIdSafe(instanceId).push({
-				role: 'user',
-				content: event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? ''),
-				updatedAt: Date.now(),
-			});
-			break;
-		}
-		case 'text': {
-			const entry = assistantEntry(instanceId, 'text');
-			entry.content += event.chunk;
-			entry.updatedAt = Date.now();
-			break;
-		}
-		case 'reasoning': {
-			const entry = assistantEntry(instanceId, 'text');
-			entry.reasoningContent = (entry.reasoningContent ?? '') + event.chunk;
-			entry.updatedAt = Date.now();
-			break;
-		}
-		case 'tool_start': {
-			const entry = assistantEntry(instanceId, 'toolCall');
-			if (!entry.toolCalls) entry.toolCalls = [];
-			entry.toolCalls.push({
-				id: event.callId,
-				type: 'function',
-				function: { name: event.toolName, arguments: JSON.stringify(event.args ?? {}) },
-			});
-			entry.updatedAt = Date.now();
-			break;
-		}
-		case 'tool_end': {
-			// ask_user 的「工具块」不渲染（它渲染成提问卡片），所以不必进 overlay
-			if (event.toolName !== 'ask_user') upsertToolResult(instanceId, event);
-			break;
-		}
-		case 'usage': {
-			// 只记单次调用（scope='call'）；agentLoop 的「本段小计」是派生值，不落任何一处。
-			if (event.scope === 'loop') break;
-			const data: UsageEntry = {
-				seq: event.seq ?? 0,
-				round: event.round,
-				purpose: event.purpose ?? 'agent_loop',
-				model: event.model ?? '',
-				logId: event.logId,
-				input: event.tokens.input,
-				output: event.tokens.output,
-				cached: event.tokens.inputCached,
-				total: event.tokens.total,
-				durationMs: event.durationMs ?? 0,
-			};
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			if (event.purpose === 'reflection') {
-				const refl = messages.findLast((m) => m.kind === 'reflection');
-				if (refl) {
-					refl.usages = [...(refl.usages ?? []), data];
-					refl.updatedAt = Date.now();
-					break;
-				}
-			}
-			const entry = assistantEntry(instanceId, 'text');
-			entry.usages = [...(entry.usages ?? []), data];
-			entry.updatedAt = Date.now();
-			break;
-		}
-		case 'reflection_start': {
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			messages.push({
-				role: 'system',
-				content: '',
-				uiOnly: true,
-				kind: 'reflection',
-				data: { remaining: event.remaining },
-				updatedAt: Date.now(),
-			});
-			break;
-		}
-		case 'reflection_chunk': {
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			const refl = messages.findLast((m) => m.kind === 'reflection');
-			if (refl) {
-				refl.content += event.chunk;
-				refl.updatedAt = Date.now();
-			}
-			break;
-		}
-		case 'client_tool_call': {
-			getInstanceMessagesByIdSafe(instanceId).push({
-				role: 'system',
-				content: '',
-				uiOnly: true,
-				kind: 'ask_user_state',
-				data: { callId: event.callId, status: 'waiting' },
-				updatedAt: Date.now(),
-			});
-			break;
-		}
-		case 'agent_end': {
-			const meta = draft.meta[instanceId];
-			if (meta) meta.status = event.status;
-			break;
-		}
-		default:
-			break;
-	}
-}
-
-// #endregion
-
 // #region ask_user 组件
 
 /**
@@ -500,23 +303,42 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 
 export default function ChatView() {
 	const [inputText, setInputText] = createSignal('');
-	const [isGenerating, setIsGenerating] = createSignal(false);
-	const [runError, setRunError] = createSignal<string | null>(null);	// 本轮 run 的即时错误（重拉 ctx 后由实例的 interruptReason 接管显示）
-	const [taskList, setTaskList] = createSignal('');	// 任务清单面板
+	/**
+	 * 「当前查看的会话是不是正在跑」—— 直接从后端下发的三态 runStatus 派生，不再有本地镜像。
+	 *
+	 * ⚠️ 为什么不需要 effect 对齐：runStatus 是 per-conversation 的，SSE 订阅跟着**会话**走
+	 *   （runController.ts）而不是跟着视图走，切走再回来时 SSE 已经把新鲜值刷进 store，
+	 *   直接读即可 —— 不再需要「切了才回刷、不切不刷」那套补丁。
+	 *   - 'running'  → 正在产出（输入区禁用、显示「运行中」）
+	 *   - 'waiting' → 等 ask_user（输入区可用、显示「等待输入」）
+	 *   - 其它       → 空闲
+	 */
+	const isGenerating = createMemo(() => getActiveConversation()?.runStatus === 'running');
+	/** 本轮 run 的即时错误（按会话隔离在全局 store，重拉 ctx 后由实例的 interruptReason 接管显示） */
+	const runError = createMemo(() => getRunError(getActiveConversation()?.id ?? ''));
+	/** 当前查看的会话的运行状态原始值（三态），供会话头部按状态显示不同文案 */
+	const runStatus = () => getActiveConversation()?.runStatus;
+	/** run 是否还活着（running 或 waiting）—— 侧边栏点亮 / 停止入口共用这个判据 */
+	const isAlive = createMemo(() => {
+		const s = runStatus();
+		return s === 'running' || s === 'waiting';
+	});
+	/** 任务清单面板的内容（按会话隔离在 store，避免别的会话跑完把清单写进当前视图） */
+	const taskList = () => getTaskList(appState.activeConversationId ?? '');
 	const [taskListOpen, setTaskListOpen] = createSignal(false);
-	const [overlay, setOverlay] = createStore<OverlayCtx>(createEmptyOverlay());	// 在飞 overlay：SSE 事件翻译成的「ctx 形状的增量」
-	const [streamTick, setStreamTick] = createSignal(0);	// 流式期间的滚动触发（overlay 是 store，深度访问不好追踪，用一个计数器带一下）
-	let unsubscribeFn: (() => void) | null = null;	// 取消订阅函数
 
 	/** 界面内容：已提交的 ctx + 在飞的 overlay，共用同一个投影函数 */
 	const ENABLE_RENDER_TREE_DIFF = false;
 	let prevTree: RenderAgentNode | null = null;
 	const renderTree = createMemo(() => {
 		const conversation = getActiveConversation();
-		streamTick();
-		// overlay 只属于**它正在跑的那个会话**：切走之后不能再拿它去合成别的会话，
-		// 否则「上一轮还在跑的时候点了新建会话」会把上一个会话的在飞内容搬进新会话（看起来就像「没切过去、还停在那条会话上」）。
-		const overlayForActive = overlay.conversationId === appState.activeConversationId ? overlay : undefined;
+		// 在飞内容的「版本号」：overlay 是 store，但这里只取到 proxy 引用、访问不到具体属性，
+		// 建立不了依赖 ⇒ 得靠这个按会话隔离的计数器把重算推起来（见 store 的 streamTickState）。
+		getStreamTick(appState.activeConversationId ?? '');
+		// overlay 现在是**按会话隔离的全局 store**（store 的 overlayState[convId]），
+		// 只取当前查看的会话那份 —— 其它会话的在飞内容不会串进来，
+		// 也不会被「给别的会话开一轮 run」清空。
+		const overlayForActive = getOverlay(appState.activeConversationId ?? '');
 		const newTree = foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlayForActive));
 		const result = ENABLE_RENDER_TREE_DIFF ? diffRenderTree(prevTree, newTree) : newTree;
 		prevTree = result;
@@ -544,22 +366,12 @@ export default function ChatView() {
 	const conversationTitle = () => getActiveConversation()?.title || '新任务';
 
 	/**
-	 * 会话头部面包屑的第二段：当前工作目录的 git 状态。
-	 * 不是 git 仓库 / 「本地」分组（没有 path）时为 null，那一段直接不显示。
+	 * 会话头部面包屑的第二段：当前工作目录的「额外信息」。
+	 * ⚠️ 这是**字符串**（ConversationMeta.extraInfo），由后端经列表接口给，
+	 *   前端不直接读目标目录 —— 当前实现是 `branch @ shortCommit`，
+	 *   没内容时是 undefined，那一段面包屑直接不显示。
 	 */
-	const [gitInfo, setGitInfo] = createSignal<GitInfo | null>(null);
-	createEffect(() => {
-		const folderId = getActiveConversation()?.folderId;
-		const path = appState.folders.find((f) => f.id === folderId)?.path;
-		setGitInfo(null);
-		if (!path) return;
-		void getGitInfo(path).then((info) => setGitInfo(info));
-	});
-
-	// 把「有没有 run 在飞」和「停止入口」交给外壳（标题栏菜单 / 全局快捷键 / 侧边栏状态点）
-	createEffect(() => mirrorRunning(isGenerating()));
-	onMount(() => registerStop(() => void handleStop()));
-	onCleanup(() => registerStop(null));
+	const extraInfo = () => getActiveConversation()?.extraInfo;
 
 	const parseTaskListLines = (text: string) => text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
 
@@ -770,7 +582,7 @@ export default function ChatView() {
 		createEffect(() => {
 			getActiveConversation();
 			taskList();
-			streamTick();
+			getStreamTick(appState.activeConversationId ?? '');
 			const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 			queueMicrotask(() => {
 				if (distanceFromBottom <= SCROLL_TO_BOTTOM_THRESHOLD) {
@@ -778,80 +590,6 @@ export default function ChatView() {
 				}
 			});
 		});
-	};
-
-	// #endregion
-
-	// #region 一轮 run 的开始与结束
-
-	// 生命周期只有两个动作：
-	//   beginRun —— 清空 overlay（清掉上一轮的残留）后发请求
-	//   endRun   —— 重拉 ctx（拿「已提交」的内容）+ 清空 overlay
-	// 中间不重拉：§6 决定了「在飞」的内容不在 ctx 里，靠 overlay 呈现即可。
-
-	const beginRun = async (convId: string) => {
-		if (unsubscribeFn) {
-			unsubscribeFn();
-			unsubscribeFn = null;
-		}
-		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
-		openOverrides.clear();
-		prevTree = null;
-		setRunError(null);
-		setOverlay(createEmptyOverlay(convId, appState.currentModeId));
-		setStreamTick((v) => v + 1);
-		// ⚠️ 必须**等 SSE 连接真的建立**再返回：EventSource 建连要几百 ms，而调用方紧接着就发 run，后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，会永久丢失。
-		// 丢了 `agent_start` 的后果：overlay 没有 `rootAgentInstanceId`，在飞期间`foldCtxToRenderTree()` 找不到根实例直接返回 null ⇒ 界面上既看不到用户那条消息、也看不到任何内容（2026-09-15 实测：overlay 里只有后续事件，整轮一片空白）。
-		// 超时兜底：连不上也照常返回，宁可丢事件也不能把「发送」卡死。
-		await new Promise<void>((resolve) => {
-			const timer = setTimeout(resolve, 2000);
-			unsubscribeFn = agentBridge.subscribeStream(
-				convId,
-				(event) => handleStreamEvent(convId, event),
-				() => {
-					clearTimeout(timer);
-					resolve();
-				},
-			);
-		});
-	};
-
-	const endRun = async (convId: string) => {
-		setIsGenerating(false);
-		if (unsubscribeFn) {
-			unsubscribeFn();
-			unsubscribeFn = null;
-		}
-		await loadConversationCtx(convId, true);
-		setOverlay(createEmptyOverlay(convId, appState.currentModeId));
-	};
-
-	// #endregion
-
-	// #region 流式事件处理
-
-	/** 刷新任务清单面板 */
-	const refreshTaskList = async (convId: string) => {
-		const list = await agentBridge.getTaskList(convId);
-		setTaskList(list);
-	};
-
-	const handleStreamEvent = (convId: string, event: AgentStreamEvent) => {
-		if (event.type === 'done') {
-			void refreshTaskList(convId);
-			void endRun(convId);
-			return;
-		}
-		if (event.type === 'error') {
-			setRunError(event.message);
-			return;
-		}
-		// ask_user 挂起：本轮还没结束（实例在等用户），只是让输入框可用，订阅与 overlay 都留着
-		if (event.type === 'client_tool_call') {
-			setIsGenerating(false);
-		}
-		setOverlay(produce((draft) => applyEvent(draft, event)));
-		setStreamTick((v) => v + 1);
 	};
 
 	// #endregion
@@ -905,68 +643,24 @@ export default function ChatView() {
 		// 由后端回退到 process.cwd()。文件夹改过之后，下一轮 run 自动用新目录。
 		const runningDir = appState.folders.find((f) => f.id === conv.folderId)?.path;
 
-		setInputText('');
-		setIsGenerating(true);
-		await beginRun(convId);
-
-		try {
-			const result = await agentBridge.runAgent({
-				conversationId: convId,
-				userMessage: text,
-				modeId: appState.currentModeId,
-				runningDir,
-				model: modelConfig,
-			});
-			if (!result.ok) {
-				setRunError(`❌ Agent 错误: ${result.error}`);
-				await endRun(convId);
-			}
-		} catch (err: any) {
-			setRunError(`❌ 调用失败: ${err?.message || String(err)}`);
-			await endRun(convId);
-		}
+	setInputText('');
+	// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
+	openOverrides.clear();
+	prevTree = null;
+	// 「发起 / 停止 / 回答」全在 runController 里，这里只负责把 UI 上的东西（输入文本、模型配置、工作目录）交给它
+	void startRun({
+		conversationId: convId,
+		userMessage: text,
+		modeId: appState.currentModeId,
+		runningDir,
+		model: modelConfig,
+	});
 	};
 
 	const handleKeyDown = (e: KeyboardEvent) => {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			void handleSend();
-		}
-	};
-
-	const handleStop = async () => {
-		const conv = getActiveConversation();
-		if (conv) {
-			await agentBridge.cancelAgent(conv.id);
-			await endRun(conv.id);
-		} else {
-			setIsGenerating(false);
-		}
-	};
-
-	/** 回答提问卡片：本地先把状态改成已回答，再 POST 续接（订阅还开着，后续输出继续进 overlay） */
-	const handleAskUserCardSubmit = async (convId: string, callId: string, text: string) => {
-		const skipped = text === '用户已跳过此提问';
-		setOverlay(produce((draft) => {
-			// 在 overlay 里把某次提问的状态改掉（回答 / 跳过）
-			for (const instance of Object.values(draft.instances)) {
-				const entry = instance.messages.find(
-					(m) => m.kind === 'ask_user_state' && (m.data as { callId?: string })?.callId === callId,
-				);
-				if (entry) {
-					entry.data = { callId, status: skipped ? 'skipped' : 'answered', answer: text };
-					entry.updatedAt = Date.now();
-					return;
-				}
-			}
-		}));
-		if (skipped) return;
-
-		setIsGenerating(true);
-		const result = await actions.answerToolCall(convId, callId, text);
-		if (!result.ok) {
-			setRunError(`回答提交失败: ${result.error}`);
-			await endRun(convId);
 		}
 	};
 
@@ -1061,7 +755,7 @@ export default function ChatView() {
 					return (
 						<AskUserCard
 							block={tool.ask}
-							onSubmit={(text) => void handleAskUserCardSubmit(convId, tool.callId, text)}
+							onSubmit={(text) => void answerAskUser(convId, tool.callId, text)}
 						/>
 					);
 				}
@@ -1311,14 +1005,6 @@ export default function ChatView() {
 
 	// #endregion
 
-	// #region 生命周期
-
-	onCleanup(() => {
-		if (unsubscribeFn) unsubscribeFn();
-	});
-
-	// #endregion
-
 	return (
 		<div class={styles['main-content']}>
 			{/* 会话头部：标题 + 面包屑 + 状态 / 操作 */}
@@ -1327,22 +1013,21 @@ export default function ChatView() {
 					<div class={styles['session-title']}>{conversationTitle()}</div>
 					<div class={styles['session-breadcrumb']}>
 						<span class={styles['breadcrumb-item']}>{currentFolderDisplay()}</span>
-						<Show when={gitInfo()}>
+						<Show when={extraInfo()}>
 							<span class={styles['breadcrumb-sep']}>/</span>
-							<span class={styles['breadcrumb-item']}>branch {gitInfo()!.branch}</span>
-							<span class={styles['breadcrumb-sep']}>/</span>
-							<span class={styles['breadcrumb-item']}>{gitInfo()!.shortCommit}</span>
+							<span class={styles['breadcrumb-item']}>{extraInfo()}</span>
 						</Show>
 					</div>
 				</div>
 
 				<div class={styles['session-actions']}>
 					<Show
-						when={isGenerating()}
+						when={runStatus() === 'running'}
 						fallback={
-							<Show when={renderTree()}>
-								<span class={styles['session-status']}>等待输入</span>
-							</Show>
+									<Show when={runStatus() === 'waiting'}>
+										{/* 等客户端响应（ask_user 等）：跟侧边栏的闪烁同一个语义 —— 需要你动手，所以是绿的 */}
+										<span class={`${styles['session-status']} ${styles['is-waiting']}`}>等待输入</span>
+									</Show>
 						}
 					>
 						<span class={`${styles['session-status']} ${styles['is-running']}`}>
@@ -1351,8 +1036,8 @@ export default function ChatView() {
 						</span>
 					</Show>
 
-					<Show when={isGenerating()}>
-						<button class={styles['session-btn']} onclick={() => void handleStop()}>
+					<Show when={isAlive()}>
+						<button class={styles['session-btn']} onclick={() => void stopRun()}>
 							停止
 						</button>
 					</Show>
@@ -1539,7 +1224,7 @@ export default function ChatView() {
 							<button
 								class={styles['input-stop-btn']}
 								title="停止生成"
-								onclick={() => void handleStop()}
+								onclick={() => void stopRun()}
 							>
 								<StopIcon />
 							</button>

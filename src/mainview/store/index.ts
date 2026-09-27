@@ -12,9 +12,10 @@
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/localBridge';
 import * as agentBridge from '@mainview/agentBridge';
-import type { AgentCtx, ConversationMeta, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
+import { createEmptyOverlay, type OverlayCtx } from '@mainview/projection';
 
 // 转发共享类型（UI 侧统一从 store 引入，避免到处写相对路径）
 export type { ModelProvider, ModelProviderModel, ModeSummary, AgentStreamEvent } from '@shared/agent';
@@ -54,6 +55,13 @@ export type UIState = {
 	settingsOpen: boolean;
 	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 	viewMode: ViewMode;
+	/**
+	 * 「跑完了但你还没看」的会话 id（侧边栏绿点，相当于未读标记）。
+	 *
+	 * ⚠️ 纯前端状态（localStorage），不回写后端：后端不知道用户看没看。
+	 *   run 结束时由 `endRun()` 加入（用户正看着这个会话则不加），点开该会话时移除。
+	 */
+	unreadConversationIds: string[];
 };
 
 export type AppState = {
@@ -96,6 +104,7 @@ const initialUI: UIState = {
 	settingsOpen: false,
 	activeSettingsTab: '通用',
 	viewMode: 'chat',
+	unreadConversationIds: [],
 };
 
 export const defaultState: AppState = {
@@ -128,6 +137,97 @@ export const defaultState: AppState = {
 
 export const [state, setState] = createStore<AppState>(defaultState);
 
+// #region 全局「在飞」overlay 与即时错误（按会话隔离）
+
+/**
+ * ⚠️ **为什么从 ChatView 的组件局部 store 移出来**：
+ * ChatView 是单实例常驻组件（App.tsx:115），切会话不卸载。原来 overlay 存在组件里，
+ * 一旦「A 在跑时切到 B 并给 B 发一轮」，beginRun(B) 会把 overlay 整个清成 B 的空壳，
+ * 之后 A 的 SSE 事件再进来就写到了 B 的空壳上（agentInstanceId 串场）；
+ * 等切回 A 时 A 的在飞内容已经没了，而 A 还在跑 —— 表现就是「切走再回来，running 状态
+ * 和在飞内容一起丢」。
+ *
+ * 放成**按 conversationId 索引的全局 store** 后：每个会话自己的 overlay 互不干扰，
+ * 生命周期 = 应用生命周期（轮 run 开始时清空、结束时清空），跟「当前看谁」无关。
+ * SSE 订阅也是同一个道理 —— 见 `runController.ts`。
+ */
+const [overlayState, setOverlayState] = createStore<Record<string, OverlayCtx>>({});
+const [runErrorState, setRunErrorState] = createStore<Record<string, string | null>>({});
+/**
+ * 每个会话的「在飞内容版本号」。
+ *
+ * ⚠️ 为什么需要一个计数器：overlay 是 store，但渲染时只取到 proxy 引用（`getOverlay(id)`），
+ *   没有访问具体属性 ⇒ 建立不了依赖，`produce` 之后的深层变更推不动 `renderTree` 这个 memo。
+ *   （`renderTree` 每次 fold 出的都是**新对象**，Solid 的 `<For>` 按引用比对，光靠它也不行。）
+ *
+ * 以前它是 ChatView 的本地 signal，由事件处理器在「事件属于当前查看的会话」时 +1 —— 方向反了：
+ *   视图不该替 controller 打拍子。改成按会话隔离后，controller 只管给对应会话 +1，
+ *   谁在看谁来读（只看当前那份，别的会话在飞也不会把当前消息树拆了重搭）。
+ */
+const [streamTickState, setStreamTickState] = createStore<Record<string, number>>({});
+/** 任务清单面板的内容，同样按会话隔离（跑完的会话不该把清单写进当前视图） */
+const [taskListState, setTaskListState] = createStore<Record<string, string>>({});
+
+export function getOverlay(conversationId: string): OverlayCtx | undefined {
+	return overlayState[conversationId];
+}
+
+export function getRunError(conversationId: string): string | null | undefined {
+	return runErrorState[conversationId];
+}
+
+export function getStreamTick(conversationId: string): number {
+	return streamTickState[conversationId] ?? 0;
+}
+
+export function getTaskList(conversationId: string): string {
+	return taskListState[conversationId] ?? '';
+}
+
+export const overlayActions = {
+	/** 一轮 run 开始 / 结束时清空该会话的在飞 overlay */
+	clear(conversationId: string) {
+		setOverlayState(conversationId, createEmptyOverlay(conversationId, state.currentModeId));
+	},
+	/** SSE 事件进来：把事件翻译成 ctx 形状的增量，合进该会话的 overlay */
+	produce(conversationId: string, fn: (draft: OverlayCtx) => void) {
+		setOverlayState(
+			produce((draft) => {
+				if (!draft[conversationId]) draft[conversationId] = createEmptyOverlay(conversationId, state.currentModeId);
+				fn(draft[conversationId]);
+			}),
+		);
+	},
+};
+
+export const runErrorActions = {
+	set(conversationId: string, message: string | null) {
+		setRunErrorState(conversationId, message);
+	},
+	clear(conversationId: string) {
+		setRunErrorState(conversationId, null);
+	},
+};
+
+export const streamTickActions = {
+	/** 该会话的在飞内容又变了一批（由 runController 在每次事件后调用） */
+	bump(conversationId: string) {
+		setStreamTickState(conversationId, (v) => (v ?? 0) + 1);
+	},
+	clear(conversationId: string) {
+		setStreamTickState(conversationId, 0);
+	},
+};
+
+export const taskListActions = {
+	set(conversationId: string, text: string) {
+		setTaskListState(conversationId, text);
+	},
+	clear(conversationId: string) {
+		setTaskListState(conversationId, '');
+	},
+};
+
 // #endregion
 
 // #region 前端设置持久化（localStorage）
@@ -141,6 +241,7 @@ function saveLocalSettings() {
 		accent: state.ui.accent,
 		conversationSort: state.ui.conversationSort,
 		viewMode: state.ui.viewMode,
+		unreadConversationIds: state.ui.unreadConversationIds,
 	});
 	localSettings.set('themeMode', state.themeMode);
 	localSettings.set('currentModeId', state.currentModeId);
@@ -263,9 +364,46 @@ export async function refreshConversationMeta(conversationId: string): Promise<v
 		produce((convs) => {
 			const conv = convs.find((c) => c.id === conversationId);
 			// 只覆盖 meta 字段：`agentCtx` 不在 ConversationMeta 里，不会被这次刷新冲掉
-			if (conv) Object.assign(conv, meta);
+			if (conv) {
+				Object.assign(conv, meta);
+				// ⚠️ `runStatus` 必须**单独赋一次**：后端只在会话「还活着」时才下发它
+				//   （stopped 时是 undefined），而 JSON 序列化会把 undefined 这个键整个丢掉 ——
+				//   `Object.assign` 于是压根不碰旧值，前端一直停在 running，直到刷新页面重建列表才恢复。
+				conv.runStatus = meta.runStatus;
+			}
 		}),
 	);
+}
+
+// #region 未读标记（纯前端：跑完了但你还没点开看）
+
+/**
+ * 侧边栏绿点的两个动作 —— 语义就是「未读 / 已读」。
+ *
+ * 什么时候标未读：一轮 run 结束时，如果**用户当时不在看这个会话**（`endRun()` 判断），
+ * 就把它记下来；点开该会话即已读。后端不知道用户看没看，所以这份标记只进 localStorage。
+ *
+ * ⚠️ 它跟运行态（runStatus）是**正交**的两件事：运行态是后端给的「现在在不在跑」，
+ *   未读是前端的「跑完了你还没看」。会话在跑时不显示绿点（那时显示的是主题色 / 闪烁）。
+ */
+export function markConversationUnread(conversationId: string): void {
+	const list = state.ui.unreadConversationIds;
+	if (list.includes(conversationId)) return;
+	setState('ui', 'unreadConversationIds', [...list, conversationId]);
+	saveLocalSettings();
+}
+
+/** 点开（或本来就在这个会话）→ 已读，绿点消失 */
+export function markConversationRead(conversationId: string): void {
+	const list = state.ui.unreadConversationIds;
+	if (!list.includes(conversationId)) return;
+	setState('ui', 'unreadConversationIds', list.filter((id) => id !== conversationId));
+	saveLocalSettings();
+}
+
+/** 这个会话是不是「跑完了还没看」 */
+export function isConversationUnread(conversationId: string): boolean {
+	return state.ui.unreadConversationIds.includes(conversationId);
 }
 
 // #endregion
@@ -342,6 +480,9 @@ export const actions = {
 				modeId: conv.modeId,
 				createdAt: conv.createdAt,
 				updatedAt: conv.updatedAt,
+				// ⚠️ extraInfo / runStatus 都是后端现算的运行态（不落盘），创建接口的返回值里已经带了
+				extraInfo: conv.extraInfo,
+				runStatus: conv.runStatus,
 			};
 			setState('conversations', (prev) => [uiConv, ...prev]);
 			setState('activeConversationId', conv.id);
@@ -354,6 +495,7 @@ export const actions = {
 		if (state.activeConversationId === id) {
 			setState('activeConversationId', null);
 		}
+		markConversationRead(id);	// 会话都没了，别把它的未读标记留在 localStorage 里
 		await agentBridge.deleteConversation(id);
 	},
 	async renameConversation(id: string, title: string) {
@@ -381,6 +523,8 @@ export const actions = {
 			}),
 		);
 		void agentBridge.updateConversation(id, { folderId });
+		// ⚠️ 换了工作目录后 extraInfo（branch @ commit）要跟着刷新，否则面包屑还停在旧目录的 git 状态
+		void refreshConversationMeta(id);
 	},
 	/**
 	 * 写入某会话的 ctx 快照（唯一的 ctx 写入口）。
@@ -401,13 +545,33 @@ export const actions = {
 			'conversations',
 			produce((list) => {
 				const conversation = list.find((c) => c.id === conversationId);
-				if (conversation) conversation.agentCtx = ctx;
+		if (conversation) conversation.agentCtx = ctx;
+		}),
+	);
+	},
+
+	/**
+	 * 实时刷新某个会话的运行状态（三态）。
+	 *
+	 * ⚠️ 唯一调用方是 `runController`：后端只在列表刷新时才下发
+	 *   runStatus，在飞期间这份靠 SSE 事件实时刷新。因为订阅跟着**会话**走、不跟着视图走，
+	 *   「切走再回来」时回来的已经是新鲜值，不会再出现「还在跑却显示不在运行」。
+	 * 后端那份会在下次列表刷新时覆盖回来（`refreshConversationMeta` 里 Object.assign）。
+	 */
+	setConversationRunStatus(conversationId: string, status: ConversationRunStatus) {
+	 setState(
+			'conversations',
+			produce((list) => {
+				const conversation = list.find((c) => c.id === conversationId);
+				if (conversation) conversation.runStatus = status;
 			}),
 		);
 	},
 
 	setActiveConversation(id: string | null) {
 		setState('activeConversationId', id);
+		// 点开 = 已读：清掉这个会话的未读绿点（未读只是前端标记，不回写后端）
+		if (id) markConversationRead(id);
 		// 按需加载 ctx（界面唯一的数据源）
 		if (id) void loadConversationCtx(id);
 		saveLocalSettings();
@@ -608,6 +772,18 @@ export const actions = {
 export function getActiveConversation(): UIConversation | null {
 	if (!state.activeConversationId) return null;
 	return state.conversations.find((c) => c.id === state.activeConversationId) ?? null;
+}
+
+/**
+ * 一个会话的 run 是否**还活着**（running 或 waiting）。
+ *
+ * 侧边栏点亮、「停止运行」入口、Esc 快捷键都共用这个判据 ——
+ * 不区分「正在产出」和「等待客户端」，因为两种状态下用户都可能想停掉它。
+ */
+export function isConversationAlive(conv: UIConversation | null): boolean {
+	if (!conv) return false;
+	const s = conv.runStatus;
+	return s === 'running' || s === 'waiting';
 }
 
 export function getProviderById(id: string): ModelProvider | undefined {

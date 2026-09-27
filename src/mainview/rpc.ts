@@ -1,21 +1,23 @@
-/* ==========================================================================
-   渲染进程 RPC 封装 — MindTheGap-Harness（精简版）
-
-   重构后：RPC 只保留对话框、Shell、环境信息、日志。
-   Agent 相关、文件操作、AppData 全部移除。
-   ========================================================================== */
+/**
+ * 渲染进程 RPC 封装 — MindTheGap-Harness（精简版）
+ *
+ * 重构后：RPC 只保留对话框、Shell、环境信息、日志。
+ * Agent 相关、文件操作、AppData 全部移除。
+ */
 
 import type { AppRPC, RpcResult } from '../shared/rpc';
 import { Electroview } from 'electrobun/view';
 
-/* ---------- 环境检测 ---------- */
+// #region 环境检测
 
 export function isElectrobunEnv(): boolean {
 	return typeof window !== 'undefined' &&
 		typeof (window as any).__electrobun !== 'undefined';
 }
 
-/* ---------- Mock 实现（浏览器回退） ---------- */
+// #endregion
+
+// #region Mock 实现（浏览器回退）
 
 const mockHandlers = {
 	dialogOpen: (): RpcResult<string[]> =>
@@ -36,8 +38,7 @@ const mockHandlers = {
 			appVersion: '0.1.0',
 		},
 	}),
-	// 浏览器里读不到本地 git，返回 null 即可（界面会隐藏面包屑那一段）
-	gitInfo: (): RpcResult<null> => ({ ok: true, data: null }),
+	// 浏览器里读不到本地 git：面包屑的 extraInfo 由后端经 HTTP 给，这里无需实现
 	// 浏览器里没有原生窗口，标题栏也不会渲染，这里只需不报错即可
 	windowMinimize: (): RpcResult<void> => ({ ok: true, data: undefined }),
 	windowToggleMaximize: (): RpcResult<boolean> => ({ ok: true, data: false }),
@@ -45,7 +46,9 @@ const mockHandlers = {
 	windowIsMaximized: (): RpcResult<boolean> => ({ ok: true, data: false }),
 };
 
-/* ---------- 类型化的 RPC 接口 ---------- */
+// #endregion
+
+// #region 类型化的 RPC 接口
 
 /** params 允许为 undefined 时（如 envInfo / windowMinimize），调用方可以整体省略实参 */
 type RequestFn<P, R> = undefined extends P
@@ -59,7 +62,6 @@ interface RpcApi {
 		shellOpenPath: RequestFn<{ path: string }, RpcResult<void>>;
 		shellOpenExternal: RequestFn<{ url: string }, RpcResult<void>>;
 		envInfo: RequestFn<undefined, RpcResult<any>>;
-		gitInfo: RequestFn<{ path: string }, RpcResult<{ branch: string; shortCommit: string } | null>>;
 		windowMinimize: RequestFn<undefined, RpcResult<void>>;
 		windowToggleMaximize: RequestFn<undefined, RpcResult<boolean>>;
 		windowClose: RequestFn<undefined, RpcResult<void>>;
@@ -70,7 +72,9 @@ interface RpcApi {
 	};
 }
 
-/* ---------- 初始化 RPC ---------- */
+// #endregion
+
+// #region 初始化 RPC
 
 let _rpc: RpcApi | null = null;
 
@@ -137,7 +141,9 @@ export function getRpc(): RpcApi {
 	return _rpc;
 }
 
-/* ---------- 便捷导出 ---------- */
+// #endregion
+
+// #region 便捷导出
 
 export const rpc: RpcApi = new Proxy({} as RpcApi, {
 	get(_target, prop) {

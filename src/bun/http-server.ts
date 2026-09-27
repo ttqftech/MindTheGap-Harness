@@ -1,12 +1,12 @@
-/* ==========================================================================
-   Agent HTTP Server — MindTheGap-Harness
-
-   所有 Agent 相关操作走 HTTP（对齐 FFBox 的 serviceBridge）。
-   Agent Service 可脱离 electrobun 独立运行。
-
-   v2 的接口见 docs/Agent架构-v2设计.md §12：
-   modes / agent/answer / plugins/reload / requests / tasklist
-   ========================================================================== */
+/**
+ * Agent HTTP Server — MindTheGap-Harness
+ *
+ * 所有 Agent 相关操作走 HTTP（对齐 FFBox 的 serviceBridge）。
+ * Agent Service 可脱离 electrobun 独立运行。
+ *
+ * v2 的接口见 docs/Agent架构-v2设计.md §12：
+ * modes / agent/answer / plugins/reload / requests / tasklist
+ */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, McpServerConfig, ModeDefinition, ModeSummary } from '@shared/agent';
@@ -18,7 +18,7 @@ import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
-import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, snapshot } from './storage';
+import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot } from './storage';
 import { logMsg } from './utils';
 
 export const HTTP_PORT = 18999;
@@ -137,8 +137,8 @@ async function handleAgentRun(params: AgentRunRequest) {
 	const { conversationId } = params;
 
 	const existing = activeRunners.get(conversationId);
-	if (existing?.isRunning()) {
-		// 同一个会话不允许并行两轮 run；旧的那轮先停掉
+	// ⚠️ 判据是「run 还活着」（running 或 waiting），不是「正在产出」：用户给**同一个会话**再发一条消息时，即使上一轮还挂在 ask_user 上等回答，也要先停掉旧的那轮。
+	if (existing && existing.runStatus() !== 'stopped') {
 		existing.cancel();
 		activeRunners.delete(conversationId);
 	}
@@ -409,14 +409,27 @@ export function startHttpServer(options: { channel?: string } = {}) {
 			// #region 会话管理
 
 			if (req.method === 'GET' && path === '/api/conversations') {
-				sendJson(res, 200, { conversations: conversationMetas() });
+			// ⚠️ `runStatus` 是**运行态**（后端 activeRunners 里有没有这个会话 + 根实例 status），
+			//   不落盘、不进 ctx，所以每次列表请求都现算一次 —— 成本就是遍历 activeRunners（通常 0~1 个）。
+			// ⚠️ 三态：running / waiting 都算「活着」（侧边栏要点亮），stopped / undefined 不亮。
+			const aliveIds = new Set<string>();
+			for (const [id, runner] of activeRunners) if (runner.runStatus() !== 'stopped') aliveIds.add(id);
+				sendJson(res, 200, {
+					conversations: conversationMetas().map((meta) => ({
+						...meta,
+						runStatus: aliveIds.has(meta.id) ? (activeRunners.get(meta.id)!.runStatus()) : undefined,
+					})),
+				});
 				return;
 			}
 
 			if (req.method === 'POST' && path === '/api/conversations') {
 				const body = await readBody(req);
 				const params = JSON.parse(body || '{}');
-				sendJson(res, 200, createConversation(params));
+				const conversation = createConversation(params);
+				// ⚠️ extraInfo 是运行时计算（不落盘），创建接口的返回值里也现算一次，
+				//   否则「刚建好的会话」要等到下次列表刷新才能在面包屑里看到 branch @ commit。
+				sendJson(res, 200, { ...conversation, extraInfo: getFolderExtraInfo(conversation.folderId) });
 				return;
 			}
 
@@ -516,7 +529,8 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				// 运行期间禁止切换：它改的是「下一次 LLM 请求走谁」，中途改会让同一个 run 混入两种响应。
 				// 前端也会把开关禁用，这里是兜底（headless 调用同样受保护）。
 				for (const runner of activeRunners.values()) {
-					if (runner.isRunning()) {
+					// running 或 waiting 都算「有 run 在飞」：ask_user 挂起时也禁止切换，否则同一个 run 会混入两种响应。
+					if (runner.runStatus() !== 'stopped') {
 						sendJson(res, 409, { ok: false, error: 'Agent 正在运行，等它结束再切换 mock' });
 						return;
 					}

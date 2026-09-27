@@ -206,7 +206,7 @@
     background-color: var(--bg-active);
 }
 
-/* 状态标记：默认灰条，本轮在飞时点亮成强调色 */
+/* 状态标记：默认灰条；三种点亮形态见下（running 常亮主题色 / waiting 闪烁 / unread 绿色常亮） */
 .tree-item-marker {
     width: 3px;
     height: 14px;
@@ -214,8 +214,31 @@
     flex-shrink: 0;
     background-color: var(--text-disabled);
 }
+
+/* 正在产出：主题色 */
 .tree-item.is-running .tree-item-marker {
     background-color: var(--accent);
+}
+
+/* 跑完了但你还没点开看：绿色（= 未读），点开即清 */
+.tree-item.is-unread .tree-item-marker {
+    background-color: var(--success);
+}
+
+/*
+ * 等客户端响应（ask_user 提问、将来的沙箱确认等）：主题色 → 灭 → 绿 → 灭 循环。
+ * ⚠️ `steps(1, end)` 是刻意的：不加它颜色会在关键帧之间**渐变**，看起来是「呼吸」而不是「闪灯」。
+ */
+.tree-item.is-waiting .tree-item-marker {
+    animation: marker-waiting 1.8s steps(1, end) infinite;
+}
+
+@keyframes marker-waiting {
+    0% { background-color: var(--accent); }
+    30% { background-color: var(--text-disabled); }
+    55% { background-color: var(--success); }
+    80% { background-color: var(--text-disabled); }
+    100% { background-color: var(--accent); }
 }
 
 .tree-item-title {

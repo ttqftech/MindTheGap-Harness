@@ -91,6 +91,13 @@
     background-color: var(--accent-soft);
 }
 
+/* 等客户端响应：跟侧边栏闪烁里的绿色同一个语义（需要用户动手） */
+.session-status.is-waiting {
+    color: var(--success);
+    border-color: var(--success-soft-border);
+    background-color: var(--success-soft);
+}
+
 .session-status-dot {
     width: 6px;
     height: 6px;

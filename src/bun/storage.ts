@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdir
 import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, McpServerConfig } from '../shared/agent';
 
 // #region 路径 & 文件读写
@@ -414,8 +415,46 @@ export const conversations: ConversationStore = new Proxy({} as ConversationStor
 });
 
 /**
+ * 会话头部面包屑的「额外信息」：当前工作目录的 `branch @ shortCommit`。
+ *
+ * 不是 git 仓库 / 没装 git / 路径不存在 → 返回 undefined（面包屑那一段直接不显示）。
+ * 「本地」分组没有 path，也是 undefined。
+ *
+ * ⚠️ 有 TTL 缓存（key = 文件夹路径）：切分支 / 新提交后最多 10 秒才会反映到面包屑上，
+ * 但每轮渲染也不至于每轮都起一次 git 进程。**不落盘** —— 这是运行时计算，不是会话数据。
+ */
+const extraInfoCache = new Map<string, { at: number; value: string | null }>();
+const EXTRA_INFO_TTL_MS = 10_000;
+
+export function getFolderExtraInfo(folderId: string): string | undefined {
+	if (!folderId || folderId === 'local') return undefined;
+	const folder = settings.folders.find((f) => f.id === folderId);
+	const cwd = folder?.path ?? folderId;
+	if (!cwd || !existsSync(cwd)) return undefined;
+
+	const hit = extraInfoCache.get(cwd);
+	if (hit && Date.now() - hit.at < EXTRA_INFO_TTL_MS) return hit.value ?? undefined;
+
+	let value: string | null = null;
+	try {
+		const run = (args: string) =>
+			execSync(`git -C "${cwd}" ${args}`, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+		const branch = run('rev-parse --abbrev-ref HEAD');
+		const shortCommit = run('rev-parse --short HEAD');
+		if (branch && shortCommit) value = `${branch} @ ${shortCommit}`;
+	} catch {
+		// 不是 git 仓库 / 没装 git：保持 null，界面上不显示
+	}
+	extraInfoCache.set(cwd, { at: Date.now(), value });
+	return value ?? undefined;
+}
+
+/**
  * 全部会话的元信息（不含 messages / agentCtx），按 updatedAt 倒序。
  * 已加载进内存的会话优先用缓存，保证还在防抖窗口里的改动也能立刻反映到列表上。
+ *
+ * ⚠️ `extraInfo` 是**运行时计算**（走 getFolderExtraInfo，有 TTL 缓存），不从 ctx.json 读，
+ * 所以列表接口每次都会现算 —— 缓存命中时几乎零开销。
  */
 export function conversationMetas(): ConversationMeta[] {
 	if (!existsSync(CONVERSATIONS_DIR)) mkdirSync(CONVERSATIONS_DIR, { recursive: true });
@@ -432,6 +471,7 @@ export function conversationMetas(): ConversationMeta[] {
 			modeId: conv.modeId,
 			createdAt: conv.createdAt,
 			updatedAt: conv.updatedAt,
+			extraInfo: getFolderExtraInfo(conv.folderId),
 		});
 	}
 	return metas.sort((a, b) => b.updatedAt - a.updatedAt);

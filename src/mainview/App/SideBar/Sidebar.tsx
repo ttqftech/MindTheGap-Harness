@@ -7,8 +7,14 @@
 
 import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
 import styles from './Sidebar.module.css';
-import { state, actions } from '@mainview/store';
-import { running } from '@mainview/runState';
+import { state, actions, isConversationAlive, isConversationUnread } from '@mainview/store';
+// ⚠️ 「哪个会话还活着」由后端经 ConversationMeta.runStatus（三态）给，前端按会话自己读，
+//   不再有任何全局布尔量 —— 全局量会把「当前在跑的会话」亮到任意一个会话上。
+//   状态标记的三种样子（见 Sidebar.module.css）：
+//     running  → 主题色常亮（正在产出）
+//     waiting  → 主题色 → 灭 → 绿 → 灭 循环闪烁（需要客户端响应：ask_user，将来的沙箱确认等）
+//     unread   → 绿色常亮（跑完了但你还没点开看，点开即清）
+//   未读与运行态正交：会话还活着时不显示绿点。
 import { showMenu, type MenuItem } from '@mainview/ffboxBridge';
 import { addFolderViaDialog, newTask } from '@mainview/appCommands';
 import { getEnvInfo } from '@mainview/localBridge';
@@ -284,10 +290,16 @@ export default function Sidebar() {
 													return (
 														<div
 															class={styles['tree-item']}
-															classList={{
-																[styles.active]: isActive(),
-																[styles['is-running']]: isActive() && running(),
-															}}
+classList={{
+                                                                    [styles.active]: isActive(),
+                                                                    // ⚠️ 只取**这个会话自己**的运行态（后端 activeRunners + 根实例 status），
+                                                                    //   不再用全局量 —— 以前「某个任务在跑时切换任意一项都会把它点亮」。
+                                                                    [styles['is-running']]: conv.runStatus === 'running',
+                                                                    // 等客户端响应（ask_user / 将来的沙箱确认）：闪烁，跟「正在产出」区分开
+                                                                    [styles['is-waiting']]: conv.runStatus === 'waiting',
+                                                                    // 跑完了、你还没点开看 ⇒ 绿点（点开会立刻清掉，所以激活项不会是绿的）
+                                                                    [styles['is-unread']]: !isConversationAlive(conv) && isConversationUnread(conv.id),
+                                                                }}
 															onclick={() => actions.setActiveConversation(conv.id)}
 															title={`${conv.title}\n创建: ${new Date(conv.createdAt).toLocaleString()}\n更新: ${new Date(conv.updatedAt).toLocaleString()}`}
 														>

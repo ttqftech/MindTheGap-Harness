@@ -498,6 +498,23 @@ export interface RequestLogConfig {
 
 // #region 8. 会话（UI 侧数据模型）
 
+/**
+ * 会话的运行状态 —— **三态**，由后端从 `activeRunners` + 根实例 status 现算，不落盘。
+ *
+ * ⚠️ 为什么不是布尔（`isRunning()`）：「正在跑」其实要分两种活着的状态 ——
+ *   - `running`  正在主动产出（LLM 输出 / 工具执行 / 即将重入 agentLoop）
+ *   - `waiting` 等待客户端（ask_user / 客户端工具调用）—— 后端根实例 status = `pending`，
+ *              仍是「活着」的 run，但不在主动产出，UI 要显示成「等待输入」而不是「运行中」
+ *   - `stopped` 已结束（succeeded / failed / interrupted）或 runner 还在 activeRunners
+ *              里但根实例已终态（只在 done 到删 runner 之间的极短窗口出现）
+ * 没有 run 时是 `undefined`（从未跑过 / runner 已从 activeRunners 删除）。
+ *
+ * 前端按会话自己读：侧边栏把 running + waiting 都点亮（但视觉可区分），
+ * 会话头部据此显示「运行中 / 等待输入」。计算在 http-server.ts 的 GET /api/conversations 里，
+ * 真值源是 `AgentRunner.runStatus()`（从根实例 status 推导）。
+ */
+export type ConversationRunStatus = 'running' | 'waiting' | 'stopped';
+
 /** 会话元信息（列表展示用，不含 ctx） */
 export interface ConversationMeta {
 	id: string;
@@ -506,6 +523,34 @@ export interface ConversationMeta {
 	modeId: string;
 	createdAt: number;
 	updatedAt: number;
+	/**
+	 * 会话头部面包屑的「额外信息」—— 一段**字符串**，由后端按需计算。
+	 *
+	 * ⚠️ 设计成字符串而不是结构体：面包屑里不一定显示 git 信息，也可能依未来需求
+	 * 显示其它东西（运行时 / 上次提交时间 / 项目标签……），字符串对前端完全不透明，
+	 * 后端想塞什么就塞什么，没内容时是 undefined（那一段面包屑直接不显示）。
+	 *
+	 * 当前实现：工作目录的 `branch @ shortCommit`（不是 git 仓库 / 没装 git / 「本地」
+	 * 分组没有 path 时为 undefined）。计算逻辑在 storage.ts 的 `getFolderExtraInfo()`，
+	 * 有 TTL 缓存，不落盘。
+	 */
+	extraInfo?: string;
+	/**
+	 * 这个会话**当前的运行状态**（后端 `activeRunners` 里有没有它 + 根实例 status）。
+	 *
+	 * ⚠️ 三态，不是布尔 —— 见上方 `ConversationRunStatus` 的说明：「等待客户端」
+	 * （ask_user）和「正在跑」都是活着的，但 UI 表现不同，用一个布尔无法表达。
+	 *
+	 * ⚠️ 为什么放在 ConversationMeta 而不是单独一个接口：侧边栏要按「每个任务自己的状态」
+	 * 点亮，需要 per-conversation 的状态量，而列表接口本来就是 per-conversation 的 ——
+	 * 顺手带上就行，不必再开一个轮询接口。后端在 `GET /api/conversations` 里现算，
+	 * 不落盘（这是运行态，不是会话数据）。
+	 *
+	 * ⚠️ 实时性：后端这份只在列表刷新时才回来，在飞期间前端靠 **SSE 事件**（不是本地镜像）
+	 * 实时刷新当前会话的 runStatus —— 见 `runSubscription.ts`。切走再回来时，因为订阅跟着
+	 * 会话走、不跟着视图走，回来时 runStatus 已经是新鲜的，不会再出现「切走再回来显示不在运行」。
+	 */
+	runStatus?: ConversationRunStatus;
 }
 
 /**

@@ -7,8 +7,8 @@
  */
 
 import type { MenuItem } from '@mainview/ffboxBridge';
-import { state, actions, loadConversationCtx, refreshConversationMeta } from '@mainview/store';
-import { running, stopRun } from '@mainview/runState';
+import { state, actions, loadConversationCtx, refreshConversationMeta, isConversationAlive } from '@mainview/store';
+import { stopRun } from '@mainview/runController';
 import { windowControls } from '@mainview/localBridge';
 import { addFolderViaDialog, editCopy, editPaste, editSelectAll, newTask, openUserDataDir, setAppTheme, showAbout } from '@mainview/appCommands';
 import type { Accent, Density, ThemeMode } from '@mainview/theme/theme';
@@ -141,7 +141,9 @@ export const APP_MENUS: AppMenuGroup[] = [
 		id: 'run',
 		label: '运行',
 		build: () => [
-			item('stop', '停止运行', 'Esc', () => stopRun(), !running()),
+			// ⚠️ 「停止运行」能不能点，看**当前会话自己**的 runStatus（后端 activeRunners + 根实例 status），
+			//   running + waiting 都算「可以停」；不再用全局布尔量 —— 全局量会跟着「在跑的那个会话」一起移动，切走就一直亮着。
+			item('stop', '停止运行', 'Esc', () => stopRun(), !isConversationAlive(activeConversation())),
 			sep(),
 			check('mock', `内置 mock${state.mock.enabled ? `（${state.mock.scenario}）` : ''}`, state.mock.enabled, () => {
 				void actions.setMock({ enabled: !state.mock.enabled });

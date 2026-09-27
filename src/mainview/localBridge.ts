@@ -1,14 +1,10 @@
-/* ==========================================================================
-   localBridge — 本地基础能力（对齐 FFBox 的 nodeBridge 职责）
-
-   重构后：只保留对话框、Shell、环境信息、日志。
-   文件操作、AppData、路径全部移除（Agent 工具在主进程内部直接用 node:fs）。
-   前端设置改用 localStorage。
-   ========================================================================== */
+/**
+ * localBridge — 本地基础能力（对齐 FFBox 的 nodeBridge 职责）
+ */
 
 import { rpc, isElectrobunEnv } from './rpc';
 
-/* ---------- 文件夹选择 ---------- */
+// #region 文件夹选择
 
 /**
  * 选择运行文件夹。
@@ -27,7 +23,9 @@ export async function requestFolderPath(): Promise<{ path: string | null; error:
 	return { path: input?.trim() || null, error: null };
 }
 
-/* ---------- 对话框 ---------- */
+// #endregion
+
+// #region 对话框
 
 export const dialog = {
 	async open(opts?: { filters?: { name: string; extensions: string[] }[]; multiple?: boolean }): Promise<string[]> {
@@ -52,7 +50,9 @@ async function dialogPickFolder(): Promise<{ path: string | null; error: string 
 	return { path: result.data[0], error: null };
 }
 
-/* ---------- Shell ---------- */
+// #endregion
+
+// #region Shell
 
 export const shell = {
 	async openPath(p: string): Promise<void> {
@@ -64,7 +64,9 @@ export const shell = {
 	},
 };
 
-/* ---------- 窗口控制（无边框窗口自绘标题栏用） ---------- */
+// #endregion
+
+// #region 窗口控制（无边框窗口自绘标题栏用）
 
 export const windowControls = {
 	async minimize(): Promise<void> {
@@ -87,49 +89,26 @@ export const windowControls = {
 	},
 };
 
-/* ---------- Git（会话头部的分支面包屑） ---------- */
+// #endregion
 
-export interface GitInfo {
-	branch: string;
-	shortCommit: string;
-}
-
-/** path → 结果 + 取回时刻；给个 TTL，避免切分支后一直显示旧值，也避免每轮渲染都起一次 git 进程 */
-const gitInfoCache = new Map<string, { at: number; value: Promise<GitInfo | null> }>();
-const GIT_INFO_TTL_MS = 10_000;
-
-export function getGitInfo(path: string): Promise<GitInfo | null> {
-	const hit = gitInfoCache.get(path);
-	if (hit && Date.now() - hit.at < GIT_INFO_TTL_MS) return hit.value;
-
-	// 用一个 async 包装而不是裸 promise：主进程可能还是旧构建（不认识 gitInfo 请求），
-	// 那种情况下 `rpc.request.gitInfo` 本身就是 undefined，直接调用会同步抛错。
-	const value = (async () => {
-		try {
-			const result = await rpc.request.gitInfo({ path });
-			return result?.ok ? result.data : null;
-		} catch {
-			return null;
-		}
-	})();
-	gitInfoCache.set(path, { at: Date.now(), value });
-	return value;
-}
-
-/* ---------- 环境 ---------- */
+// #region 环境信息
 
 export async function getEnvInfo() {
 	const result = await rpc.request.envInfo();
 	return result.ok ? result.data : null;
 }
 
-/* ---------- 日志 ---------- */
+// #endregion
+
+// #region 日志
 
 export function log(level: 'info' | 'warn' | 'error', msg: string) {
 	rpc.send.log({ level, msg });
 }
 
-/* ---------- 前端设置（localStorage） ---------- */
+// #endregion
+
+// #region 前端设置（localStorage）
 
 export const localSettings = {
 	get<T = unknown>(key: string, fallback: T): T {
@@ -152,3 +131,5 @@ export const localSettings = {
 };
 
 export { isElectrobunEnv };
+
+// #endregion
