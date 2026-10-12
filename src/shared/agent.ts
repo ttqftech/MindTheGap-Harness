@@ -338,8 +338,24 @@ export interface ToolResult {
 	error?: string;
 }
 
+/**
+ * 每个 SSE 事件都必须带一个**后端时间**：`timestamp` = 事件发生那一刻服务端的 `Date.now()`。
+ *
+ * ⚠️ 前端拼装在飞 overlay 时**一律用它**，不许自己 `Date.now()` ——
+ *    否则「在飞期间前端算出来的时间」与「ctx 里那份后端时间」不是同一个来源，
+ *    每收到一条 SSE 就要重新 fold 一次，`Date.now()` 也随之重取，任何计时器都会从头开始数
+ *    （提问卡的「阻塞中 mm:ss」就是这么坏的，2026-09-17）。
+ */
+export interface StreamEventBase {
+	timestamp: number;
+}
+
+/** 分布式 Omit：后端**构造**事件时不写 timestamp（由 `emitStream` 统一盖一个） */
+export type StreamEventDraft = DistributiveOmit<AgentStreamEvent, 'timestamp'>;
+type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
+
 /** Agent 流式输出事件（SSE 推送，前端按 agentInstanceId 归层） */
-export type AgentStreamEvent =
+export type AgentStreamEvent = StreamEventBase & (
 	| { type: 'text'; agentInstanceId: string; chunk: string }
 	| { type: 'reasoning'; agentInstanceId: string; chunk: string }
 	| { type: 'tool_start'; agentInstanceId: string; callId: string; toolName: string; args: unknown; reason: string }
@@ -367,7 +383,8 @@ export type AgentStreamEvent =
 		reason?: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child';	// 仅 scope='loop'：中断原因（ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child'）
 	}
 	| { type: 'error'; agentInstanceId?: string; message: string }
-	| { type: 'done'; summary: string };
+	| { type: 'done'; summary: string }
+);
 
 // #endregion
 
@@ -526,29 +543,19 @@ export interface ConversationMeta {
 	/**
 	 * 会话头部面包屑的「额外信息」—— 一段**字符串**，由后端按需计算。
 	 *
-	 * ⚠️ 设计成字符串而不是结构体：面包屑里不一定显示 git 信息，也可能依未来需求
-	 * 显示其它东西（运行时 / 上次提交时间 / 项目标签……），字符串对前端完全不透明，
-	 * 后端想塞什么就塞什么，没内容时是 undefined（那一段面包屑直接不显示）。
-	 *
-	 * 当前实现：工作目录的 `branch @ shortCommit`（不是 git 仓库 / 没装 git / 「本地」
-	 * 分组没有 path 时为 undefined）。计算逻辑在 storage.ts 的 `getFolderExtraInfo()`，
-	 * 有 TTL 缓存，不落盘。
+	 * 当前实现：工作目录的 `branch @ shortCommit`
+	 * （不是 git 仓库 / 没装 git / 「本地」分组没有 path 时为 undefined）。
+	 * 计算逻辑在 storage.ts 的 `getFolderExtraInfo()`，有 TTL 缓存，不落盘。
 	 */
 	extraInfo?: string;
 	/**
 	 * 这个会话**当前的运行状态**（后端 `activeRunners` 里有没有它 + 根实例 status）。
 	 *
-	 * ⚠️ 三态，不是布尔 —— 见上方 `ConversationRunStatus` 的说明：「等待客户端」
-	 * （ask_user）和「正在跑」都是活着的，但 UI 表现不同，用一个布尔无法表达。
+	 * ⚠️ 为什么放在 ConversationMeta 而不是单独一个接口：侧边栏要按「每个任务自己的状态」点亮，需要 per-conversation 的状态量，而列表接口本来就是 per-conversation 的 ——
+	 * 顺手带上就行，不必再开一个轮询接口。后端在 `GET /api/conversations` 里现算，不落盘（这是运行态，不是会话数据）。
 	 *
-	 * ⚠️ 为什么放在 ConversationMeta 而不是单独一个接口：侧边栏要按「每个任务自己的状态」
-	 * 点亮，需要 per-conversation 的状态量，而列表接口本来就是 per-conversation 的 ——
-	 * 顺手带上就行，不必再开一个轮询接口。后端在 `GET /api/conversations` 里现算，
-	 * 不落盘（这是运行态，不是会话数据）。
-	 *
-	 * ⚠️ 实时性：后端这份只在列表刷新时才回来，在飞期间前端靠 **SSE 事件**（不是本地镜像）
-	 * 实时刷新当前会话的 runStatus —— 见 `runSubscription.ts`。切走再回来时，因为订阅跟着
-	 * 会话走、不跟着视图走，回来时 runStatus 已经是新鲜的，不会再出现「切走再回来显示不在运行」。
+	 * ⚠️ 实时性：后端这份只在列表刷新时才回来，在飞期间前端靠 **SSE 事件**（不是本地镜像）实时刷新当前会话的 runStatus —— 见 `runSubscription.ts`。
+	 * 切走再回来时，因为订阅跟着会话走、不跟着视图走，回来时 runStatus 已经是新鲜的，不会再出现「切走再回来显示不在运行」。
 	 */
 	runStatus?: ConversationRunStatus;
 }

@@ -1,9 +1,9 @@
-/* ==========================================================================
-   侧边栏样式（设计稿：264px 宽，列表行 30px，分组 6px 圆角）
-
-   行高 / 内边距都走密度令牌（--row-h / --section-pad），
-   换 .densityXxx 时整条侧栏一起变。
-   ========================================================================== */
+/**
+ * 侧边栏样式（设计稿：264px 宽，列表行 30px，分组 6px 圆角）
+ *
+ * 行高 / 内边距都走密度令牌（--row-h / --section-pad），
+ * 换 .densityXxx 时整条侧栏一起变。
+ */
 
 .sidebar {
     display: flex;
@@ -13,15 +13,11 @@
     overflow: hidden;
     background-color: var(--bg-sidebar);
     border-right: 1px solid var(--border);
-    transition: width 0.16s var(--ease);
+    /* 收起时整条栏归零：连分隔线也不留，否则会留下一条 1px 的竖线 */
+    &.collapsed {
+        border-right: none;
+    }
 }
-
-/* 收起时整条栏归零：连分隔线也不留，否则会留下一条 1px 的竖线 */
-.sidebar.collapsed {
-    border-right: none;
-}
-
-/* ---------- 顶部 ---------- */
 
 .sidebar-top {
     display: flex;
@@ -29,96 +25,78 @@
     gap: 12px;
     padding: 12px;
     flex-shrink: 0;
+    .new-task-btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 38px;
+        padding: 0 10px 0 12px;
+        border-radius: var(--r-lg);
+        background-color: var(--accent);
+        color: var(--accent-ink);
+        font-family: var(--font-ui);
+        font-size: var(--fs-lg);
+        font-weight: 600;
+        transition: background-color var(--dur-fast);
+        &:hover {
+            background-color: var(--accent-hover);
+        }
+        &:active {
+            transform: translateY(0.5px);
+        }
+    }
+    .new-task-shortcut {
+        font-family: var(--font-mono);
+        font-size: var(--fs-xxs);
+        opacity: 0.62;
+        white-space: nowrap;
+    }
+    .list-header {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 16px;
+        padding: 0 3px 0 6px;
+        .list-header-title {
+            font-family: var(--font-mono);
+            font-size: var(--fs-xs);
+            letter-spacing: 0.04em;
+            color: var(--text-faint);
+        }
+        .list-header-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: var(--r-sm);
+            color: var(--text-faint);
+            transition: background-color var(--dur-fast), color var(--dur-fast);
+            &:hover {
+                background-color: var(--bg-hover);
+                color: var(--text-tertiary);
+            }
+        }
+    }
+    .search-input {
+        width: 100%;
+        height: 26px;
+        padding: 0 8px;
+        border-radius: var(--r-md);
+        border: 1px solid var(--border-input);
+        background-color: var(--bg-input);
+        color: var(--text-body);
+        font-size: var(--fs-md);
+        outline: none;
+        transition: border-color var(--dur-fast);
+        &::placeholder {
+            color: var(--text-disabled);
+        }
+        &:focus {
+            border-color: var(--accent);
+        }
+    }
 }
-
-.new-task-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 38px;
-    padding: 0 10px 0 12px;
-    border-radius: var(--r-lg);
-    background-color: var(--accent);
-    color: var(--accent-ink);
-    font-family: var(--font-ui);
-    font-size: var(--fs-lg);
-    font-weight: 600;
-    transition: background-color var(--dur-fast);
-}
-.new-task-btn:hover {
-    background-color: var(--accent-hover);
-}
-.new-task-btn:active {
-    transform: translateY(0.5px);
-}
-
-.new-task-spacer {
-    flex: 1;
-}
-
-.new-task-shortcut {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xxs);
-    opacity: 0.62;
-    white-space: nowrap;
-}
-
-/* ---------- 列表表头 ---------- */
-
-.list-header {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    height: 16px;
-    padding: 0 3px 0 6px;
-}
-
-.list-header-title {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    letter-spacing: 0.04em;
-    color: var(--text-faint);
-}
-
-.list-header-spacer {
-    flex: 1;
-}
-
-.list-header-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: var(--r-sm);
-    color: var(--text-faint);
-    transition: background-color var(--dur-fast), color var(--dur-fast);
-}
-.list-header-btn:hover {
-    background-color: var(--bg-hover);
-    color: var(--text-tertiary);
-}
-
-.search-input {
-    width: 100%;
-    height: 26px;
-    padding: 0 8px;
-    border-radius: var(--r-md);
-    border: 1px solid var(--border-input);
-    background-color: var(--bg-input);
-    color: var(--text-body);
-    font-size: var(--fs-md);
-    outline: none;
-    transition: border-color var(--dur-fast);
-}
-.search-input::placeholder {
-    color: var(--text-disabled);
-}
-.search-input:focus {
-    border-color: var(--accent);
-}
-
-/* ---------- 树 ---------- */
 
 .sidebar-tree {
     flex: 1;
@@ -129,108 +107,143 @@
     flex-direction: column;
     gap: 2px;
     padding: 2px 8px 8px;
-}
+    .tree-folder {
+        display: flex;
+        flex-direction: column;
+        /* gap: 2px; */
+        .tree-folder-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            height: var(--row-h);
+            padding: 0 7px 0 6px;
+            border-radius: var(--r-md);
+            cursor: pointer;
+            transition: background-color var(--dur-fast);
+            &:hover {
+                background-color: var(--bg-hover);
+            }
+            .tree-expand-indicator {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 11px;
+                height: 11px;
+                flex-shrink: 0;
+                color: var(--text-quiet);
+            }
+            .tree-folder-name {
+                font-size: var(--fs-md);
+                font-weight: 500;
+                color: var(--text-secondary);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .tree-folder-count {
+                font-family: var(--font-mono);
+                font-size: var(--fs-xxs);
+                color: var(--text-disabled);
+                flex-shrink: 0;
+            }
+        }
+        .tree-items {
+            display: flex;
+            flex-direction: column;
+            /* gap: 2px; */
+            .tree-item {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                height: var(--row-h);
+                padding: 0 8px 0 26px;
+                border-radius: var(--r-md);
+                cursor: pointer;
+                transition: background-color var(--dur-fast);
+                &:hover {
+                    background-color: var(--bg-hover);
+                }
+                &.active {
+                    background-color: var(--bg-active);
+                }
+                /* 状态标记：默认灰条；三种点亮形态见下（running 常亮主题色 / waiting 闪烁 / unread 绿色常亮） */
+                .tree-item-marker {
+                    width: 3px;
+                    height: 14px;
+                    border-radius: 1.5px;
+                    flex-shrink: 0;
+                    background-color: var(--text-disabled);
+                }
 
-.tree-folder {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
+                /* 正在产出：主题色 */
+                &.is-running .tree-item-marker {
+                    background-color: var(--accent);
+                }
 
-.tree-folder-header {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    height: var(--row-h);
-    padding: 0 7px 0 6px;
-    border-radius: var(--r-md);
-    cursor: pointer;
-    transition: background-color var(--dur-fast);
-}
-.tree-folder-header:hover {
-    background-color: var(--bg-hover);
-}
-
-.tree-expand-indicator {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 11px;
-    height: 11px;
-    flex-shrink: 0;
-    color: var(--text-quiet);
-}
-
-.tree-folder-name {
-    font-size: var(--fs-md);
-    font-weight: 500;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.tree-folder-spacer {
-    flex: 1;
-    min-width: 4px;
-}
-
-.tree-folder-count {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xxs);
-    color: var(--text-disabled);
-    flex-shrink: 0;
-}
-
-.tree-items {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-/* 任务行：状态标记占最左侧 3px，标题自适应，右侧时间 */
-.tree-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: var(--row-h);
-    padding: 0 8px 0 26px;
-    border-radius: var(--r-md);
-    cursor: pointer;
-    transition: background-color var(--dur-fast);
-}
-.tree-item:hover {
-    background-color: var(--bg-hover);
-}
-.tree-item.active {
-    background-color: var(--bg-active);
-}
-
-/* 状态标记：默认灰条；三种点亮形态见下（running 常亮主题色 / waiting 闪烁 / unread 绿色常亮） */
-.tree-item-marker {
-    width: 3px;
-    height: 14px;
-    border-radius: 1.5px;
-    flex-shrink: 0;
-    background-color: var(--text-disabled);
-}
-
-/* 正在产出：主题色 */
-.tree-item.is-running .tree-item-marker {
-    background-color: var(--accent);
-}
-
-/* 跑完了但你还没点开看：绿色（= 未读），点开即清 */
-.tree-item.is-unread .tree-item-marker {
-    background-color: var(--success);
-}
-
-/*
- * 等客户端响应（ask_user 提问、将来的沙箱确认等）：主题色 → 灭 → 绿 → 灭 循环。
- * ⚠️ `steps(1, end)` 是刻意的：不加它颜色会在关键帧之间**渐变**，看起来是「呼吸」而不是「闪灯」。
- */
-.tree-item.is-waiting .tree-item-marker {
-    animation: marker-waiting 1.8s steps(1, end) infinite;
+                /* 跑完了但你还没点开看：绿色（= 未读），点开即清 */
+                &.is-unread .tree-item-marker {
+                    background-color: var(--success);
+                }
+                /*
+                 * 等客户端响应（ask_user 提问、将来的沙箱确认等）：主题色 → 灭 → 绿 → 灭 循环。
+                 * ⚠️ `steps(1, end)` 是刻意的：不加它颜色会在关键帧之间**渐变**，看起来是「呼吸」而不是「闪灯」。
+                 */
+                &.is-waiting .tree-item-marker {
+                    animation: marker-waiting 1.6s steps(1, end) infinite;
+                }
+                .tree-item-title {
+                    flex: 1;
+                    min-width: 0;
+                    font-size: var(--fs-md);
+                    color: var(--text-tertiary);
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+                &.active .tree-item-title {
+                    font-weight: 500;
+                    color: var(--text-primary);
+                }
+                .tree-item-time {
+                    font-family: var(--font-mono);
+                    font-size: var(--fs-xxs);
+                    color: var(--text-disabled);
+                    flex-shrink: 0;
+                }
+            }
+        }
+    }
+    .tree-empty {
+        padding: 6px 8px 6px 26px;
+        font-size: var(--fs-md);
+        color: var(--text-disabled);
+    }
+    /* 文件夹和文件夹项操作：平时不占视觉，悬停整行时出现 */
+    .row-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        padding: 0;
+        flex-shrink: 0;
+        border-radius: var(--r-sm);
+        color: var(--text-quiet);
+        opacity: 0;
+        transition: opacity var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast);
+        &:hover {
+            background-color: var(--bg-active);
+            color: var(--danger);
+        }
+        svg {
+            width: 12px;
+            height: 12px;
+        }
+    }
+    .tree-item:hover .row-action,
+    .tree-folder-header:hover .row-action {
+        opacity: 1;
+    }
 }
 
 @keyframes marker-waiting {
@@ -240,57 +253,6 @@
     80% { background-color: var(--text-disabled); }
     100% { background-color: var(--accent); }
 }
-
-.tree-item-title {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--fs-md);
-    color: var(--text-tertiary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.tree-item.active .tree-item-title {
-    font-weight: 500;
-    color: var(--text-primary);
-}
-
-.tree-item-time {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xxs);
-    color: var(--text-disabled);
-    flex-shrink: 0;
-}
-
-.tree-empty {
-    padding: 6px 8px 6px 26px;
-    font-size: var(--fs-md);
-    color: var(--text-disabled);
-}
-
-/* 行内操作（删除）：平时不占视觉，悬停整行时出现 */
-.row-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    flex-shrink: 0;
-    border-radius: var(--r-sm);
-    color: var(--text-quiet);
-    opacity: 0;
-    transition: opacity var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast);
-}
-.tree-item:hover .row-action,
-.tree-folder-header:hover .row-action {
-    opacity: 1;
-}
-.row-action:hover {
-    background-color: var(--bg-active);
-    color: var(--danger);
-}
-
-/* ---------- 底部 ---------- */
 
 .sidebar-footer-divider {
     height: 1px;
@@ -304,69 +266,63 @@
     gap: 8px;
     padding: 10px 12px 12px;
     flex-shrink: 0;
-}
+    .runtime-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: default;
+        border-radius: var(--r-sm);
+        padding: 2px 4px;
+        margin: -2px -4px;
+        transition: background-color var(--dur-fast);
+        &:hover {
+            background-color: var(--bg-hover);
+        }
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: var(--r-full);
+            background-color: var(--success);
+            flex-shrink: 0;
+        }
+        .runtime-text {
+            font-size: var(--fs-sm);
+            color: var(--text-tertiary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .runtime-version {
+            font-family: var(--font-mono);
+            font-size: var(--fs-xxs);
+            color: var(--text-disabled);
+            flex-shrink: 0;
+        }
+    }
 
-.runtime-status {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-}
-
-.status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: var(--r-full);
-    background-color: var(--success);
-    flex-shrink: 0;
-}
-
-.runtime-text {
-    font-size: var(--fs-sm);
-    color: var(--text-tertiary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.runtime-spacer {
-    flex: 1;
-}
-
-.runtime-version {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xxs);
-    color: var(--text-disabled);
-    flex-shrink: 0;
-}
-
-.settings-btn {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    height: 34px;
-    padding: 0 10px;
-    border-radius: var(--r-lg);
-    background-color: var(--bg-chip);
-    border: 1px solid var(--border-input);
-    color: var(--text-tertiary);
-    transition: background-color var(--dur-fast), color var(--dur-fast);
-}
-.settings-btn:hover {
-    background-color: var(--bg-active);
-    color: var(--text-secondary);
-}
-
-.settings-text {
-    font-size: var(--fs-md);
-    font-weight: 500;
-    color: var(--text-secondary);
-}
-
-.settings-spacer {
-    flex: 1;
-}
-
-.settings-chevron {
-    display: inline-flex;
-    color: var(--text-disabled);
+    .settings-btn {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        height: 34px;
+        padding: 0 10px;
+        border-radius: var(--r-lg);
+        background-color: var(--bg-chip);
+        border: 1px solid var(--border-input);
+        color: var(--text-tertiary);
+        transition: background-color var(--dur-fast), color var(--dur-fast);
+        &:hover {
+            background-color: var(--bg-active);
+            color: var(--text-secondary);
+        }
+        .settings-text {
+            font-size: var(--fs-md);
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .settings-chevron {
+            display: inline-flex;
+            color: var(--text-disabled);
+        }
+    }
 }

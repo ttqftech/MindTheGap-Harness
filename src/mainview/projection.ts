@@ -34,6 +34,14 @@ export interface RenderAgentNode {
 interface BlockBase {
 	/** Solid 的 For 需要稳定的 key；用「实例 id + 序号」 */
 	key: string;
+	/**
+	 * 这一块的**最近更新时间**（毫秒时间戳）。
+	 *
+	 * ⚠️ 来源只能是后端：已提交的部分来自 `AgentInstanceMessage.updatedAt`（Runner `message()` 盖的），
+	 * 在飞的部分来自 SSE 事件的 `timestamp`。投影**不许自己取时间** —— 每来一条事件就重算一次投影，
+	 * 自己取的时间会跟着变，任何靠它算出来的计时（提问卡阻塞时长、工具耗时）都会被清零重数。
+	 */
+	updatedAt: number;
 }
 
 // #region 子块
@@ -55,6 +63,8 @@ export interface RenderAskInfo {
 	options: { label: string; description?: string }[];
 	status: AskUserState['status'];
 	answer?: string;
+	/** 这条提问的最新状态时间：waiting = 提问被提出的那一刻，answered = 用户回答的那一刻 */
+	updatedAt: number;
 }
 
 /** 一次工具调用：调用请求 + 返回结果贴在**同一处**（结果不单独成块） */
@@ -155,12 +165,13 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 	// 索引：callId → 工具结果条目 / 提问卡片状态条目
 	const resultByCallId = new Map<string, AgentInstanceMessage>();
-	const askStateByCallId = new Map<string, AskUserState>();
+	const askStateByCallId = new Map<string, AgentInstanceMessage>();
 	for (const entry of entries) {
 		if (entry.role === 'tool' && entry.toolCallId) resultByCallId.set(entry.toolCallId, entry);
 		if (entry.kind === 'ask_user_state') {
 			const state = entry.data as AskUserState;
-			askStateByCallId.set(state.callId, state);
+			// 存条目而不是存状态本身：条目的 updatedAt 是提问卡自己要用的时间
+			if (state?.callId) askStateByCallId.set(state.callId, entry);
 		}
 	}
 
@@ -176,9 +187,11 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 			blocks.push({
 				type: 'llm',
 				key: nextKey('refl'),
+				updatedAt: entry.updatedAt,
 				subBlocks: [{
 					type: 'reflection',
 					key: nextKey('refl-sub'),
+					updatedAt: entry.updatedAt,
 					content: entry.content,
 					remaining: (entry.data as ReflectionInfo | undefined)?.remaining,
 				}],
@@ -198,30 +211,34 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 		// ⑤ 用户发言（根实例 = 用户每轮的原话；子实例的任务在节点头部显示）
 		if (entry.role === 'user') {
-			blocks.push({ type: 'user', key: nextKey('user'), content: entry.content });
+			blocks.push({ type: 'user', key: nextKey('user'), updatedAt: entry.updatedAt, content: entry.content });
 			continue;
 		}
 
 		// ⑥ assistant = **一次 LLM 调用 → 一个块**；思考 / 正文 / 工具调用都是它的子块
 		const subBlocks: RenderSubBlock[] = [];
 		if (entry.reasoningContent) {
-			subBlocks.push({ type: 'reasoning', key: nextKey('think'), content: entry.reasoningContent });
+			subBlocks.push({ type: 'reasoning', key: nextKey('think'), updatedAt: entry.updatedAt, content: entry.reasoningContent });
 		}
 		if (entry.content?.trim()) {
-			subBlocks.push({ type: 'text', key: nextKey('text'), content: entry.content });
+			subBlocks.push({ type: 'text', key: nextKey('text'), updatedAt: entry.updatedAt, content: entry.content });
 		}
 		for (const toolCall of entry.toolCalls ?? []) {
 			const resultEntry = resultByCallId.get(toolCall.id);
+			const askEntry = askStateByCallId.get(toolCall.id);
 			const resultInfo = resultEntry?.data as ToolResultInfo | undefined;
 			const args = parseArgs(toolCall.function.arguments);
 			const reason = typeof args?.reason === 'string' ? args.reason : '';
+			// 这一次工具调用的最近更新时间：有结果算结果的，没有（还在跑）算这次 LLM 调用的
+			const toolUpdatedAt = Math.max(resultEntry?.updatedAt ?? 0, askEntry?.updatedAt ?? 0) || entry.updatedAt;
 
 			// ask_user 的工具调用渲染成提问卡片（它的「结果」是用户回答）
 			if (toolCall.function.name === 'ask_user') {
-				const state = askStateByCallId.get(toolCall.id);
+				const state = askEntry?.data as AskUserState | undefined;
 				subBlocks.push({
 					type: 'tool',
 					key: nextKey('ask'),
+					updatedAt: toolUpdatedAt,
 					callId: toolCall.id,
 					name: toolCall.function.name,
 					reason,
@@ -234,6 +251,8 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 						options: Array.isArray(args?.options) ? (args.options as RenderAskInfo['options']) : [],
 						status: state?.status ?? 'waiting',
 						answer: state?.answer,
+						// waiting 时 = 提问被提出的那一刻（阻塞计时就认它）；answered 时 = 用户回答的那一刻
+						updatedAt: askEntry?.updatedAt ?? entry.updatedAt,
 					},
 				});
 				continue;
@@ -258,6 +277,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 			subBlocks.push({
 				type: 'tool',
 				key: nextKey('tool'),
+				updatedAt: toolUpdatedAt,
 				callId: toolCall.id,
 				name: toolCall.function.name,
 				reason,
@@ -271,19 +291,26 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 		// 空 assistant（没正文没思考没工具调用）就不出行了，免得界面上多一个空壳
 		if (subBlocks.length === 0 && !entry.usages?.length) continue;
-		blocks.push({ type: 'llm', key: nextKey('llm'), subBlocks, usages: entry.usages });
+		blocks.push({ type: 'llm', key: nextKey('llm'), updatedAt: entry.updatedAt, subBlocks, usages: entry.usages });
 	}
 
 	// 兜底：没被任何工具调用认领的子实例（正常流程不会发生，比如结果结构化字段缺失）
 	for (const childId of instance.childAgentInstanceIds ?? []) {
 		if (claimedChildIds.has(childId)) continue;
 		const child = ctx.agentInstances[childId];
-		if (child) blocks.push({ type: 'agent', key: nextKey('orphan'), node: buildNode(ctx, child) });
+		if (child) {
+			blocks.push({ type: 'agent', key: nextKey('orphan'), updatedAt: child.lastUpdatedAt ?? child.startedAt, node: buildNode(ctx, child) });
+		}
 	}
 
 	// 失败 / 被中断的实例：原因只存在 interruptReason 里（错误不会进 messages），渲染成一块错误
 	if ((instance.status === 'failed' || instance.status === 'interrupted') && instance.interruptReason) {
-		blocks.push({ type: 'error', key: nextKey('error'), message: instance.interruptReason });
+		blocks.push({
+			type: 'error',
+			key: nextKey('error'),
+			updatedAt: instance.lastUpdatedAt ?? instance.startedAt,
+			message: instance.interruptReason,
+		});
 	}
 
 	const summaries = instance.summaries ?? [];
@@ -349,24 +376,24 @@ function diffBlock(old: RenderBlock, nu: RenderBlock): RenderBlock {
 	switch (nu.type) {
 		case 'user': {
 			const o = old as RenderUserBlock;
-			if (o.content === nu.content) return old;
+			if (o.content === nu.content && o.updatedAt === nu.updatedAt) return old;
 			return nu;
 		}
 		case 'llm': {
 			const o = old as RenderLlmBlock;
 			const subBlocks = diffKeyedArray(o.subBlocks, nu.subBlocks, diffSubBlock, (s) => s.key);
-			if (subBlocks === o.subBlocks && o.usages === nu.usages) return old;
+			if (subBlocks === o.subBlocks && o.usages === nu.usages && o.updatedAt === nu.updatedAt) return old;
 			return { ...nu, subBlocks };
 		}
 		case 'error': {
 			const o = old as RenderErrorBlock;
-			if (o.message === nu.message) return old;
+			if (o.message === nu.message && o.updatedAt === nu.updatedAt) return old;
 			return nu;
 		}
 		case 'agent': {
 			const o = old as RenderAgentBlock;
 			const node = diffRenderTree(o.node, nu.node)!;
-			if (node === o.node) return old;
+			if (node === o.node && o.updatedAt === nu.updatedAt) return old;
 			return { ...nu, node };
 		}
 	}
@@ -378,17 +405,17 @@ function diffSubBlock(oldNode: RenderSubBlock, newNode: RenderSubBlock): RenderS
 	switch (newNode.type) {
 		case 'reasoning': {
 			const o = oldNode as RenderReasoningSub;
-			if (o.content === newNode.content) return oldNode;
+			if (o.content === newNode.content && o.updatedAt === newNode.updatedAt) return oldNode;
 			return newNode;
 		}
 		case 'text': {
 			const o = oldNode as RenderTextSub;
-			if (o.content === newNode.content) return oldNode;
+			if (o.content === newNode.content && o.updatedAt === newNode.updatedAt) return oldNode;
 			return newNode;
 		}
 		case 'reflection': {
 			const o = oldNode as RenderReflectionSub;
-			if (o.content === newNode.content && o.remaining === newNode.remaining) return oldNode;
+			if (o.content === newNode.content && o.remaining === newNode.remaining && o.updatedAt === newNode.updatedAt) return oldNode;
 			return newNode;
 		}
 		case 'tool': {
@@ -401,6 +428,7 @@ function diffSubBlock(oldNode: RenderSubBlock, newNode: RenderSubBlock): RenderS
 			const sameChildren = children === (o.children ?? []);
 			if (
 				sameChildren
+				&& o.updatedAt === newNode.updatedAt
 				&& o.callId === newNode.callId
 				&& o.name === newNode.name
 				&& o.reason === newNode.reason
@@ -408,11 +436,32 @@ function diffSubBlock(oldNode: RenderSubBlock, newNode: RenderSubBlock): RenderS
 				&& o.args === newNode.args
 				&& o.output === newNode.output
 				&& o.error === newNode.error
-				&& o.ask === newNode.ask
+				&& sameAsk(o.ask, newNode.ask)
 			) return oldNode;
 			return { ...newNode, children: children.length > 0 ? children : undefined };
 		}
 	}
+}
+
+/**
+ * 提问卡片内容是否没变（**按值比**，不是按引用）。
+ *
+ * ⚠️ 为什么不能 `o.ask === nu.ask`：每次 fold 都会新建一个 `ask` 对象，引用永远不等，
+ *    于是每次重算投影都被判定成「变了」→ `<For>` 当成增删项 → AskUserCard 整块重挂，
+ *    组件里的局部 state（阻塞计时的秒数）跟着清零重数（2026-09-17）。
+ */
+function sameAsk(a: RenderAskInfo | undefined, b: RenderAskInfo | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	if (
+		a.callId !== b.callId
+		|| a.status !== b.status
+		|| a.answer !== b.answer
+		|| a.updatedAt !== b.updatedAt
+		|| a.question !== b.question
+		|| a.options.length !== b.options.length
+	) return false;
+	return a.options.every((opt, i) => opt.label === b.options[i].label && opt.description === b.options[i].description);
 }
 
 /**

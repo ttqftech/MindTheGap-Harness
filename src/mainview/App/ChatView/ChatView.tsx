@@ -149,6 +149,26 @@ function fmtDuration(ms?: number): string {
 	return ms < 100 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** 秒级心跳：整个 ChatView 共用一份，给「阻塞计时」这类需要自行往前走的显示用 */
+const [clockNow, setClockNow] = createSignal(Date.now());
+setInterval(() => setClockNow(Date.now()), 1000);
+
+/** 两位补零 */
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** 时间戳 → HH:MM:SS（每一块都显示它自己的更新时间） */
+function fmtClock(ts: number | undefined): string {
+	if (!ts) return '';
+	const d = new Date(ts);
+	return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+/** 毫秒 → mm:ss（提问卡的阻塞时长） */
+function fmtElapsed(ms: number): string {
+	const total = Math.max(0, Math.floor(ms / 1000));
+	return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+}
+
 /** 字节数 → "1.2 KB" / "820 B"（MCP 卡的响应行要显示体量） */
 function fmtSize(bytes: number): string {
 	if (bytes < 1000) return `${bytes} B`;
@@ -173,27 +193,22 @@ function parseMcpName(name: string): { server: string; method: string } | null {
 
 /**
  * 提问卡片：序号选项（可按数字键选）+ 自由输入 +「还有什么要补充的吗？」+ 提交 / 跳过本轮。
- * 等待期间右上角显示已阻塞多久 —— 数据是前端自己数出来的，不依赖后端。
+ *
+ * 阻塞时长 = **后端时间戳 + 本地秒级心跳**现算，不是组件自己的计数器：
+ * 组件一旦被换掉（任何一次投影重算都可能让 `<For>` 把它当新项），局部 state 直接清零重数。
  */
 function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => void }) {
 	const [choice, setChoice] = createSignal<string | null>(null);
 	const [extra, setExtra] = createSignal('');
 	const [freeText, setFreeText] = createSignal('');
-	const [elapsed, setElapsed] = createSignal(0);
 	const answered = () => props.block.status !== 'waiting';
 	const options = () => props.block.options;
 
-	// 阻塞计时：只在等待时走
-	const timer = setInterval(() => {
-		if (!answered()) setElapsed((v) => v + 1);
-	}, 1000);
-	onCleanup(() => clearInterval(timer));
-
+	// block.updatedAt 来自后端（ctx 里是条目的更新时间，在飞时是 SSE 的 timestamp）
 	const elapsedText = () => {
-		const total = elapsed();
-		const mm = String(Math.floor(total / 60)).padStart(2, '0');
-		const ss = String(total % 60).padStart(2, '0');
-		return `阻塞中 ${mm}:${ss}`;
+		const since = props.block.updatedAt;
+		if (!since) return '阻塞中 --:--';
+		return `阻塞中 ${fmtElapsed(clockNow() - since)}`;
 	};
 
 	const submit = () => {
@@ -686,9 +701,9 @@ export default function ChatView() {
 		if (usage.cached) parts.push(`缓存 ${fmtTokens(usage.cached)}`);
 		const duration = fmtDuration(usage.durationMs);
 		if (duration) parts.push(duration);
-		// if (usage.purpose && usage.purpose !== 'agent_loop') {
-		// 	parts.push(PURPOSE_LABEL[usage.purpose] ?? usage.purpose);
-		// }
+		if (usage.purpose && usage.purpose !== 'agent_loop') {
+			parts.push(PURPOSE_LABEL[usage.purpose] ?? usage.purpose);
+		}
 		parts.push(usage.model);
 		return (
 			<div class={styles['agent-block-usage']}>
@@ -925,6 +940,8 @@ export default function ChatView() {
 					<div class={styles['user-message']}>
 						<div class={styles['message-head']}>
 							<span class={styles['message-head-label']}>用户</span>
+							<span class={styles['message-head-spacer']} />
+							<span class={styles['message-head-time']}>{fmtClock(block.updatedAt)}</span>
 						</div>
 						<div class={styles['user-bubble']}>{block.content}</div>
 					</div>
@@ -936,7 +953,12 @@ export default function ChatView() {
 					<div class={styles['agent-llm']}>
 						<For each={block.subBlocks}>{(sub) => renderSubBlock(sub)}</For>
 						<Show when={block.usages}>{(usages) => (
-							<For each={usages()}>{(usage) => renderUsage(usage)}</For>
+							<>
+								<For each={usages()}>{(usage) => renderUsage(usage)}</For>
+								<Show when={fmtClock(block.updatedAt)}>{(time) => (
+									<div class={styles['agent-block-time']}>{time()}</div>
+								)}</Show>
+							</>
 						)}</Show>
 					</div>
 				);

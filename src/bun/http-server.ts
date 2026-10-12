@@ -147,8 +147,8 @@ async function handleAgentRun(params: AgentRunRequest) {
 		onStream: (event) => dispatchStream(conversationId, event),
 	});
 	if (!runner) {
-		dispatchStream(conversationId, { type: 'error', message: error ?? 'Agent 启动失败' });
-		dispatchStream(conversationId, { type: 'done', summary: '' });
+		dispatchStream(conversationId, { type: 'error', timestamp: Date.now(), message: error ?? 'Agent 启动失败' });
+		dispatchStream(conversationId, { type: 'done', timestamp: Date.now(), summary: '' });
 		return { ok: false, error };
 	}
 
@@ -163,7 +163,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 		.catch((err) => {
 			activeRunners.delete(conversationId);
 			console.error(`[Agent] Runner ${conversationId} error:`, err);
-			dispatchStream(conversationId, { type: 'error', message: err?.message ?? String(err) });
+			dispatchStream(conversationId, { type: 'error', timestamp: Date.now(), message: err?.message ?? String(err) });
 		});
 
 	return { ok: true, conversationId };
@@ -669,6 +669,8 @@ export function startHttpServer(options: { channel?: string } = {}) {
 			recordUsageInCtx(e);
 			broadcastAgentStream(e.conversationId, {
 				type: 'usage',
+				// ⚠️ timestamp 是**后端时间**：前端拿它当条目的 updatedAt，不许自己 Date.now()
+				timestamp: Date.now(),
 				agentInstanceId: e.agentInstanceId,
 				logId: e.logId,
 				tokens: e.tokens,

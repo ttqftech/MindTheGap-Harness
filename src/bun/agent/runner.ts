@@ -16,7 +16,7 @@
  * 状态全部在 ctx 里；本类只在一次 run 期间做「内存中的调度缓存」（busy 集合、delegate 分组），进程重启后这些缓存可以安全地重新推导。
  */
 
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, AskUserState, ConversationRunStatus, LlmMessage, LlmTrigger, ModeDefinition, ModelConfig, TokenUsage, ToolResult, ToolResultInfo } from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, AskUserState, ConversationRunStatus, LlmMessage, LlmTrigger, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolResult, ToolResultInfo } from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
@@ -1313,8 +1313,15 @@ export class AgentRunner {
 		this.ctx.updatedAt = now();
 	}
 
-	private emitStream(event: AgentStreamEvent): void {
-		this.options.onStream?.(event);
+	/**
+	 * 发一条流式事件。
+	 *
+	 * ⚠️ `timestamp` 在这里统一盖上，调用点一个都不许自己写 ——
+	 *    前端拿它当作条目的 `updatedAt`（见 `shared/agent.ts` 的 `StreamEventBase`），
+	 *    必须是从同一口钟出来的后端时间。
+	 */
+	private emitStream(event: StreamEventDraft): void {
+		this.options.onStream?.({ ...event, timestamp: now() });
 	}
 
 	private persist(): void {

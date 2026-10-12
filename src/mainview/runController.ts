@@ -122,7 +122,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			if (!tail.toolCalls?.length) return tail;
 		}
 		// 尾部不是 assistant 消息，另起一条
-		messages.push({ role: 'assistant', content: '', updatedAt: Date.now() });
+		messages.push({ role: 'assistant', content: '', updatedAt: event.timestamp });
 		return messages[messages.length - 1]!;
 	};
 
@@ -155,7 +155,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			existing.content = content;
 			existing.kind = 'tool_result';
 			existing.data = data;
-			existing.updatedAt = Date.now();
+			existing.updatedAt = event.timestamp;
 		} else {
 			messages.push({
 				role: 'tool',
@@ -163,7 +163,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				toolCallId: event.callId,
 				kind: 'tool_result',
 				data,
-				updatedAt: Date.now(),
+				updatedAt: event.timestamp,
 			});
 		}
 	};
@@ -181,27 +181,27 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				depth: event.depth,
 				status: 'running',
 				task: event.task,
-				startedAt: Date.now(),
+				startedAt: event.timestamp,
 			};
 			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = instanceId;
 			// 首条 user 条目 = 该实例的任务（与 ctx 里的形态一致）
 			getInstanceMessagesByIdSafe(instanceId).push({
 				role: 'user',
 				content: event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? ''),
-				updatedAt: Date.now(),
+				updatedAt: event.timestamp,
 			});
 			break;
 		}
 		case 'text': {
 			const entry = assistantEntry(instanceId, 'text');
 			entry.content += event.chunk;
-			entry.updatedAt = Date.now();
+			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'reasoning': {
 			const entry = assistantEntry(instanceId, 'text');
 			entry.reasoningContent = (entry.reasoningContent ?? '') + event.chunk;
-			entry.updatedAt = Date.now();
+			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'tool_start': {
@@ -212,7 +212,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				type: 'function',
 				function: { name: event.toolName, arguments: JSON.stringify(event.args ?? {}) },
 			});
-			entry.updatedAt = Date.now();
+			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'tool_end': {
@@ -240,13 +240,13 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				const refl = messages.findLast((m) => m.kind === 'reflection');
 				if (refl) {
 					refl.usages = [...(refl.usages ?? []), data];
-					refl.updatedAt = Date.now();
+					refl.updatedAt = event.timestamp;
 					break;
 				}
 			}
 			const entry = assistantEntry(instanceId, 'text');
 			entry.usages = [...(entry.usages ?? []), data];
-			entry.updatedAt = Date.now();
+			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'reflection_start': {
@@ -257,7 +257,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				uiOnly: true,
 				kind: 'reflection',
 				data: { remaining: event.remaining },
-				updatedAt: Date.now(),
+				updatedAt: event.timestamp,
 			});
 			break;
 		}
@@ -266,7 +266,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			const refl = messages.findLast((m) => m.kind === 'reflection');
 			if (refl) {
 				refl.content += event.chunk;
-				refl.updatedAt = Date.now();
+				refl.updatedAt = event.timestamp;
 			}
 			break;
 		}
@@ -277,7 +277,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				uiOnly: true,
 				kind: 'ask_user_state',
 				data: { callId: event.callId, status: 'waiting' },
-				updatedAt: Date.now(),
+				updatedAt: event.timestamp,
 			});
 			break;
 		}
@@ -439,6 +439,8 @@ export async function answerAskUser(conversationId: string, callId: string, text
 			);
 			if (entry) {
 				entry.data = { callId, status: skipped ? 'skipped' : 'answered', answer: text };
+				// 这是**唯一**一处允许前端自己取时间：填回答是界面动作，后端此刻还没有任何事件能对上它
+				// （它的真值要等本轮跑完重拉 ctx 才由 setAskUserState 盖过去）。
 				entry.updatedAt = Date.now();
 				return;
 			}

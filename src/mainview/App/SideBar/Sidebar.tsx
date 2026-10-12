@@ -1,39 +1,33 @@
-﻿/* ==========================================================================
-   侧边栏组件（设计稿：新建任务按钮 + 任务列表 + 底部运行时状态）
+﻿/**
+ * 侧边栏组件（设计稿：新建任务按钮 + 任务列表 + 底部运行时状态）
+ *
+ * 分组沿用既有语义：一个「文件夹」= 一个工作目录，`id` 就是路径，
+ * 显示名由 `folderLabel()` 现算（Folder 没有 name 字段）。
+ */
 
-   分组沿用既有语义：一个「文件夹」= 一个工作目录，`id` 就是路径，
-   显示名由 `folderLabel()` 现算（Folder 没有 name 字段）。
-   ========================================================================== */
-
-import { createSignal, createMemo, For, Show, onMount } from 'solid-js';
+import { createSignal, createMemo, createEffect, on, For, Show } from 'solid-js';
 import styles from './Sidebar.module.css';
 import { state, actions, isConversationAlive, isConversationUnread } from '@mainview/store';
+import { showMenu, type MenuItem } from '@mainview/ffboxBridge';
+import { addFolderViaDialog, newTask } from '@mainview/appCommands';
+import { useTooltip } from 'ffbox-ui';
+import { folderLabel, getTimeString } from '@shared/utils';
+import type { ConversationSort } from '@mainview/store';
+
 // ⚠️ 「哪个会话还活着」由后端经 ConversationMeta.runStatus（三态）给，前端按会话自己读，
-//   不再有任何全局布尔量 —— 全局量会把「当前在跑的会话」亮到任意一个会话上。
 //   状态标记的三种样子（见 Sidebar.module.css）：
 //     running  → 主题色常亮（正在产出）
 //     waiting  → 主题色 → 灭 → 绿 → 灭 循环闪烁（需要客户端响应：ask_user，将来的沙箱确认等）
 //     unread   → 绿色常亮（跑完了但你还没点开看，点开即清）
 //   未读与运行态正交：会话还活着时不显示绿点。
-import { showMenu, type MenuItem } from '@mainview/ffboxBridge';
-import { addFolderViaDialog, newTask } from '@mainview/appCommands';
-import { getEnvInfo } from '@mainview/localBridge';
-import { folderLabel } from '@shared/utils';
-import type { ConversationSort } from '@mainview/store';
 
-/* ---------- 图标 ---------- */
+// #region 图标
 
 function ChevronIcon(props: { open: boolean }) {
 	return (
 		<svg
-			width="11"
-			height="11"
-			viewBox="0 0 11 11"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="1.4"
-			stroke-linecap="round"
-			stroke-linejoin="round"
+			width="11" height="11" viewBox="0 0 11 11"
+			fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
 			style={{ transform: props.open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
 		>
 			<polyline points="2.2 4 5.5 7.3 8.8 4" />
@@ -90,31 +84,35 @@ function EnterIcon() {
 
 function TrashIcon() {
 	return (
-		<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			<polyline points="3 6 5 6 21 6" />
 			<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
 		</svg>
 	);
 }
 
-/* ---------- 时间短标签 ---------- */
+// #endregion
+
+// #region 时间短标签
 
 /**
  * 列表右侧的时间：今天给 HH:mm，昨天给「昨天」，一周内给「Nd」，更早给 MM-DD。
  * 设计稿用的就是这种短形式（09:41 / 2d），比完整时间戳省地方。
  */
-function compactTime(ts: number): string {
-	const d = new Date(ts);
+function compactTime(timestamp: number): string {
+	const d = new Date(timestamp);
 	const now = new Date();
-	const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-	if (ts >= dayStart) {
+	const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();	// 今天 0 时
+	if (timestamp >= dayStart && timestamp <= now.getTime()) {
 		return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+	} else if (timestamp > now.getTime()) {
+		return '未来';
 	}
 	const dStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 	const days = Math.floor((dayStart - dStart) / 86400000);
 	if (days === 1) return '昨天';
-	if (days < 7) return `${days}d`;
-	return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+	if (days < 7) return `${days} 天前`;
+	return `${String(d.getFullYear())}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 const SORT_OPTIONS: Array<{ id: ConversationSort; label: string }> = [
@@ -123,16 +121,44 @@ const SORT_OPTIONS: Array<{ id: ConversationSort; label: string }> = [
 	{ id: 'title', label: '按名称' },
 ];
 
-/* ---------- 组件 ---------- */
+// #endregion
+
+// #region 组件
 
 export default function Sidebar() {
 	const [expandedFolders, setExpandedFolders] = createSignal<Set<string>>(new Set(['local']));
 	const [searchText, setSearchText] = createSignal('');
 	const [showSearch, setShowSearch] = createSignal(false);
-	const [appVersion, setAppVersion] = createSignal('');
 
-	onMount(() => {
-		void getEnvInfo().then((env) => setAppVersion(env?.appVersion ?? ''));
+	/** 侧边栏折叠 / 展开时展示过渡动画 */
+	const [isToggling, setIsToggling] = createSignal(false);
+	createEffect(on(
+		() => state.ui.sidebarCollapsed,
+		() => {
+			setIsToggling(true);
+			setTimeout(() => setIsToggling(false), 300);
+		},
+	));
+
+	const serviceVersion = createMemo(() => {
+		const h = state.serviceHealth;
+		if (!h) return '';
+		return `${h.build.gitCommit}`;
+	});
+
+	const serviceTooltipContent = createMemo(() => {
+		const h = state.serviceHealth;
+		if (!h) return '服务未连接';
+		const buildType = h.build.isDev ? '开发' : '生产';
+		const buildTime = getTimeString(new Date(h.build.buildTime), false);
+		const startedAt = getTimeString(new Date(h.startedAt), false);
+		return [
+			`通道: ${h.channel}`,
+			`PID: ${h.pid}　端口: ${h.port}`,
+			`构建: ${h.build.gitCommit} (${buildType})`,
+			`构建时间: ${buildTime}`,
+			`启动时间: ${startedAt}`,
+		].join('\n');
 	});
 
 	const toggleFolder = (id: string) => {
@@ -157,12 +183,12 @@ export default function Sidebar() {
 			{
 				type: 'submenu',
 				label: '排序方式',
-				subMenu: SORT_OPTIONS.map((o) => ({
+				subMenu: SORT_OPTIONS.map((item) => ({
 					type: 'radio',
-					value: o.id,
-					checked: state.ui.conversationSort === o.id,
-					label: o.label,
-					onClick: () => actions.setConversationSort(o.id),
+					value: item.id,
+					checked: state.ui.conversationSort === item.id,
+					label: item.label,
+					onClick: () => actions.setConversationSort(item.id),
 				})),
 			},
 			{ type: 'separator' },
@@ -180,10 +206,10 @@ export default function Sidebar() {
 	// 会话按 folderId 分组（createMemo 确保 Solid 追踪 state.conversations 变化）
 	const conversationsByFolder = createMemo(() => {
 		const map = new Map<string, typeof state.conversations>();
-		for (const conv of state.conversations) {
-			const list = map.get(conv.folderId) || [];
-			list.push(conv);
-			map.set(conv.folderId, list);
+		for (const conversation of state.conversations) {
+			const list = map.get(conversation.folderId) || [];
+			list.push(conversation);
+			map.set(conversation.folderId, list);
 		}
 		return map;
 	});
@@ -207,7 +233,7 @@ export default function Sidebar() {
 		<div
 			class={styles.sidebar}
 			classList={{ [styles.collapsed]: state.ui.sidebarCollapsed }}
-			style={{ width: `${state.ui.sidebarCollapsed ? 0 : state.ui.sidebarWidth}px` }}
+			style={{ width: `${state.ui.sidebarCollapsed ? 0 : state.ui.sidebarWidth}px`, transition: isToggling() ? 'width 0.3s cubic-bezier(0.2, 0.2, 0.2, 1.1)' : 'none' }}
 		>
 			<Show when={!state.ui.sidebarCollapsed}>
 				{/* 顶部：新建任务 + 列表表头 */}
@@ -215,136 +241,110 @@ export default function Sidebar() {
 					<button class={styles['new-task-btn']} onclick={() => void newTask()}>
 						<NewIcon />
 						<span class={styles['new-task-text']}>新建任务</span>
-						<span class={styles['new-task-spacer']} />
+						<span style="flex: 1" />
 						<span class={styles['new-task-shortcut']}>Ctrl N</span>
 					</button>
 
 					<div class={styles['list-header']}>
 						<span class={styles['list-header-title']}>任务列表</span>
-						<span class={styles['list-header-spacer']} />
-						<button
-							class={styles['list-header-btn']}
-							title="搜索任务"
-							aria-label="搜索任务"
-							onclick={() => setShowSearch((v) => !v)}
-						>
+						<span style="flex: 1" />
+						<button class={styles['list-header-btn']} title="搜索任务" aria-label="搜索任务" onclick={() => setShowSearch((v) => !v)}>
 							<SearchIcon />
 						</button>
-						<button
-							class={styles['list-header-btn']}
-							title="列表选项"
-							aria-label="列表选项"
-							onclick={(e) => openListOptions(e.currentTarget)}
-						>
+						<button class={styles['list-header-btn']} title="列表选项" aria-label="列表选项" onclick={(e) => openListOptions(e.currentTarget)}>
 							<ListOptionsIcon />
 						</button>
 					</div>
 
 					<Show when={showSearch()}>
-						<input
-							type="text"
-							class={styles['search-input']}
-							placeholder="搜索任务..."
-							value={searchText()}
-							oninput={(e) => setSearchText(e.currentTarget.value)}
-						/>
+						<input type="text" class={styles['search-input']} placeholder="搜索任务..." value={searchText()} oninput={(e) => setSearchText(e.currentTarget.value)} />
 					</Show>
 				</div>
 
 				{/* 树形目录 */}
 				<div class={styles['sidebar-tree']}>
-					<For each={state.folders}>
-						{(folder) => {
-							const convs = conversationsInFolder(folder.id);
-							// 注意：expandedFolders() 必须在 JSX 表达式里读取才会被追踪，
-							// 放在回调体顶部（const isOpen = ...）会导致折叠点击不刷新
-							return (
-								<div class={styles['tree-folder']}>
-									<div class={styles['tree-folder-header']} onclick={() => toggleFolder(folder.id)}>
-										<span class={styles['tree-expand-indicator']}>
-											<ChevronIcon open={expandedFolders().has(folder.id)} />
-										</span>
-										<span class={styles['tree-folder-name']}>{folderLabel(folder)}</span>
-										<span class={styles['tree-folder-spacer']} />
-										<span class={styles['tree-folder-count']}>{convs().length}</span>
-										<Show when={!folder.isLocal && expandedFolders().has(folder.id)}>
-											<button
-												class={styles['row-action']}
-												title="移除工作目录"
-												aria-label="移除工作目录"
-												onclick={(e) => {
-													e.stopPropagation();
-													actions.removeFolder(folder.id);
-												}}
-											>
-												<TrashIcon />
-											</button>
-										</Show>
-									</div>
-
-									<Show when={expandedFolders().has(folder.id)}>
-										<div class={styles['tree-items']}>
-											<For each={convs()}>
-												{(conv) => {
-													const isActive = () => state.activeConversationId === conv.id;
-													return (
-														<div
-															class={styles['tree-item']}
-classList={{
-                                                                    [styles.active]: isActive(),
-                                                                    // ⚠️ 只取**这个会话自己**的运行态（后端 activeRunners + 根实例 status），
-                                                                    //   不再用全局量 —— 以前「某个任务在跑时切换任意一项都会把它点亮」。
-                                                                    [styles['is-running']]: conv.runStatus === 'running',
-                                                                    // 等客户端响应（ask_user / 将来的沙箱确认）：闪烁，跟「正在产出」区分开
-                                                                    [styles['is-waiting']]: conv.runStatus === 'waiting',
-                                                                    // 跑完了、你还没点开看 ⇒ 绿点（点开会立刻清掉，所以激活项不会是绿的）
-                                                                    [styles['is-unread']]: !isConversationAlive(conv) && isConversationUnread(conv.id),
-                                                                }}
-															onclick={() => actions.setActiveConversation(conv.id)}
-															title={`${conv.title}\n创建: ${new Date(conv.createdAt).toLocaleString()}\n更新: ${new Date(conv.updatedAt).toLocaleString()}`}
-														>
-															<span class={styles['tree-item-marker']} />
-															<span class={styles['tree-item-title']}>{conv.title}</span>
-															<span class={styles['tree-item-time']}>{compactTime(conv.updatedAt)}</span>
-															<button
-																class={styles['row-action']}
-																title="删除任务"
-																aria-label="删除任务"
-																onclick={(e) => {
-																	e.stopPropagation();
-																	actions.deleteConversation(conv.id);
-																}}
-															>
-																<TrashIcon />
-															</button>
-														</div>
-													);
-												}}
-											</For>
-											<Show when={convs().length === 0}>
-												<div class={styles['tree-empty']}>{searchText() ? '（无匹配任务）' : '（暂无任务）'}</div>
-											</Show>
-										</div>
+					<For each={state.folders}>{(folder) => {
+						const conversations = conversationsInFolder(folder.id);
+						return (
+							<div class={styles['tree-folder']}>
+								<div class={styles['tree-folder-header']} onclick={() => toggleFolder(folder.id)}>
+									<span class={styles['tree-expand-indicator']}>
+										<ChevronIcon open={expandedFolders().has(folder.id)} />
+									</span>
+									<span class={styles['tree-folder-name']}>{folderLabel(folder)}</span>
+									<span style="flex: 1; min-width: 4px;" />
+									<span class={styles['tree-folder-count']}>{conversations().length}</span>
+									<Show when={!folder.isLocal && expandedFolders().has(folder.id)}>
+										<button
+											class={styles['row-action']}
+											title="移除工作目录"
+											aria-label="移除工作目录"
+											onclick={(e) => {
+												e.stopPropagation();
+												actions.removeFolder(folder.id);
+											}}
+										>
+											<TrashIcon />
+										</button>
 									</Show>
 								</div>
-							);
-						}}
-					</For>
+								<Show when={expandedFolders().has(folder.id)}>
+									<div class={styles['tree-items']}>
+										<For each={conversations()}>{(conv) => {
+											const isActive = () => state.activeConversationId === conv.id;
+											return (
+												<div
+													class={styles['tree-item']}
+													classList={{
+														[styles.active]: isActive(),
+														// ⚠️ 只取**这个会话自己**的运行态（后端 activeRunners + 根实例 status），
+														[styles['is-running']]: conv.runStatus === 'running',
+														[styles['is-waiting']]: conv.runStatus === 'waiting',
+														[styles['is-unread']]: !isConversationAlive(conv) && isConversationUnread(conv.id),
+													}}
+													onclick={() => actions.setActiveConversation(conv.id)}
+													title={`${conv.title}\n创建: ${new Date(conv.createdAt).toLocaleString()}\n更新: ${new Date(conv.updatedAt).toLocaleString()}`}
+												>
+													<span class={styles['tree-item-marker']} />
+													<span class={styles['tree-item-title']}>{conv.title}</span>
+													<span class={styles['tree-item-time']}>{compactTime(conv.updatedAt)}</span>
+													<button
+														class={styles['row-action']}
+														title="删除任务"
+														aria-label="删除任务"
+														onclick={(e) => {
+															e.stopPropagation();
+															actions.deleteConversation(conv.id);
+														}}
+													>
+														<TrashIcon />
+													</button>
+												</div>
+											);
+										}}</For>
+										<Show when={conversations().length === 0}>
+											<div class={styles['tree-empty']}>{searchText() ? '（无匹配任务）' : '（暂无任务）'}</div>
+										</Show>
+									</div>
+								</Show>
+							</div>
+						);
+					}}</For>
 				</div>
 
 				{/* 底部：运行时状态 + 设置 */}
 				<div class={styles['sidebar-footer-divider']} />
 				<div class={styles['sidebar-footer']}>
-					<div class={styles['runtime-status']}>
+					<div class={styles['runtime-status']} {...useTooltip(serviceTooltipContent(), 'tl')}>
 						<span class={styles['status-dot']} />
-						<span class={styles['runtime-text']}>本地运行时 · Agent 在线</span>
-						<span class={styles['runtime-spacer']} />
-						<span class={styles['runtime-version']}>{appVersion() ? `v${appVersion()}` : ''}</span>
+						<span class={styles['runtime-text']}>{state.serviceHealth ? '本地运行时 · Agent 在线' : '本地运行时 · 未连接'}</span>
+						<span style="flex: 1" />
+						<span class={styles['runtime-version']}>{serviceVersion()}</span>
 					</div>
 					<button class={styles['settings-btn']} onclick={() => actions.openSettings('通用')}>
 						<SettingsIcon />
 						<span class={styles['settings-text']}>设置</span>
-						<span class={styles['settings-spacer']} />
+						<span style="flex: 1" />
 						<span class={styles['settings-chevron']}>
 							<EnterIcon />
 						</span>

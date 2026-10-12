@@ -10,7 +10,7 @@
    剧本按**请求内容**判断（不是按调用次数），分支有顺序依赖：
      - `tools` 为空                        → 反思请求，回哨兵「无」（reflect 剧本回真追问）
      - system 里有「相关性评审器」          → web_search 的打分请求，回分数对象
-     - multi / task 剧本                   → 按 toolResults 计数分轮，可以连续发多个工具
+     - multi / task / sine 剧本            → 按 toolResults 计数分轮，可以连续发多个工具
      - 历史里已有 tool 结果                 → 回纯文本结论（见下方 ⚠️）
      - 其余                                → 发一个 web_fetch 工具调用（由 runner 真去执行）
 
@@ -36,6 +36,7 @@ export const MOCK_SCENARIOS: { id: string; label: string }[] = [
 	{ id: 'reflect', label: 'reflect：反思给出真追问' },
 	{ id: 'task', label: 'task：任务清单读写（add→read→update→read）' },
 	{ id: 'web_search', label: 'web_search：多引擎搜索' },
+	{ id: 'sine', label: 'sine：调用内置正弦 MCP（mcp__sine__sine）' },
 ];
 
 /** 进程启动时可被环境变量钉住（headless 场景用），之后可由设置覆盖 */
@@ -271,6 +272,21 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 				return;
 			}
 			await streamToolCall(res, 'finish', { reason: '清单的写入、读取、更新都验过了', summary: '任务清单读写通过：add ×2 → read 全文 → update 标记 done → read 复核。' }, '收尾。');
+			return;
+		}
+
+		// 1.7) 内置正弦 MCP：mcp__sine__sine（30° → 0.5），再 finish 汇总，验 MCP 工具链路
+		// ⚠️ mode.json 的 mcp 策略**只管「能不能被看见」**：它过滤的是发给 LLM 的 tools[] 和提示词里的工具清单（getToolsForAgentInstance → mcpToolsFor）。执行层 getTool() 查的是全量动态源，**不过滤能力**。而 mock 是硬编码输出、压根不看 tools 参数
+		// 所以这个剧本在 mcp:'none' 下照样跑得通，但那是 mock 的假象：换真模型就看不到这个工具。
+		// ⚠️ 工具名前缀来自 settings.mcpServers 里的 **name**（sanitize 后取首个片段），默认 "sine" → mcp__sine__sine；
+		// 改过服务器显示名的话前缀会跟着变，剧本里这个硬编码名字也要一起改。
+		if (currentScenario === 'sine') {
+			const toolResults = msgs.filter((m) => m.role === 'tool').length;
+			if (toolResults === 0) {
+				await streamToolCall(res, 'mcp__sine__sine', { angle: 30, unit: 'deg', reason: '算一下 30 度的正弦' }, '用户要算正弦，调内置 MCP。');
+				return;
+			}
+			await streamToolCall(res, 'finish', { reason: '正弦值已由 MCP 算出', summary: 'sin(30°) = 0.5，由内置 sine MCP 服务器算出。' }, '拿到结果，收尾。');
 			return;
 		}
 
