@@ -57,6 +57,16 @@ function CollapseSidebarIcon() {
 	);
 }
 
+/** 折叠右侧栏：与 CollapseSidebarIcon 对称，分栏线贴右边 */
+function CollapseRightSidebarIcon() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2">
+			<rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2" />
+			<line x1="9.6" y1="2.6" x2="9.6" y2="13.4" stroke="var(--accent)" stroke-width="1.5" />
+		</svg>
+	);
+}
+
 function MinimizeIcon() {
 	return (
 		<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1">
@@ -141,11 +151,19 @@ export default function TitleBar() {
 			{/* 折叠 / 展开侧边栏 */}
 			<button
 				class={styles['title-bar-icon-btn']}
-				title={state.ui.sidebarCollapsed ? '展开侧边栏 (Ctrl+B)' : '折叠侧边栏 (Ctrl+B)'}
-				aria-label={state.ui.sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
-				onclick={() => actions.toggleSidebar()}
+				title={state.ui.leftSidebarCollapsed ? '展开主侧边栏 (Ctrl+B)' : '折叠主侧边栏 (Ctrl+B)'}
+				aria-label={state.ui.leftSidebarCollapsed ? '展开主侧边栏' : '折叠主侧边栏'}
+				onclick={() => actions.toggleLeftSidebar()}
 			>
 				<CollapseSidebarIcon />
+			</button>
+			<button
+				class={styles['title-bar-icon-btn']}
+				title={state.ui.rightSidebarCollapsed ? '展开右侧边栏 (Ctrl+Shift+B)' : '折叠右侧边栏 (Ctrl+Shift+B)'}
+				aria-label={state.ui.rightSidebarCollapsed ? '展开右侧边栏' : '折叠右侧边栏'}
+				onclick={() => actions.toggleRightSidebar()}
+			>
+				<CollapseRightSidebarIcon />
 			</button>
 
 			{/* 菜单栏 */}

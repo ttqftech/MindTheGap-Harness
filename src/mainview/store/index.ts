@@ -47,8 +47,10 @@ export type ViewMode = 'chat' | 'diagram';
 export type ConversationSort = 'updated' | 'created' | 'title';
 
 export type UIState = {
-	sidebarWidth: number;
-	sidebarCollapsed: boolean;
+	leftSidebarWidth: number;
+	leftSidebarCollapsed: boolean;
+	rightSidebarWidth: number;
+	rightSidebarCollapsed: boolean;
 	density: Density;
 	accent: Accent;
 	conversationSort: ConversationSort;
@@ -96,8 +98,10 @@ export type AppState = {
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const initialUI: UIState = {
-	sidebarWidth: 260,
-	sidebarCollapsed: false,
+	leftSidebarWidth: 260,
+	leftSidebarCollapsed: false,
+	rightSidebarWidth: 280,
+	rightSidebarCollapsed: false,
 	density: 'standard',
 	accent: 'amber',
 	conversationSort: 'updated',
@@ -232,11 +236,13 @@ export const taskListActions = {
 
 // #region 前端设置持久化（localStorage）
 
-// TODO 我认为只有 themeMode 是需要持久化的，其他设置项（如 sidebarWidth、sidebarCollapsed、viewMode 等）都不用落盘
+// TODO 我认为只有 themeMode 是需要持久化的，其他设置项（如 leftSidebarWidth、leftSidebarCollapsed、viewMode 等）都不用落盘
 function saveLocalSettings() {
 	localSettings.set('ui', {
-		sidebarWidth: state.ui.sidebarWidth,
-		sidebarCollapsed: state.ui.sidebarCollapsed,
+		leftSidebarWidth: state.ui.leftSidebarWidth,
+		leftSidebarCollapsed: state.ui.leftSidebarCollapsed,
+		rightSidebarWidth: state.ui.rightSidebarWidth,
+		rightSidebarCollapsed: state.ui.rightSidebarCollapsed,
 		density: state.ui.density,
 		accent: state.ui.accent,
 		conversationSort: state.ui.conversationSort,
@@ -344,6 +350,11 @@ export async function loadConversationCtx(conversationId: string, force = false)
 	const ctx = await agentBridge.getCtx(conversationId);
 	if (!ctx) return;
 	actions.setConversationCtx(conversationId, ctx);
+	// ⚠️ 任务清单面板必须在这里一起回填。taskListState 是进程内 store（清空后不会自动从 ctx 恢复），
+	//   而「打开一个已存在的会话」时 loadConversationCtx 是**唯一**入口 —— `done` 事件的
+	//   refreshTaskList 只在「本轮刚跑完」那一瞬间发生。不在这里回填，结果就是：
+	//   后端 ctx 里明明有任务清单，刷新页面 / 切会话回来之后面板永远不显示（2026-09-17 实测）。
+	taskListActions.set(conversationId, ctx.taskList ?? '');
 	// force = 一轮 run 刚结束：顺带从后端刷新一次 meta，让刚更新的会话在列表里上浮。
 	// ⚠️ 这里必须走后端 —— 前端自己 `Date.now()` 会把「只是点开看看」也算成一次更新。
 	if (force) void refreshConversationMeta(conversationId);
@@ -577,12 +588,19 @@ export const actions = {
 		saveLocalSettings();
 	},
 
-	setSidebarWidth(width: number) {
-		setState('ui', 'sidebarWidth', Math.max(180, Math.min(400, width)));
+	setLeftSidebarWidth(width: number) {
+		setState('ui', 'leftSidebarWidth', Math.max(180, Math.min(400, width)));
 	},
-	toggleSidebar() {
-		setState('ui', 'sidebarCollapsed', (v) => !v);
+	toggleLeftSidebar() {
+		setState('ui', 'leftSidebarCollapsed', (v) => !v);
 		saveLocalSettings();
+	},
+	setRightSidebarWidth(width: number) {
+	 setState('ui', 'rightSidebarWidth', Math.max(180, Math.min(400, width)));
+	},
+	toggleRightSidebar() {
+	 setState('ui', 'rightSidebarCollapsed', (v) => !v);
+	 saveLocalSettings();
 	},
 	openSettings(tab?: AppState['ui']['activeSettingsTab']) {
 		setState('ui', 'settingsOpen', true);

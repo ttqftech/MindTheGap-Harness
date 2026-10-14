@@ -130,10 +130,10 @@ export default function Sidebar() {
 	const [searchText, setSearchText] = createSignal('');
 	const [showSearch, setShowSearch] = createSignal(false);
 
-	/** 侧边栏折叠 / 展开时展示过渡动画 */
+	/** 侧边栏折叠 / 展开时展示过渡动画，过渡完毕后取消效果 */
 	const [isToggling, setIsToggling] = createSignal(false);
 	createEffect(on(
-		() => state.ui.sidebarCollapsed,
+		() => state.ui.leftSidebarCollapsed,
 		() => {
 			setIsToggling(true);
 			setTimeout(() => setIsToggling(false), 300);
@@ -232,10 +232,10 @@ export default function Sidebar() {
 	return (
 		<div
 			class={styles.sidebar}
-			classList={{ [styles.collapsed]: state.ui.sidebarCollapsed }}
-			style={{ width: `${state.ui.sidebarCollapsed ? 0 : state.ui.sidebarWidth}px`, transition: isToggling() ? 'width 0.3s cubic-bezier(0.2, 0.2, 0.2, 1.1)' : 'none' }}
+			classList={{ [styles.collapsed]: state.ui.leftSidebarCollapsed }}
+			style={{ width: `${state.ui.leftSidebarCollapsed ? 0 : state.ui.leftSidebarWidth}px`, transition: isToggling() ? 'width 0.3s cubic-bezier(0.2, 0.2, 0.2, 1.1)' : 'none' }}
 		>
-			<Show when={!state.ui.sidebarCollapsed}>
+			<Show when={!state.ui.leftSidebarCollapsed}>
 				{/* 顶部：新建任务 + 列表表头 */}
 				<div class={styles['sidebar-top']}>
 					<button class={styles['new-task-btn']} onclick={() => void newTask()}>
@@ -303,7 +303,7 @@ export default function Sidebar() {
 														[styles['is-unread']]: !isConversationAlive(conv) && isConversationUnread(conv.id),
 													}}
 													onclick={() => actions.setActiveConversation(conv.id)}
-													title={`${conv.title}\n创建: ${new Date(conv.createdAt).toLocaleString()}\n更新: ${new Date(conv.updatedAt).toLocaleString()}`}
+													{...useTooltip(`${conv.title}\n创建：${getTimeString(new Date(conv.createdAt), false)}\n更新：${getTimeString(new Date(conv.updatedAt), false)}`, 'tr')}
 												>
 													<span class={styles['tree-item-marker']} />
 													<span class={styles['tree-item-title']}>{conv.title}</span>

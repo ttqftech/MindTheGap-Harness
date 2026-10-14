@@ -198,7 +198,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 
 		// 0) 纯长文本剧本
 		if (currentScenario === 'text') {
-			await streamText(res, LONG_TEXT, '先想一下怎么把这段话分成很多小块发出去。');
+			await streamText(res, LONG_TEXT, LONG_TEXT);
 			return;
 		}
 

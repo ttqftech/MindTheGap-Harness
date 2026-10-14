@@ -86,7 +86,7 @@
 
 .menu-bar-item {
     font-family: var(--font-ui);
-    font-size: var(--fs-md);
+    font-size: var(--fs-s);
     color: var(--text-tertiary);
     padding: 2px 0;
     transition: color var(--dur-fast);
@@ -129,7 +129,7 @@
 
 .local-badge-text {
     font-family: var(--font-mono);
-    font-size: var(--fs-xs);
+    font-size: var(--fs-xxs);
     color: var(--text-tertiary);
     white-space: nowrap;
 }

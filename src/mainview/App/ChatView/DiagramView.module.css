@@ -96,7 +96,7 @@
     align-items: center;
     gap: 8px;
     padding: 6px 12px;
-    background: hwb(var(--bg92) / 1);
+    background: hwb(var(--bg-surface) / 1);
     border-radius: 6px;
     font-size: 13px;
 }

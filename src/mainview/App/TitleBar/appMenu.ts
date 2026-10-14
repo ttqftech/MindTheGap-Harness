@@ -103,7 +103,7 @@ export const APP_MENUS: AppMenuGroup[] = [
 		id: 'view',
 		label: '视图',
 		build: () => [
-			check('toggle-sidebar', '侧边栏', !state.ui.sidebarCollapsed, () => actions.toggleSidebar()),
+			check('toggle-sidebar', '侧边栏', !state.ui.leftSidebarCollapsed, () => actions.toggleLeftSidebar()),
 			sep(),
 			{
 				type: 'submenu',

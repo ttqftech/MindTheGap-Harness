@@ -13,7 +13,7 @@
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
-import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick, getTaskList } from '@mainview/store';
+import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
 import type { RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
@@ -207,8 +207,8 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 	// block.updatedAt 来自后端（ctx 里是条目的更新时间，在飞时是 SSE 的 timestamp）
 	const elapsedText = () => {
 		const since = props.block.updatedAt;
-		if (!since) return '阻塞中 --:--';
-		return `阻塞中 ${fmtElapsed(clockNow() - since)}`;
+		if (!since) return '已等待 --:--';
+		return `已等待 ${fmtElapsed(clockNow() - since)}`;
 	};
 
 	const submit = () => {
@@ -277,7 +277,7 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 				<textarea
 					class={styles['ask-card-input']}
 					placeholder="或直接输入你的回答..."
-					rows={2}
+					rows={1}
 					value={freeText()}
 					oninput={(e) => setFreeText(e.currentTarget.value)}
 				/>
@@ -286,7 +286,7 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 				<textarea
 					class={styles['ask-card-input']}
 					placeholder="补充说明会一起交给 Agent。"
-					rows={2}
+					rows={1}
 					value={extra()}
 					oninput={(e) => setExtra(e.currentTarget.value)}
 				/>
@@ -338,9 +338,6 @@ export default function ChatView() {
 		const s = runStatus();
 		return s === 'running' || s === 'waiting';
 	});
-	/** 任务清单面板的内容（按会话隔离在 store，避免别的会话跑完把清单写进当前视图） */
-	const taskList = () => getTaskList(appState.activeConversationId ?? '');
-	const [taskListOpen, setTaskListOpen] = createSignal(false);
 
 	/** 界面内容：已提交的 ctx + 在飞的 overlay，共用同一个投影函数 */
 	const ENABLE_RENDER_TREE_DIFF = false;
@@ -387,8 +384,6 @@ export default function ChatView() {
 	 *   没内容时是 undefined，那一段面包屑直接不显示。
 	 */
 	const extraInfo = () => getActiveConversation()?.extraInfo;
-
-	const parseTaskListLines = (text: string) => text.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ['));
 
 	/** 会话头部「更多」菜单：视图模式 + 重新同步 */
 	const openSessionMenu = (el: HTMLElement) => {
@@ -596,7 +591,6 @@ export default function ChatView() {
 	const chatAreaRef = (el: HTMLDivElement) => {
 		createEffect(() => {
 			getActiveConversation();
-			taskList();
 			getStreamTick(appState.activeConversationId ?? '');
 			const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
 			queueMicrotask(() => {
@@ -722,17 +716,14 @@ export default function ChatView() {
 				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
 				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
 				return (
-					<div class={styles['reasoning']}>
-						<span class={styles['reasoning-rail']} />
-						<details class={styles['reasoning-main']}>
-							<summary class={styles['reasoning-head']}>
-								<span class={styles['reasoning-caret']}>▶</span>
-								<span class={styles['reasoning-label']}>思考</span>
-								<span class={styles['reasoning-peek']}>{sub.content.slice(-72)}</span>
-							</summary>
-							<div class={styles['reasoning-body']}>{sub.content}</div>
-						</details>
-					</div>
+					<details class={styles['reasoning']}>
+						<summary class={styles['reasoning-head']}>
+							<span class={styles['reasoning-caret']}>▶</span>
+							<span class={styles['reasoning-label']}>思考</span>
+							<span class={styles['reasoning-peek']}>{sub.content.slice(-72)}</span>
+						</summary>
+						<div class={styles['reasoning-body']}>{sub.content}</div>
+					</details>
 				);
 
 			case 'text':
@@ -935,9 +926,8 @@ export default function ChatView() {
 		switch (block.type) {
 			case 'user':
 				if (!isRoot) return null;
-				// 设计稿里用户消息没有头像：一个「用户」小标 + 一个静态气泡
 				return (
-					<div class={styles['user-message']}>
+					<div class={styles['block-userMessage']}>
 						<div class={styles['message-head']}>
 							<span class={styles['message-head-label']}>用户</span>
 							<span class={styles['message-head-spacer']} />
@@ -950,7 +940,7 @@ export default function ChatView() {
 			// ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方
 			case 'llm':
 				return (
-					<div class={styles['agent-llm']}>
+					<div class={styles['block-llm']}>
 						<For each={block.subBlocks}>{(sub) => renderSubBlock(sub)}</For>
 						<Show when={block.usages}>{(usages) => (
 							<>
@@ -965,7 +955,7 @@ export default function ChatView() {
 
 			case 'error':
 				return (
-					<div class={styles['agent-block-error']}>
+					<div class={styles['block-error']}>
 						<span>✗</span>
 						<span>{block.message}</span>
 					</div>
@@ -1028,9 +1018,9 @@ export default function ChatView() {
 	// #endregion
 
 	return (
-		<div class={styles['main-content']}>
+		<div class={styles.mainContent}>
 			{/* 会话头部：标题 + 面包屑 + 状态 / 操作 */}
-			<div class={styles['session-header']}>
+			<div class={styles.header}>
 				<div class={styles['session-title-block']}>
 					<div class={styles['session-title']}>{conversationTitle()}</div>
 					<div class={styles['session-breadcrumb']}>
@@ -1046,10 +1036,10 @@ export default function ChatView() {
 					<Show
 						when={runStatus() === 'running'}
 						fallback={
-									<Show when={runStatus() === 'waiting'}>
-										{/* 等客户端响应（ask_user 等）：跟侧边栏的闪烁同一个语义 —— 需要你动手，所以是绿的 */}
-										<span class={`${styles['session-status']} ${styles['is-waiting']}`}>等待输入</span>
-									</Show>
+							<Show when={runStatus() === 'waiting'}>
+								{/* 等客户端响应（ask_user 等）：跟侧边栏的闪烁同一个语义 —— 需要你动手，所以是绿的 */}
+								<span class={`${styles['session-status']} ${styles['is-waiting']}`}>等待输入</span>
+							</Show>
 						}
 					>
 						<span class={`${styles['session-status']} ${styles['is-running']}`}>
@@ -1080,14 +1070,14 @@ export default function ChatView() {
 			</div>
 
 			{/* 运行进度条：2px 底槽常驻，在飞时跑一段不确定进度 */}
-			<div class={styles['progress-track']}>
+			<div class={styles.progressTrack}>
 				<Show when={isGenerating()}>
 					<div class={styles['progress-bar']} />
 				</Show>
 			</div>
 
 			{/* 聊天区域 */}
-			<div class={styles['chat-area']} ref={chatAreaRef}>
+			<div class={styles.chatArea} ref={chatAreaRef}>
 				<Show when={!renderTree()}>
 					<div class={styles['empty-state']}>
 						<div class={styles['empty-state-logo']}>
@@ -1117,21 +1107,8 @@ export default function ChatView() {
 							onCleanup(() => obs.disconnect());
 						}}
 					>
-						{/* 任务清单小面板（可折叠） */}
-						<Show when={parseTaskListLines(taskList()).length > 0}>
-							<div class={styles['task-panel']}>
-								<button class={styles['task-panel-header']} onclick={() => setTaskListOpen((v) => !v)}>
-									📋 任务清单（{parseTaskListLines(taskList()).length}）
-									<span>{taskListOpen() ? '▾' : '▸'}</span>
-								</button>
-								<Show when={taskListOpen()}>
-									<For each={parseTaskListLines(taskList())}>
-										{(line) => <div class={styles['task-panel-item']}>{line.replace(/^-\s*\[[ xX]\]\s*/, (m) => (/- \[[xX]\]/.test(m) ? '✅ ' : '⬜ '))}</div>}
-									</For>
-								</Show>
-							</div>
-						</Show>
-
+						{/* 任务清单已移到右侧栏（RightSidebar），这里不再渲染面板 —— 2026-09-17
+						    用户反馈「找不到任务清单」，根因之一是它埋在聊天消息列表顶部、默认还折叠着。 */}
 						{/* 转写：根实例直接内联渲染，让 <For> 持久化以支持 reconciliation
 						    （AGENT 头插在用户发言之后，运行摘要贴在最下面） */}
 						<div class={styles['agent-reply']}>
@@ -1157,9 +1134,9 @@ export default function ChatView() {
 						<Show when={isGenerating()}>
 							<div class={styles['agent-reply']}>
 								<span style={{ display: 'inline-flex', gap: '4px', padding: '6px 0' }}>
-									<span class={styles['typing-dot']} style={{ animation: 'typing 1.4s infinite' }}>●</span>
-									<span class={styles['typing-dot']} style={{ animation: 'typing 1.4s infinite 0.2s' }}>●</span>
-									<span class={styles['typing-dot']} style={{ animation: 'typing 1.4s infinite 0.4s' }}>●</span>
+									<span class={styles.typingDot} style={{ animation: `${styles.typing} 1.4s infinite` }}>●</span>
+									<span class={styles.typingDot} style={{ animation: `${styles.typing} 1.4s infinite 0.2s` }}>●</span>
+									<span class={styles.typingDot} style={{ animation: `${styles.typing} 1.4s infinite 0.4s` }}>●</span>
 								</span>
 							</div>
 						</Show>
@@ -1173,7 +1150,7 @@ export default function ChatView() {
 			</div>
 
 			{/* 输入区域 */}
-			<div class={styles['input-area']}>
+			<div class={styles.inputArea}>
 				<div class={styles['input-wrapper']}>
 					<textarea
 						class={styles['input-textarea']}

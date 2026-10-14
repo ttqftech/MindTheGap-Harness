@@ -25,7 +25,22 @@
 		background-color: var(--bg-app);
 		.sidebarResizer {
 			width: 4px;
-			margin-right: -4px;
+			margin: -2px -2px;
+			cursor: col-resize;
+			background: transparent;
+			transition: background 0.15s,
+						box-shadow 0.45s cubic-bezier(0.1, 4, 0.2, 1);
+			flex-shrink: 0;
+			z-index: 1;
+			&:hover, &.dragging {
+				background-color: var(--accent);
+				box-shadow: 0 0 8px 0 color-mix(in srgb, var(--accent) 30%, transparent);
+			}
+		}
+		/* 右侧栏拖拽条：与左边对称，但 margin 在左侧（贴住聊天区右缘） */
+		.rightSidebarResizer {
+			width: 4px;
+			margin: -2px -2px;
 			cursor: col-resize;
 			background: transparent;
 			transition: background 0.15s,

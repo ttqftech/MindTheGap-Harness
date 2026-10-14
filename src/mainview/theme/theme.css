@@ -52,21 +52,17 @@
 :root {
 	/* 字型：设计稿用 Archivo（品牌）/ Inter（界面）/ JetBrains Mono（等宽元信息）。
 	   本机没装时按栈回退，不内嵌字体文件。 */
-	--font-brand: "Archivo", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-	--font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
-	--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+	--font-brand: "Scania Sans", "Archivo", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+	--font-ui: "Inter", MiSans, MiSans VF, HarmonyOS Sans, HarmonyOS Sans SC, 冬青黑体简体中文, 冬青黑体, Product Sans, 思源黑体, Noto Sans S Chinese, PingFang SC, 苹方, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monaco, "Cascadia Mono", Consolas, "Liberation Mono", "苹方-简", "苹方", "微软雅黑", "Segoe UI", monospace;
 
-	/* 字号：设计稿的等宽元信息压得很小（10 / 10.5），正文 12.8 */
-	--fs-xxs: 10px;
-	--fs-xs: 10.5px;
-	--fs-sm: 11.5px;
-	--fs-md: 12.5px;
-	--fs-base: 12.8px;
-	--fs-lg: 13px;
-	--fs-title: 14.5px;
-
-	--lh-body: 21px;
-	--lh-tight: 1.3;
+	/* 字号 */
+	--fs-xxxs: 10px;	/* 元信息、附属信息（如时间、token 消耗）、思考内容概览 */
+	--fs-xxs: 11px;	/* 子标题、栏目头、小按钮 */
+	--fs-xs: 12px;	/* 工具调用标题、侧边栏状态 */
+	--fs-s: 13px;	/* 侧边栏和标题栏菜单项 */
+	--fs-m: 14px;	/* 输入框、聊天信息正文 */
+	--fs-l: 16px;	/* 会话面包屑标题、设置标题 */
 
 	/* 圆角 */
 	--r-xs: 3px;
@@ -86,15 +82,15 @@
 	--titlebar-h: 44px;
 	--win-btn-w: 46px;
 
-	/* 密度兜底（= 标准）；未加 densityXxx 类时生效。必须放在密度段之前。 */
-	--row-h: 32px;
-	--ctrl-h: 30px;
-	--section-pad: 16px;
+	/* 密度 */
+	--row-h: 32px;	/* 侧边栏项目高度 */
+	--section-pad-lr: 16px;
+	--section-pad-tb: 12px;
 	--block-gap: 16px;
 	--stream-pad-y: 18px;
 
 	/* 焦点圈：颜色跟着强调色走，由 .accent* 覆盖 --ring-color */
-	--ring-color: rgba(232, 163, 60, 0.4);
+	--ring-color: hwb(35.9 23.5% 9% / 0.40);
 	--ring: 0 0 0 2px var(--ring-color);
 }
 
@@ -102,274 +98,253 @@
 
 .themeDark {
 	/* 背景 / 表面 */
-	--bg-app: #0C0D10;              /* 主工作区 */
-	--bg-sidebar: #101216;          /* 侧边栏 */
-	--bg-titlebar-from: #171A1F;    /* 标题栏渐变起（上） */
-	--bg-titlebar-to: #121418;      /* 标题栏渐变止（下） */
-	--bg-surface: #101317;          /* 卡片 / 消息体 */
-	--bg-surface-header: #151922;   /* 卡片头部 / 内嵌标记 */
-	--bg-input: #12151A;            /* 输入框 */
-	--bg-bubble-user: #14171C;      /* 用户消息气泡 */
-	--bg-chip: #171B21;             /* 小徽标（LOCAL / 上下文标记） */
-	--bg-progress-track: #16191E;   /* 进度条底槽 */
-	--bg-hover: rgba(255, 255, 255, 0.04);
-	--bg-active: rgba(255, 255, 255, 0.07);
-	--bg-selected: rgba(232, 163, 60, 0.12);
-	--bg-scrim: rgba(0, 0, 0, 0.55);
+	--bg-app: hwb(225 4.7% 93.7%);              /* 主工作区 */
+	--bg-sidebar: hwb(220 6.3% 91.4%);          /* 侧边栏 */
+	--bg-titlebar-from: hwb(217.5 9% 87.8%);    /* 标题栏渐变起（上） */
+	--bg-titlebar-to: hwb(220 7.1% 90.6%);      /* 标题栏渐变止（下） */
+	--bg-sub1: hwb(214.3 6.3% 91%);          /* 卡片 / 消息体 */
+	--bg-sub1-header: hwb(221.5 8.2% 86.7%);   /* 卡片头部 / 内嵌标记 */
+	--bg-input: hwb(217.5 7.1% 89.8%);            /* 输入框 */
+	--bg-bubble-user: hwb(217.5 7.8% 89%);      /* 用户消息气泡 */
+	--bg-chip: hwb(216 9% 87.1%);             /* 小徽标（LOCAL / 上下文标记） */
+	--bg-progress-track: hwb(217.5 8.6% 88.2%);   /* 进度条底槽 */
+	--bg-hover: hwb(0 100% 0% / 0.04);
+	--bg-active: hwb(0 100% 0% / 0.07);
+	--bg-selected: hwb(35.9 23.5% 9% / 0.12);
+	--bg-scrim: hwb(0 0% 100% / 0.55);
 
 	/* 描边 */
-	--border-app: #21262E;
-	--border: #1B1F25;              /* 分隔线（默认） */
-	--border-input: #262B32;
-	--border-strong: #2A2F36;
+	--border-app: hwb(216.9 12.9% 82%);
+	--border: hwb(216 10.6% 85.5%);              /* 分隔线（默认） */
+	--border-input: hwb(215 14.9% 80.4%);
+	--border-strong: hwb(215 16.5% 78.8%);
 
 	/* 文字 */
-	--text-primary: #E9E9E7;
-	--text-body: #D5D5D3;
-	--text-secondary: #C9C9C7;
-	--text-tertiary: #8E8E8C;
-	--text-quiet: #6E7278;
-	--text-faint: #62666D;
-	--text-disabled: #4E535A;
+	--text-primary: hwb(60 90.6% 8.6%);
+	--text-body: hwb(60 82.7% 16.5%);
+	--text-secondary: hwb(60 78% 21.2%);
+	--text-tertiary: hwb(60 54.9% 44.3%);
+	--text-quiet: hwb(216 43.1% 52.9%);
+	--text-faint: hwb(218.2 38.4% 57.3%);
+	--text-disabled: hwb(215 30.6% 64.7%);
 
 	/* 强调 / 状态 */
-	--accent: #E8A33C;
-	--accent-hover: #F0B255;
-	--accent-ink: #161819;          /* 压在强调色上的文字 */
-	--accent-soft: #2A2113;
-	--accent-soft-border: #5C4720;
+	--accent: hwb(35.9 23.5% 9%);
+	--accent-hover: hwb(36 33.3% 5.9%);
+	--accent-ink: hwb(200 8.6% 90.2%);          /* 压在强调色上的文字 */
+	--accent-soft: hwb(36.5 7.5% 83.5%);
+	--accent-soft-border: hwb(39 12.5% 63.9%);
 
-	--success: #8FB08A;
-	--success-soft: #1A2118;
-	--success-soft-border: #36432F;
+	--success: hwb(112.1 54.1% 31%);
+	--success-soft: hwb(106.7 9.4% 87.1%);
+	--success-soft-border: hwb(99 18.4% 73.7%);
 
-	--warn-bg: #17140E;             /* 反思卡 */
-	--warn-border: #3D3218;
-	--warn-text: #E8A33C;
-	--warn-chip-bg: #241D0F;
-	--warn-chip-text: #C9A05A;
+	--warn-bg: hwb(40 5.5% 91%);             /* 反思卡 */
+	--warn-border: hwb(42.2 9.4% 76.1%);
+	--warn-text: hwb(35.9 23.5% 9%);
+	--warn-chip-bg: hwb(40 5.9% 85.9%);
+	--warn-chip-text: hwb(37.8 35.3% 21.2%);
 
-	--ask-bg: #131518;              /* 提问卡片 */
-	--ask-border: #2E3540;
+	--ask-bg: hwb(216 7.5% 90.6%);              /* 提问卡片 */
+	--ask-border: hwb(216.7 18% 74.9%);
 
-	--mcp-bg: #0F1419;              /* MCP 调用卡 */
-	--mcp-border: #1E2A33;
-	--mcp-text: #7FA8BF;
-	--mcp-header: #121A21;
-	--mcp-title: #DCE6EC;
-	--mcp-chip-bg: #131F29;
-	--mcp-chip-border: #27404D;
+	--mcp-bg: hwb(210 5.9% 90.2%);              /* MCP 调用卡 */
+	--mcp-border: hwb(205.7 11.8% 80%);
+	--mcp-text: hwb(201.6 49.8% 25.1%);
+	--mcp-header: hwb(208 7.1% 87.1%);
+	--mcp-title: hwb(202.5 86.3% 7.5%);
+	--mcp-chip-bg: hwb(207.3 7.5% 83.9%);
+	--mcp-chip-border: hwb(200.5 15.3% 69.8%);
 
-	--danger: #D9705F;
-	--danger-soft: #2A1714;
-	--danger-soft-border: #5A2E27;
+	--danger: hwb(8.4 37.3% 14.9%);
+	--danger-soft: hwb(8.2 7.8% 83.5%);
+	--danger-soft-border: hwb(8.2 15.3% 64.7%);
 
-	--info: #6E9BD1;
+	--info: hwb(212.7 43.1% 18%);
 
 	/* 阴影 */
-	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-	--shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-	--shadow-lg: 0 6px 16px -4px rgba(0, 0, 0, 0.4);
-	--shadow-xl: 0 12px 32px -8px rgba(0, 0, 0, 0.5);
-	--shadow-window: 0 24px 60px -12px rgba(0, 0, 0, 0.55), 0 6px 16px -4px rgba(0, 0, 0, 0.4);
+	--shadow-sm: 0 1px 2px hwb(0 0% 100% / 0.30);
+	--shadow: 0 2px 8px hwb(0 0% 100% / 0.40);
+	--shadow-lg: 0 6px 16px -4px hwb(0 0% 100% / 0.40);
+	--shadow-xl: 0 12px 32px -8px hwb(0 0% 100% / 0.50);
+	--shadow-window: 0 24px 60px -12px hwb(0 0% 100% / 0.55), 0 6px 16px -4px hwb(0 0% 100% / 0.40);
 
 	/* 代码 / 骨架屏 */
-	--codeBg: #0F1419;
-	--codeBorder: #1E2A33;
-	--skeleton: #151922;
-	--skeleton-weak: #12151A;
+	--codeBg: hwb(210 5.9% 90.2%);
+	--codeBorder: hwb(205.7 11.8% 80%);
+	--skeleton: hwb(221.5 8.2% 86.7%);
+	--skeleton-weak: hwb(217.5 7.1% 89.8%);
 
 	/* 分段控件（设置页的主题 / 密度 / 强调色切换） */
-	--segmented-track: #14171C;
-	--segmented-active: #2A3038;
+	--segmented-track: hwb(217.5 7.8% 89%);
+	--segmented-active: hwb(214.3 16.5% 78%);
 }
 
 /* ---------- 2. 浅色令牌 ---------- */
 
 .themeLight {
 	/* 背景 / 表面 */
-	--bg-app: #FFFFFF;
-	--bg-sidebar: #F4F5F7;
-	--bg-titlebar-from: #FAFBFC;
-	--bg-titlebar-to: #F2F4F6;
-	--bg-surface: #F7F8FA;
-	--bg-surface-header: #EFF1F4;
-	--bg-input: #FFFFFF;
-	--bg-bubble-user: #F4F5F7;
-	--bg-chip: #F1F3F5;
-	--bg-progress-track: #EDEFF2;
-	--bg-hover: rgba(16, 20, 28, 0.04);
-	--bg-active: rgba(16, 20, 28, 0.07);
-	--bg-selected: rgba(232, 163, 60, 0.14);
-	--bg-scrim: rgba(16, 20, 28, 0.18);
+	--bg-app: hwb(195 98% 1%);
+	--bg-sidebar: hwb(195 95% 3%);
+	--bg-titlebar-from: hwb(210 98% 1.2%);
+	--bg-titlebar-to: hwb(210 94.9% 3.5%);
+	--bg-sub1: hwb(195 95% 3%);
+	--bg-sub1-header: hwb(195 92% 4%);
+	--bg-input: hwb(0 100% 0%);
+	--bg-bubble-user: var(--bg-sub1);
+	--bg-chip: hwb(210 94.5% 3.9%);
+	--bg-progress-track: hwb(216 92.9% 5.1%);
+	--bg-hover: hwb(220 6.3% 89% / 0.04);
+	--bg-active: hwb(220 6.3% 89% / 0.07);
+	--bg-selected: hwb(35.9 23.5% 9% / 0.14);
+	--bg-scrim: hwb(220 6.3% 89% / 0.18);
 
 	/* 描边 */
-	--border-app: #E0E3E8;
-	--border: #E4E7EA;
-	--border-input: #E0E3E8;
-	--border-strong: #D3D8DE;
+	--border-app: hwb(217.5 87.8% 9%);
+	--border: hwb(210 89.4% 8.2%);
+	--border-input: hwb(217.5 87.8% 9%);
+	--border-strong: hwb(212.7 82.7% 12.9%);
 
 	/* 文字 */
-	--text-primary: #1B1F24;
-	--text-body: #33383F;
-	--text-secondary: #4A5058;
-	--text-tertiary: #5A6068;
-	--text-quiet: #767C85;
-	--text-faint: #8C929B;
-	--text-disabled: #AAB0B8;
+	--text-primary: hwb(213.3 10.6% 85.9%);
+	--text-body: hwb(215 20% 75.3%);
+	--text-secondary: hwb(214.3 29% 65.5%);
+	--text-tertiary: hwb(214.3 35.3% 59.2%);
+	--text-quiet: hwb(216 46.3% 47.8%);
+	--text-faint: hwb(216 54.9% 39.2%);
+	--text-disabled: hwb(214.3 66.7% 27.8%);
 
 	/* 强调 / 状态 */
-	--accent: #E8A33C;
-	--accent-hover: #D8931F;
-	--accent-ink: #161819;
-	--accent-soft: #FDF3E2;
-	--accent-soft-border: #EFD5A6;
+	--accent: hwb(35.9 23.5% 9%);
+	--accent-hover: hwb(37.6 12.2% 15.3%);
+	--accent-ink: hwb(200 8.6% 90.2%);
+	--accent-soft: hwb(37.8 88.6% 0.8%);
+	--accent-soft-border: hwb(38.6 65.1% 6.3%);
 
-	--success: #5E8A57;
-	--success-soft: #F0F5EE;
-	--success-soft-border: #CFE0C9;
+	--success: hwb(111.8 34.1% 45.9%);
+	--success-soft: hwb(102.9 93.3% 3.9%);
+	--success-soft-border: hwb(104.3 78.8% 12.2%);
 
-	--warn-bg: #FDF8EE;
-	--warn-border: #EEDDBB;
-	--warn-text: #A8701A;
-	--warn-chip-bg: #F7EDDA;
-	--warn-chip-text: #8A6520;
+	--warn-bg: hwb(40 93.3% 0.8%);
+	--warn-border: hwb(40 73.3% 6.7%);
+	--warn-text: hwb(36.3 10.2% 34.1%);
+	--warn-chip-bg: hwb(39.3 85.5% 3.1%);
+	--warn-chip-text: hwb(39.1 12.5% 45.9%);
 
-	--ask-bg: #F7F8FA;
-	--ask-border: #DDE2E8;
+	--ask-bg: hwb(220 96.9% 2%);
+	--ask-border: hwb(212.7 86.7% 9%);
 
-	--mcp-bg: #F5F8FA;
-	--mcp-border: #D7E2EA;
-	--mcp-text: #3D6B85;
-	--mcp-header: #EAF2F7;
-	--mcp-title: #1F4658;
-	--mcp-chip-bg: #E4EFF6;
-	--mcp-chip-border: #BFD8E6;
+	--mcp-bg: hwb(204 96.1% 2%);
+	--mcp-border: hwb(205.3 84.3% 8.2%);
+	--mcp-text: hwb(201.7 23.9% 47.8%);
+	--mcp-header: hwb(203.1 91.8% 3.1%);
+	--mcp-title: hwb(198.9 12.2% 65.5%);
+	--mcp-chip-bg: hwb(203.3 89.4% 3.5%);
+	--mcp-chip-border: hwb(201.5 74.9% 9.8%);
 
-	--danger: #C0503F;
-	--danger-soft: #FDF0EE;
-	--danger-soft-border: #EFCFC9;
+	--danger: hwb(7.9 24.7% 24.7%);
+	--danger-soft: hwb(8 93.3% 0.8%);
+	--danger-soft-border: hwb(9.5 78.8% 6.3%);
 
-	--info: #3B6EA5;
+	--info: hwb(211.1 23.1% 35.3%);
 
 	/* 阴影 */
-	--shadow-sm: 0 1px 2px rgba(16, 20, 28, 0.06);
-	--shadow: 0 2px 8px rgba(16, 20, 28, 0.08);
-	--shadow-lg: 0 6px 16px -4px rgba(16, 20, 28, 0.12);
-	--shadow-xl: 0 12px 32px -8px rgba(16, 20, 28, 0.16);
-	--shadow-window: 0 24px 60px -12px rgba(16, 20, 28, 0.18), 0 6px 16px -4px rgba(16, 20, 28, 0.12);
+	--shadow-sm: 0 1px 2px hwb(220 6.3% 89% / 0.06);
+	--shadow: 0 2px 8px hwb(220 6.3% 89% / 0.08);
+	--shadow-lg: 0 6px 16px -4px hwb(220 6.3% 89% / 0.12);
+	--shadow-xl: 0 12px 32px -8px hwb(220 6.3% 89% / 0.16);
+	--shadow-window: 0 24px 60px -12px hwb(220 6.3% 89% / 0.18), 0 6px 16px -4px hwb(220 6.3% 89% / 0.12);
 
 	/* 代码 / 骨架屏 */
-	--codeBg: #F7F8FA;
-	--codeBorder: #E4E7EA;
-	--skeleton: #EFF1F4;
-	--skeleton-weak: #F4F5F7;
+	--codeBg: hwb(220 96.9% 2%);
+	--codeBorder: hwb(210 89.4% 8.2%);
+	--skeleton: hwb(216 93.7% 4.3%);
+	--skeleton-weak: hwb(220 95.7% 3.1%);
 
 	/* 分段控件 */
-	--segmented-track: #EFF1F4;
-	--segmented-active: #FFFFFF;
+	--segmented-track: hwb(216 93.7% 4.3%);
+	--segmented-active: hwb(0 100% 0%);
 }
 
 /* 没设置主题类名时的兜底：按深色走 */
 html:not(.themeLight):not(.themeDark) {
-	--bg-app: #0C0D10;
-	--bg-sidebar: #101216;
-	--text-primary: #E9E9E7;
+	--bg-app: hwb(225 4.7% 93.7%);
+	--bg-sidebar: hwb(220 6.3% 91.4%);
+	--text-primary: hwb(60 90.6% 8.6%);
 }
 
 /* ---------- 3. 界面密度 ---------- */
 
 .densityCompact {
-	--row-h: 28px;          /* 会话行 / 列表行 */
-	--ctrl-h: 26px;         /* 控件高度 */
-	--titlebar-h: 38px;
-	--section-pad: 12px;    /* 区块左右内边距 */
-	--block-gap: 12px;      /* 对话流块间距 */
-	--stream-pad-y: 14px;
-	--fs-base: 12.2px;
 }
 
 .densityStandard {
-	--row-h: 32px;
-	--ctrl-h: 30px;
-	--titlebar-h: 44px;
-	--section-pad: 16px;
-	--block-gap: 16px;
-	--stream-pad-y: 18px;
-	--fs-base: 12.8px;
 }
 
 .densityComfortable {
-	--row-h: 38px;
-	--ctrl-h: 34px;
-	--titlebar-h: 50px;
-	--section-pad: 20px;
-	--block-gap: 20px;
-	--stream-pad-y: 24px;
-	--fs-base: 13.6px;
 }
 
 /* ---------- 4. 强调色 ----------
    两个类同时挂在 <html> 上，故用复合选择器保证在浅色下也能覆盖。 */
 
 .accentAmber {
-	--accent: #E8A33C;
-	--accent-hover: #F0B255;
-	--accent-ink: #161819;
-	--accent-soft: #2A2113;
-	--accent-soft-border: #5C4720;
-	--ring-color: rgba(232, 163, 60, 0.4);
+	--accent: hwb(35 25% 8%);
+	--accent-hover: hwb(35 33.3% 5.9%);
+	--accent-ink: hwb(200 8.6% 90.2%);
+	--accent-soft: hwb(35 7.5% 83.5%);
+	--accent-soft-border: hwb(39 12.5% 63.9%);
+	--ring-color: hwb(35 25% 8% / 0.40);
 }
 .accentAmber.themeLight {
-	--accent-hover: #D8931F;
-	--accent-soft: #FDF3E2;
-	--accent-soft-border: #EFD5A6;
-	--ring-color: rgba(232, 163, 60, 0.45);
+	--accent-hover: hwb(37.6 12.2% 15.3%);
+	--accent-soft: hwb(37.8 88.6% 0.8%);
+	--accent-soft-border: hwb(38.6 65.1% 6.3%);
+	--ring-color: hwb(35 25% 8% / 0.45);
 }
 
 .accentBlue {
-	--accent: #5B8DEF;
-	--accent-hover: #7099F2;
-	--accent-ink: #0E1524;
-	--accent-soft: #131B2A;
-	--accent-soft-border: #2A3E60;
-	--ring-color: rgba(91, 141, 239, 0.4);
+	--accent: hwb(219.7 35.7% 6.3%);
+	--accent-hover: hwb(221.1 43.9% 5.1%);
+	--accent-ink: hwb(220.9 5.5% 85.9%);
+	--accent-soft: hwb(219.1 7.5% 83.5%);
+	--accent-soft-border: hwb(217.8 16.5% 62.4%);
+	--ring-color: hwb(219.7 35.7% 6.3% / 0.40);
 }
 .accentBlue.themeLight {
-	--accent-hover: #4379E0;
-	--accent-soft: #EDF3FE;
-	--accent-soft-border: #C6D8FA;
-	--ring-color: rgba(91, 141, 239, 0.45);
+	--accent-hover: hwb(219.4 26.3% 12.2%);
+	--accent-soft: hwb(218.8 92.9% 0.4%);
+	--accent-soft-border: hwb(219.2 77.6% 2%);
+	--ring-color: hwb(219.7 35.7% 6.3% / 0.45);
 }
 
 .accentTeal {
-	--accent: #3FB6A8;
-	--accent-hover: #55C5B7;
-	--accent-ink: #08201D;
-	--accent-soft: #10211F;
-	--accent-soft-border: #245049;
-	--ring-color: rgba(63, 182, 168, 0.4);
+	--accent: hwb(172.9 24.7% 28.6%);
+	--accent-hover: hwb(172.5 33.3% 22.7%);
+	--accent-ink: hwb(172.5 3.1% 87.5%);
+	--accent-soft: hwb(172.9 6.3% 87.1%);
+	--accent-soft-border: hwb(170.5 14.1% 68.6%);
+	--ring-color: hwb(172.9 24.7% 28.6% / 0.40);
 }
 .accentTeal.themeLight {
-	--accent-hover: #319E91;
-	--accent-soft: #EAF7F5;
-	--accent-soft-border: #BFE5DF;
-	--ring-color: rgba(49, 158, 145, 0.45);
+	--accent-hover: hwb(172.8 19.2% 38%);
+	--accent-soft: hwb(170.8 91.8% 3.1%);
+	--accent-soft-border: hwb(170.5 74.9% 10.2%);
+	--ring-color: hwb(172.8 19.2% 38% / 0.45);
 }
 
 .accentViolet {
-	--accent: #9B7BE8;
-	--accent-hover: #AC90EE;
-	--accent-ink: #17122A;
-	--accent-soft: #1B1628;
-	--accent-soft-border: #40355C;
-	--ring-color: rgba(155, 123, 232, 0.4);
+	--accent: hwb(257.6 48.2% 9%);
+	--accent-hover: hwb(257.9 56.5% 6.7%);
+	--accent-ink: hwb(252.5 7.1% 83.5%);
+	--accent-soft: hwb(256.7 8.6% 84.3%);
+	--accent-soft-border: hwb(256.9 20.8% 63.9%);
+	--ring-color: hwb(257.6 48.2% 9% / 0.40);
 }
 .accentViolet.themeLight {
-	--accent-hover: #8562DE;
-	--accent-soft: #F3EFFD;
-	--accent-soft-border: #D8CCF7;
-	--ring-color: rgba(133, 98, 222, 0.45);
+	--accent-hover: hwb(256.9 38.4% 12.9%);
+	--accent-soft: hwb(257.1 93.7% 0.8%);
+	--accent-soft-border: hwb(256.7 80% 3.1%);
+	--ring-color: hwb(256.9 38.4% 12.9% / 0.45);
 }
 
 /* ---------- 5. 旧 HWB 变量 ----------
@@ -377,32 +352,36 @@ html:not(.themeLight):not(.themeDark) {
    值取自设计稿同位置的色值（见注释），随主题切换。 */
 
 .themeDark {
-	--bg100: 0 0% 100%;
-	--bg99: 0 2% 98%;
-	--bg98: 0 4% 96%;
-	--bg97: 0 6% 94%;
-	--bg96: 0 8% 92%;
-	--bg95: 214 6.3% 91.0%;     /* ≈ #101317 卡片面 */
-	--bg94: 216 9.0% 87.1%;     /* ≈ #171B21 徽标面 */
-	--bg92: 218 8.6% 88.2%;     /* ≈ #16191E */
-	--bg90: 216 10.6% 85.5%;    /* ≈ #1B1F25 悬停 */
-	--bg88: 215 12.2% 83.1%;    /* ≈ #1F242B 激活 */
-	--bg85: 215 16.5% 78.8%;    /* ≈ #2A2F36 次级描边 */
+	--bg100: 0 20.0% 80.0%;
+	--bg99: 0 18.5% 81.5%;
+	--bg98: 0 17.0% 83.0%;
+	--bg97: 0 15.5% 84.5%;
+	--bg96: 0 14.0% 86.0%;
+	--bg95: 0 12.5% 87.5%;
+	--bg94: 0 11.0% 89.0%;
+	--bg93: 0 9.5% 90.5%;
+	--bg92: 0 8.0% 92.0%;
+	--bg91: 0 6.5% 93.5%;
+	--bg90: 0 5.0% 95.0%;
+	--bg88: 215 12.2% 83.1%;    /* ≈ hwb(215 12.2% 83.1%) 激活 */
+	--bg85: 215 16.5% 78.8%;    /* ≈ hwb(215 16.5% 78.8%) 次级描边 */
 	--highlight: 0 25% 75%;
 }
 
 .themeLight {
 	--bg100: 0 100% 0%;
-	--bg99: 0 100% 1%;
-	--bg98: 0 100% 2%;
-	--bg97: 0 100% 3%;
-	--bg96: 0 100% 4%;
-	--bg95: 216 92.9% 5.1%;     /* ≈ #EDEFF2 */
-	--bg94: 210 94.5% 3.9%;     /* ≈ #F1F3F5 */
-	--bg92: 210 92.9% 4.7%;     /* ≈ #EDF0F3 */
-	--bg90: 216 93.7% 4.3%;     /* ≈ #EFF1F4 */
-	--bg88: 218 87.8% 9.0%;     /* ≈ #E0E3E8 */
-	--bg85: 210 89.4% 8.2%;     /* ≈ #E4E7EA */
+	--bg99: 0 99% 1%;
+	--bg98: 0 98% 2%;
+	--bg97: 0 97% 3%;
+	--bg96: 0 96% 4%;
+	--bg95: 0 95% 5%;
+	--bg94: 0 94% 6%;
+	--bg93: 0 93% 7%;
+	--bg92: 0 92% 8%;
+	--bg91: 0 91% 9%;
+	--bg90: 0 90% 10%;
+	--bg88: 218 87.8% 9.0%;     /* ≈ hwb(217.5 87.8% 9%) */
+	--bg85: 210 89.4% 8.2%;     /* ≈ hwb(210 89.4% 8.2%) */
 	--highlight: 0 100% 0%;
 }
 
@@ -420,8 +399,8 @@ html:not(.themeLight):not(.themeDark) {
 	--monoFont: var(--font-mono);
 
 	--ff: var(--bg-app);
-	--f7: var(--bg-surface);
-	--e7: var(--bg-surface-header);
+	--f7: var(--bg-sub1);
+	--e7: var(--bg-sub1-header);
 	--d0: var(--border-strong);
 	--c0: var(--border-strong);
 	--88: var(--text-tertiary);

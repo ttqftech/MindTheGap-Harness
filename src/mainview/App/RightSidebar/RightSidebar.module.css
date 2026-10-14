@@ -1,0 +1,120 @@
+/**
+ * 右侧栏（任务清单）样式
+ *
+ * 与左侧边栏同一套语义：收起时整条归零（连 border 一起消失），展开时由 App 的
+ * rightSidebarWidth 控制宽度。内容走主题令牌，换密度 / 强调色整条一起变。
+ */
+
+.rightSidebar {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	flex-shrink: 0;
+	overflow: hidden;
+	background-color: var(--bg-sidebar);
+	border-left: 1px solid var(--border);
+	/* 收起时整条栏归零：连分隔线也不留 */
+	&.collapsed {
+		border-left: none;
+	}
+}
+
+.rightSidebar-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px;
+	flex-shrink: 0;
+}
+
+.rightSidebar-title {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xxs);
+	color: var(--text-faint);
+}
+
+.rightSidebar-count {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xxxs);
+	color: var(--text-disabled);
+	background-color: var(--bg-chip);
+	padding: 1px 6px;
+	border-radius: var(--r-full);
+}
+
+.rightSidebar-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border-radius: var(--r-sm);
+	color: var(--text-faint);
+	transition: background-color var(--dur-fast), color var(--dur-fast);
+	&:hover {
+		background-color: var(--bg-hover);
+		color: var(--text-tertiary);
+	}
+}
+
+.rightSidebar-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 2px 8px 8px;
+}
+
+.rightSidebar-empty {
+	padding: 14px 8px;
+	font-size: var(--fs-s);
+	color: var(--text-disabled);
+	text-align: center;
+}
+
+.rightSidebar-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 3px 8px;
+	border-radius: var(--r-md);
+	cursor: default;
+	transition: background-color var(--dur-fast);
+	&:hover {
+		background-color: var(--bg-hover);
+	}
+}
+
+.rightSidebar-checkbox {
+	flex-shrink: 0;
+	font-size: var(--fs-s);
+	line-height: 1.5;
+}
+
+.rightSidebar-text {
+	font-size: var(--fs-s);
+	color: var(--text-tertiary);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* 已完成项：文字降级为 quieter，与左侧 conversation marker 的「跑完未读 = 绿色常亮」不同，
+   这里用删除线 + 更淡的颜色表达「做完了」，不抢正在跑的那条的视觉。 */
+.rightSidebar-item-done .rightSidebar-text {
+	color: var(--text-disabled);
+	text-decoration: line-through;
+}
+
+.rightSidebar-footer {
+	display: flex;
+	align-items: center;
+	padding: 8px 12px 12px;
+	flex-shrink: 0;
+}
+
+.rightSidebar-footer-text {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xxxs);
+	color: var(--text-disabled);
+}
