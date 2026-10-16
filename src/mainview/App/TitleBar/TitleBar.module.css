@@ -6,18 +6,16 @@
    否则会被拖拽区吞掉点击。
    ========================================================================== */
 
-.title-bar {
+.titleBar {
     display: flex;
     align-items: center;
     gap: 10px;
     height: var(--titlebar-h);
     flex-shrink: 0;
-    padding-left: 10px;
     background: linear-gradient(180deg, var(--bg-titlebar-from), var(--bg-titlebar-to));
     border-bottom: 1px solid var(--border-app);
     user-select: none;
     -webkit-app-region: drag;
-    app-region: drag;
 }
 
 /* ---------- 品牌锁型 ---------- */
@@ -27,13 +25,25 @@
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+    height: 100%;
+    -webkit-app-region: no-drag;
+    cursor: pointer;
+    &:hover {
+        background-color: var(--bg-active);
+    }
 }
 
 .app-mark {
     display: inline-flex;
-    width: 22px;
-    height: 22px;
+    align-items: center;
+    height: 100%;
     color: var(--text-primary);
+    -webkit-app-region: no-drag;
+    svg {
+        display: block;
+        height: 100%;
+        width: auto;
+    }
 }
 
 .brand-name {
@@ -42,6 +52,8 @@
     font-weight: 700;
     letter-spacing: 0.01em;
     color: var(--text-primary);
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
 }
 
 .brand-suffix {
@@ -49,6 +61,8 @@
     font-size: 12.5px;
     font-weight: 300;
     color: var(--text-tertiary);
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
 }
 
 /* ---------- 折叠侧边栏 ---------- */
@@ -95,12 +109,14 @@
     color: var(--text-primary);
 }
 
-/* ---------- 拖拽占位 ---------- */
+/* ---------- 拖拽占位（唯一的原生窗口拖拽区） ---------- */
 
 .title-bar-drag {
     flex: 1;
     min-width: 0;
     height: 100%;
+    /* 只有这块空白区参与窗口拖拽；品牌区 / 按钮 / 菜单 / 徽标都不参与（见上方说明） */
+    -webkit-app-region: drag;
 }
 
 /* ---------- 运行时徽标 ---------- */
@@ -142,27 +158,25 @@
     align-self: stretch;
     flex-shrink: 0;
     -webkit-app-region: no-drag;
-    app-region: no-drag;
-}
-
-.title-bar-btn {
-    width: var(--win-btn-w);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-tertiary);
-    transition: background-color var(--dur-fast), color var(--dur-fast);
-}
-.title-bar-btn:hover:not(:disabled) {
-    background-color: var(--bg-active);
-    color: var(--text-primary);
-}
-.title-bar-btn:disabled {
-    color: var(--text-disabled);
-    cursor: default;
-}
-
-.title-bar-close:hover:not(:disabled) {
-    background-color: #C0503F;
-    color: #fff;
+    z-index: 100;
+    &>button {
+        width: var(--win-btn-w);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-tertiary);
+        transition: background-color var(--dur-fast), color var(--dur-fast);
+        &:hover:not(:disabled) {
+            background-color: var(--bg-active);
+            color: var(--text-primary);
+        }
+        &:disabled {
+            color: var(--text-disabled);
+            cursor: default;
+        }
+        .clostBtn:hover:not(:disabled) {
+            background-color: #C0503F;
+            color: #fff;
+        }
+    }
 }

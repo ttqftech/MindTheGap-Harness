@@ -4,7 +4,7 @@
      面板直接编辑该文件的源码；基座提示词独立成「提示词」Tab，存后端 settings.basePrompt）
    ========================================================================== */
 
-import { createEffect, createMemo, createSignal, For, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
@@ -19,6 +19,7 @@ import type {
 import { confirmMsgbox, alertMsgbox } from '@mainview/ffboxBridge';
 import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/agentBridge';
 import { shell } from '@mainview/localBridge';
+import { startSettingsDrag, setSettingsTravelMeasure } from './useSettingsDrag';
 
 /** ISO 8601（UTC）→ 本地时间；构建信息里的时间统一存 UTC，只在展示时转换 */
 function formatTime(iso: string): string {
@@ -52,6 +53,17 @@ function XIcon() {
 		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			<line x1="18" y1="6" x2="6" y2="18"/>
 			<line x1="6" y1="6" x2="18" y2="18"/>
+		</svg>
+	);
+}
+
+/** 设置面板头部的拖拽手柄（三道横线 = grip），按住它可以上下滑动面板拉出 / 关闭 */
+function DragHandleIcon() {
+	return (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+			<line x1="4" y1="6" x2="20" y2="6"/>
+			<line x1="4" y1="12" x2="20" y2="12"/>
+			<line x1="4" y1="18" x2="20" y2="18"/>
 		</svg>
 	);
 }
@@ -1482,17 +1494,35 @@ const TABS: Array<{ id: TabId; label: string }> = [
 ];
 
 export default function Settings() {
-	const open = createMemo(() => state.ui.settingsOpen);
+	let panelRef: HTMLDivElement | undefined;
+
+	/** 设置面板唯一的真相：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置 */
+	const progress = () => state.ui.settingsProgress;
+	/**
+	 * 可见性直接派生自进度（> 0 即挂载）。
+	 * 不再单独存一个 visible / open 布尔量：那种「布尔量说开着、进度却是 0」的坏状态根本不可能出现。
+	 */
+	const visible = () => progress() > 0;
+
+	// 面板高度 = 一次完整开合的手指行程，交给拖拽换算 px → 进度（只是测量，不写任何样式）
+	onMount(() => setSettingsTravelMeasure(() => panelRef?.offsetHeight || window.innerHeight));
+	onCleanup(() => setSettingsTravelMeasure(() => window.innerHeight));
 
 	return (
-		<Show when={open()}>
-			<div class={styles['settings-overlay']} onclick={() => actions.closeSettings()}>
-				<div class={styles['settings-panel']} onclick={(e) => e.stopPropagation()}>
-					{/* 头部：标题 + 面包屑 + 关闭 */}
+		<Show when={visible()}>
+			{/* 这个根节点是唯一的动画载体：进度写在它身上，位移 / 遮罩都由它派生 */}
+			<div class={styles['settings-root']} style={{ '--settings-progress': progress() }}>
+				{/* 遮罩：什么都不干、也不响应鼠标点击（面板铺满整个区域，本来也没有「点外面」这回事） */}
+				<div class={styles['settings-overlay']} />
+
+				<div ref={panelRef} class={styles['settings-panel']}>
+					{/* 头部：拖拽手柄 + 标题 + 面包屑 + 关闭 */}
 					<div class={styles['settings-header']}>
+						<div class={styles['settings-drag-handle']} onmousedown={startSettingsDrag} title="按住拖动设置面板">
+							<DragHandleIcon />
+						</div>
 						<div class={styles['settings-title-block']}>
 							<div class={styles['settings-title']}>设置</div>
-							<div class={styles['settings-breadcrumb']}>偏好设置 / 本地运行时 / 修改即时生效</div>
 						</div>
 						<button class={styles['settings-close-btn']} onclick={() => actions.closeSettings()}>
 							<XIcon />
@@ -1521,13 +1551,18 @@ export default function Settings() {
 					<div class={styles['settings-divider']} />
 
 					<div class={styles['settings-content']}>
-						{state.ui.activeSettingsTab === "通用" && <GeneralTab />}
-						{state.ui.activeSettingsTab === "模型" && <ModelsTab />}
-						{state.ui.activeSettingsTab === "提示词" && <PromptTab />}
-						{state.ui.activeSettingsTab === "用量" && <UsageTab />}
-						{state.ui.activeSettingsTab === "插件 / 模式" && <PluginModeTab />}
-						{state.ui.activeSettingsTab === "MCP" && <McpTab />}
+						{state.ui.activeSettingsTab === '通用' && <GeneralTab />}
+						{state.ui.activeSettingsTab === '模型' && <ModelsTab />}
+						{state.ui.activeSettingsTab === '提示词' && <PromptTab />}
+						{state.ui.activeSettingsTab === '用量' && <UsageTab />}
+						{state.ui.activeSettingsTab === '插件 / 模式' && <PluginModeTab />}
+						{state.ui.activeSettingsTab === 'MCP' && <McpTab />}
 					</div>
+				</div>
+
+				{/* 全屏浮动占位小方块：跟着设置的下拉量移动，演示一个变量控制多个元素（后期可换成进度页等） */}
+				<div class={styles['settings-placeholder']}>
+					<div class={styles['settings-placeholder-box']} />
 				</div>
 			</div>
 		</Show>

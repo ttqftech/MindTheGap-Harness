@@ -77,7 +77,8 @@ function activeConversation() {
 	return state.conversations.find((c) => c.id === state.activeConversationId) ?? null;
 }
 
-export const APP_MENUS: AppMenuGroup[] = [
+export const APP_MENUS: AppMenuGroup[] = []
+export const APP_MENUS_bak: AppMenuGroup[] = [
 	{
 		id: 'file',
 		label: '文件',

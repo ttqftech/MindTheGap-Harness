@@ -54,7 +54,14 @@ export type UIState = {
 	density: Density;
 	accent: Accent;
 	conversationSort: ConversationSort;
-	settingsOpen: boolean;
+	/**
+	 * 设置面板的打开进度：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置。
+	 *
+	 * ⚠️ **这是设置面板唯一的真相**：可见性（> 0）、位移（translateY）、遮罩浓度全部由它派生，
+	 * 不再有 `settingsOpen` / `settingsDragging` 这类布尔量 —— 多一个状态就多一种「布尔量与实际位置不一致」的坏状态。
+	 * 拖拽时逐帧写入（`setSettingsProgress`），松手 / 点击后由 store 用 rAF 缓动到 0 或 1。
+	 */
+	settingsProgress: number;
 	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 	viewMode: ViewMode;
 	/**
@@ -105,7 +112,7 @@ const initialUI: UIState = {
 	density: 'standard',
 	accent: 'amber',
 	conversationSort: 'updated',
-	settingsOpen: false,
+	settingsProgress: 0,
 	activeSettingsTab: '通用',
 	viewMode: 'chat',
 	unreadConversationIds: [],
@@ -266,7 +273,7 @@ function loadLocalSettings() {
 	setState('ui', {
 		...defaultState.ui,
 		...ui,
-		settingsOpen: false,
+		settingsProgress: 0,
 	});
 
 	// TODO 收归
@@ -420,6 +427,30 @@ export function isConversationUnread(conversationId: string): boolean {
 // #endregion
 
 // #region Actions
+
+/** 设置面板开合动画时长（ms）。有它就不需要 CSS transition：进度本身就是逐帧在变的值 */
+const SETTINGS_ANIM_MS = 260;
+let settingsAnimFrame = 0;
+
+/**
+ * 把设置面板进度缓动到 0 / 1。
+ *
+ * ⚠️ 动画改的是**同一个进度值**，没有第二套「视觉位置」：面板的 transform 始终等于进度，
+ * 所以动画中途被拖拽打断也不会跳变（拖拽写入会先 `cancelAnimationFrame`）。
+ */
+function animateSettingsProgress(target: 0 | 1) {
+	cancelAnimationFrame(settingsAnimFrame);
+	const from = state.ui.settingsProgress;
+	if (from === target) return;
+	const startedAt = performance.now();
+	const step = (now: number) => {
+		const k = Math.min(1, (now - startedAt) / SETTINGS_ANIM_MS);
+		const eased = 1 - Math.pow(1 - k, 3);	// easeOutCubic
+		setState('ui', 'settingsProgress', from + (target - from) * eased);
+		if (k < 1) settingsAnimFrame = requestAnimationFrame(step);
+	};
+	settingsAnimFrame = requestAnimationFrame(step);
+}
 
 export const actions = {
 	setThemeMode(mode: 'light' | 'dark' | 'system') {
@@ -602,12 +633,17 @@ export const actions = {
 	 setState('ui', 'rightSidebarCollapsed', (v) => !v);
 	 saveLocalSettings();
 	},
+	/** 直接写设置面板进度（0~1）：拖拽中逐帧调用，顺带取消进行中的开合动画 */
+	setSettingsProgress(progress: number) {
+		cancelAnimationFrame(settingsAnimFrame);
+		setState('ui', 'settingsProgress', Math.max(0, Math.min(1, progress)));
+	},
 	openSettings(tab?: AppState['ui']['activeSettingsTab']) {
-		setState('ui', 'settingsOpen', true);
 		if (tab) setState('ui', 'activeSettingsTab', tab);
+		animateSettingsProgress(1);
 	},
 	closeSettings() {
-		setState('ui', 'settingsOpen', false);
+		animateSettingsProgress(0);
 		saveLocalSettings();
 	},
 	setSettingsTab(tab: AppState['ui']['activeSettingsTab']) {

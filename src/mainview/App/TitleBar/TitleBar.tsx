@@ -7,45 +7,17 @@
  * - 浏览器（vite dev / playwright）里没有原生窗口，整条栏照常渲染（方便调前端），但三个窗口按钮置灰——点了也没用
  */
 
-import { createSignal, onCleanup, onMount, For } from 'solid-js';
+import { createSignal, onCleanup, onMount, For, createMemo } from 'solid-js';
 import { isElectrobunEnv } from '@mainview/rpc';
 import { windowControls, getEnvInfo } from '@mainview/localBridge';
 import { showMenu } from '@mainview/ffboxBridge';
 import { state, actions } from '@mainview/store';
 import { APP_MENUS, type AppMenuGroup } from './appMenu';
+import { startSettingsDrag } from '../Settings/useSettingsDrag';
+import { useTooltip } from 'ffbox-ui';
+import { getTimeString } from '@shared/utils';
 import styles from './TitleBar.module.css';
-
-/** 应用标志 —— 取自设计稿（两根立柱 + 下方两道琥珀色横杠），viewBox 22×22 */
-function AppMark() {
-	return (
-		<svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-			<path
-				fill="currentColor"
-				fill-rule="evenodd"
-				transform="matrix(1 0 0 1 3 4.6)"
-				d="M-1.1 16.5L-1.1 3.3278L4.0399 -1.5551L5.5551 0.0399L4.7576 0.7975L1.1 4.2722L1.1 16.5L-1.1 16.5Z"
-			/>
-			<path
-				fill="currentColor"
-				fill-rule="evenodd"
-				transform="matrix(1 0 0 1 15 4.6)"
-				d="M2.9 16.5L2.9 4.2722L-1.5551 0.0399L-0.0399 -1.5551L0.7576 -0.7975L5.1 3.3278L5.1 16.5L2.9 16.5Z"
-			/>
-			<path
-				fill="var(--accent)"
-				fill-rule="evenodd"
-				transform="matrix(1 0 0 1 1.8 13.2)"
-				d="M5.4 -1.1L6.5 -1.1L6.5 1.1L-1.1 1.1L-1.1 -1.1L5.4 -1.1Z"
-			/>
-			<path
-				fill="var(--accent)"
-				fill-rule="evenodd"
-				transform="matrix(1 0 0 1 14.8 13.2)"
-				d="M5.4 -1.1L6.5 -1.1L6.5 1.1L-1.1 1.1L-1.1 -1.1L5.4 -1.1Z"
-			/>
-		</svg>
-	);
-}
+import MTGxlong from './MTG-xlong.svg';
 
 /** 折叠侧边栏：方框 + 中间竖线，分栏线上带一点强调色 */
 function CollapseSidebarIcon() {
@@ -103,9 +75,24 @@ function CloseIcon() {
 
 export default function TitleBar() {
 	const [maximized, setMaximized] = createSignal(false);
-	const [appVersion, setAppVersion] = createSignal('');
+	const [frontendEnvInfo, setFrontendEnvInfo] = createSignal<{ platform: string; arch: string; osVersion: string; appVersion: string, build: typeof buildInfo } | null>(null);
 	/** 浏览器模式：整条栏照常画，但窗口按钮不可用 */
 	const inNativeWindow = isElectrobunEnv();
+
+	const serviceTooltipContent = createMemo(() => {
+		const env = frontendEnvInfo();
+		if (!env) return ``;
+		const buildType = env.build.isDev ? '开发' : '生产';
+		const buildTime = getTimeString(new Date(env.build.buildTime), false);
+		return [
+			`前端版本：${env.appVersion}`,
+			`平台：${env.platform}`,
+			`架构：${env.arch}`,
+			`操作系统：${env.osVersion}`,
+			`构建：${env.build.gitCommit} (${buildType})`,
+			`构建时间: ${buildTime}`,
+		].join('\n');
+	});
 
 	/** 回读最大化状态（窗口被系统贴边、双击标题栏等都会改变它） */
 	const syncMaximized = () => {
@@ -117,7 +104,7 @@ export default function TitleBar() {
 		syncMaximized();
 		// 最大化 / 还原必然触发 resize，用它做同步信号，省得再加一条 bun → webview 的消息通道
 		window.addEventListener('resize', syncMaximized);
-		void getEnvInfo().then((env) => setAppVersion(env?.appVersion ?? ''));
+		void getEnvInfo().then((env) => setFrontendEnvInfo(env));
 	});
 
 	onCleanup(() => window.removeEventListener('resize', syncMaximized));
@@ -137,21 +124,22 @@ export default function TitleBar() {
 		});
 	};
 
+	// #region 设置面板拖拽拉出（标题栏品牌区域：点击切换 + 下滑拖拽）
+	// 逻辑全在 useSettingsDrag：它只把鼠标位移换算成 0~1 的进度写进 store，
+	// 面板的位移 / 可见性由 Settings 自己从进度派生。
+	// #endregion
+
 	return (
-		<div class={styles['title-bar']}>
-			{/* 品牌锁型 */}
-			<div class={styles['title-bar-brand']}>
-				<span class={styles['app-mark']}>
-					<AppMark />
-				</span>
-				<span class={styles['brand-name']}>MINDTHEGAP</span>
-				<span class={styles['brand-suffix']}>HARNESS</span>
+		<div class={styles.titleBar}>
+			{/* 品牌锁型 — 点击切换设置面板，下滑拖拽拉出。MTG-long.svg 是完整品牌词标（MINDTHEGAP + HARNESS） */}
+			<div class={styles['title-bar-brand']} onmousedown={startSettingsDrag} {...useTooltip('设置面板')}>
+				<MTGxlong class={styles['app-mark']} />
 			</div>
 
 			{/* 折叠 / 展开侧边栏 */}
 			<button
 				class={styles['title-bar-icon-btn']}
-				title={state.ui.leftSidebarCollapsed ? '展开主侧边栏 (Ctrl+B)' : '折叠主侧边栏 (Ctrl+B)'}
+				{...useTooltip(state.ui.leftSidebarCollapsed ? '展开主侧边栏 (Ctrl+B)' : '折叠主侧边栏 (Ctrl+B)')}
 				aria-label={state.ui.leftSidebarCollapsed ? '展开主侧边栏' : '折叠主侧边栏'}
 				onclick={() => actions.toggleLeftSidebar()}
 			>
@@ -159,7 +147,7 @@ export default function TitleBar() {
 			</button>
 			<button
 				class={styles['title-bar-icon-btn']}
-				title={state.ui.rightSidebarCollapsed ? '展开右侧边栏 (Ctrl+Shift+B)' : '折叠右侧边栏 (Ctrl+Shift+B)'}
+				{...useTooltip(state.ui.rightSidebarCollapsed ? '展开右侧边栏 (Ctrl+Shift+B)' : '折叠右侧边栏 (Ctrl+Shift+B)')}
 				aria-label={state.ui.rightSidebarCollapsed ? '展开右侧边栏' : '折叠右侧边栏'}
 				onclick={() => actions.toggleRightSidebar()}
 			>
@@ -181,15 +169,14 @@ export default function TitleBar() {
 			<div class={styles['title-bar-drag']} ondblclick={() => void handleMaximizeClick()} />
 
 			{/* 运行时徽标 */}
-			<div class={styles['local-badge']} title={appVersion() ? `本地运行时 · v${appVersion()}` : '本地运行时'}>
+			<div class={styles['local-badge']} {...useTooltip(serviceTooltipContent())}>
 				<span class={styles['status-dot']} />
-				<span class={styles['local-badge-text']}>LOCAL{appVersion() ? ` v${appVersion()}` : ''}</span>
+				{frontendEnvInfo() ? <span class={styles['local-badge-text']}>版本 {frontendEnvInfo()?.appVersion}</span> : null}
 			</div>
 
 			{/* 窗口控制组 */}
 			<div class={styles['title-bar-buttons']}>
 				<button
-					class={styles['title-bar-btn']}
 					aria-label="最小化窗口"
 					title="最小化"
 					disabled={!inNativeWindow}
@@ -198,7 +185,6 @@ export default function TitleBar() {
 					<MinimizeIcon />
 				</button>
 				<button
-					class={styles['title-bar-btn']}
 					aria-label={maximized() ? '向下还原窗口' : '最大化窗口'}
 					title={maximized() ? '向下还原' : '最大化'}
 					disabled={!inNativeWindow}
@@ -207,7 +193,7 @@ export default function TitleBar() {
 					{maximized() ? <RestoreIcon /> : <MaximizeIcon />}
 				</button>
 				<button
-					class={`${styles['title-bar-btn']} ${styles['title-bar-close']}`}
+					class={styles.clostBtn}
 					aria-label="关闭窗口"
 					title="关闭"
 					disabled={!inNativeWindow}

@@ -61,7 +61,7 @@ interface RpcApi {
 		dialogSave: RequestFn<any, RpcResult<string | null>>;
 		shellOpenPath: RequestFn<{ path: string }, RpcResult<void>>;
 		shellOpenExternal: RequestFn<{ url: string }, RpcResult<void>>;
-		envInfo: RequestFn<undefined, RpcResult<any>>;
+		envInfo: RequestFn<undefined, RpcResult<{ platform: string; arch: string; osVersion: string; userDataPath: string; appVersion: string }>>;
 		windowMinimize: RequestFn<undefined, RpcResult<void>>;
 		windowToggleMaximize: RequestFn<undefined, RpcResult<boolean>>;
 		windowClose: RequestFn<undefined, RpcResult<void>>;

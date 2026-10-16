@@ -101,7 +101,13 @@ export default function App() {
 			actions.openSettings();
 			return;
 		}
-		// esc 中断运行：只在**当前会话**真的有 run 在飞时接管（running 或 waiting），避免抢掉弹窗 / 下拉的关闭手势
+		// esc：设置面板开着时先关面板（优先于中断运行），避免抢掉弹窗 / 下拉的关闭手势
+		if (e.key === 'Escape' && state.ui.settingsProgress > 0) {
+			e.preventDefault();
+			actions.closeSettings();
+			return;
+		}
+		// esc 中断运行：只在**当前会话**真的有 run 在飞时接管（running 或 waiting）
 		if (e.key === 'Escape' && isConversationAlive(getActiveConversation())) {
 			e.stopPropagation();
 			stopRun();
@@ -132,9 +138,9 @@ export default function App() {
 						<div ref={rightResizerRef!} class={styles.rightSidebarResizer} onmousedown={onRightBarMouseDown} />
 					</Show>
 					<RightSidebar />
+					<Settings />
 				</div>
 			</div>
-			<Settings />
 		</ffbox-theme-provider>
 	);
 }

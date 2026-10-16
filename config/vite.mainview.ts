@@ -3,12 +3,14 @@ import solid from "vite-plugin-solid";
 import { resolve } from "node:path";
 import { electrobunViteAliases } from "../.hutch/devkit/api/config/electrobun-vite";
 import { buildDefine } from "./build-info.mjs";
+import { svgComponentPlugin } from "./vite-svg";
 
 export default defineConfig(({ command }) => ({
 	// 构建信息注入：与主进程共用 config/build-info.mjs，两边看到的一致。
 	// vite dev server（serve）算开发构建，vite build 算生产构建。
 	define: buildDefine(command === "serve"),
-	plugins: [solid()],
+	// SVG → Solid 组件：import X from "./foo.svg" 即可 <X />。见 config/vite-svg.ts
+	plugins: [solid(), svgComponentPlugin()],
 	resolve: {
 		alias: [
 			// 前后端共享代码（src/shared）与 mainview 内部目录走 alias，消除 ../.. 深相对引用

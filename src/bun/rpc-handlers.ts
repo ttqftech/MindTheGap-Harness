@@ -11,7 +11,8 @@ import { homedir, platform, arch } from "node:os";
 import { execSync } from "node:child_process";
 import { Utils } from "electrobun/main";
 import type { BrowserWindow } from "electrobun/main";
-import type { AppRPC, RpcResult } from "../shared/rpc";
+import type { RpcResult } from "@shared/rpc";
+import { version } from "@shared/buildInfo";
 
 // #region 主窗口引用（见文件头说明）
 
@@ -45,13 +46,14 @@ function getUserDataDir(): string {
 }
 
 export const systemHandlers = {
-    envInfo: (): RpcResult<{ platform: string; arch: string; osVersion: string; userDataPath: string; appVersion: string }> =>
+    envInfo: (): RpcResult<{ platform: string; arch: string; osVersion: string; appVersion: string, build: typeof buildInfo }> =>
         safe(() => ({
             platform: platform(),
             arch: arch(),
             osVersion: execSync("ver 2>nul || sw_vers 2>/dev/null || echo unknown").toString().trim(),
-            userDataPath: getUserDataDir().replace(/\\/g, "/"),
-            appVersion: "0.1.0",
+            // userDataPath: getUserDataDir().replace(/\\/g, "/"),
+            appVersion: version,
+		    build: buildInfo,
         })),
 
     async dialogOpen(params?: { filters?: any; multiple?: boolean; pickFolder?: boolean }): Promise<RpcResult<string[]>> {
@@ -147,5 +149,3 @@ export function buildRpcHandlers() {
         },
     };
 }
-
-export { getUserDataDir };

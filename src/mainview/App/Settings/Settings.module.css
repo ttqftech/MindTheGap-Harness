@@ -24,32 +24,68 @@
 }
 
 /* ==========================================================================
-   设置面板外壳（设计稿：标题 + 面包屑，下面一条分页栏 + 完成按钮）
-   功能上仍是 6 个 Tab 的模态面板，只是换成设计稿的顶部横排分页样式。
+   设置面板 — 从屏幕上方拉下来的全屏面板（铺满除了标题栏以外的主界面）
+
+   只有一个真相：根节点的 `--settings-progress`（0 = 完全收起，1 = 完全展开）。
+   面板位移、遮罩浓度、占位方块全部由它派生，**没有 transition** ——
+   进度本身就是逐帧在变的值（拖拽时跟手、松手后由 store 用 rAF 缓动），
+   再叠一层 CSS 过渡只会把它变成「松手才动」。
+   进度 0 时整棵树根本不挂载（可见性派生自进度），所以这里不需要 display 开关。
    ========================================================================== */
 
+.settings-root {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    /* 只有面板吃鼠标：遮罩与占位方块都是纯装饰 */
+    pointer-events: none;
+}
+
+/* 遮罩：什么都不干、也不响应鼠标点击（面板铺满整个区域，本来也没有「点外面」这回事） */
 .settings-overlay {
-    position: fixed;
+    position: absolute;
     inset: 0;
     background-color: var(--bg-scrim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 2;
+    opacity: var(--settings-progress, 0);
 }
 
 .settings-panel {
-    width: 900px;
-    height: 640px;
-    max-width: 92vw;
-    max-height: 88vh;
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
     background-color: var(--bg-app);
-    border: 1px solid var(--border-app);
-    border-radius: var(--r-2xl);
-    box-shadow: var(--shadow-window);
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
     overflow: hidden;
+    pointer-events: auto;
+    /* 位移 = 进度：0 → -100%（完全滑出上方），1 → 0（铺满） */
+    transform: translateY(calc((var(--settings-progress, 0) - 1) * 100%));
+}
+
+
+/* 全屏浮动占位小方块：跟着下拉量（--settings-progress）移动。
+   预置的演示元素，证明下拉可以同时控制多个元素（后期可换成进度页等）。
+   不拦截鼠标：pointer-events: none，避免抢设置面板的交互。 */
+.settings-placeholder {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    pointer-events: none;
+}
+.settings-placeholder-box {
+    position: absolute;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background-color: var(--accent);
+    box-shadow: 0 2px 10px hwb(var(--bg90) / 0.3);
+    /* 跟着下拉进度：从右上角往下掉，同时放大、淡入 */
+    top: calc(var(--settings-progress, 0) * 45vh);
+    right: 22px;
+    opacity: calc(var(--settings-progress, 0) * 0.7);
+    transform: scale(calc(0.5 + var(--settings-progress, 0) * 0.5));
 }
 
 /* ---------- 头部 ---------- */
@@ -61,6 +97,26 @@
     height: 58px;
     flex-shrink: 0;
     padding: 0 var(--section-pad-lr);
+}
+/* 拖拽手柄：标题栏左侧的 grip 图标，按住它可以上下滑动面板拉出 / 关闭 */
+.settings-drag-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    cursor: grab;
+    color: var(--text-tertiary);
+    border-radius: var(--r-md);
+    transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+.settings-drag-handle:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-secondary);
+}
+.settings-drag-handle:active {
+    cursor: grabbing;
 }
 
 .settings-title-block {
@@ -75,12 +131,6 @@
     font-size: var(--fs-l);
     font-weight: 600;
     color: var(--text-primary);
-}
-
-.settings-breadcrumb {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xxs);
-    color: var(--text-quiet);
 }
 
 .settings-close-btn {
