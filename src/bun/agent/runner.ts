@@ -16,14 +16,14 @@
  * 状态全部在 ctx 里；本类只在一次 run 期间做「内存中的调度缓存」（busy 集合、delegate 分组），进程重启后这些缓存可以安全地重新推导。
  */
 
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, AskUserState, ConversationRunStatus, LlmMessage, LlmTrigger, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolResult, ToolResultInfo } from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, AskUserState, ConversationRunStatus, LlmMessage, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolResult, ToolResultInfo } from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
 import { conversations, ensureConversationDir, settings } from '../storage';
 import { logMsg } from '../utils';
 import { renderSystemPrompt } from './prompt';
-import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type TaskListOp, type ToolContext, type ToolLlmRequest, type ToolLlmResult } from './tools';
+import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
 const now = () => Date.now();
@@ -136,7 +136,7 @@ export class AgentRunner {
 
 	/** 正在跑 agentLoop 的实例（防止同一实例被并发重入） */
 	private busy = new Set<string>();
-	/** delegate / resume 的分组：callId → 组 */
+	/** 调用 delegate / resume 工具时使用的分组：工具 callId → 组 */
 	private groups = new Map<string, { parentAgentInstanceId: string; childAgentInstanceIds: string[]; results: Map<string, string> }>();
 	/** 子实例 → 它属于哪次委托 */
 	private childLink = new Map<string, { parentAgentInstanceId: string; callId: string; toolName: string }>();
@@ -144,12 +144,7 @@ export class AgentRunner {
 	private doneResolve: (() => void) | null = null;
 	private donePromise: Promise<void>;
 
-	constructor(params: {
-		request: AgentRunRequest;
-		mode: ModeDefinition;
-		ctx: AgentCtx;
-		options?: RunnerOptions;
-	}) {
+	constructor(params: { request: AgentRunRequest; mode: ModeDefinition; ctx: AgentCtx; options?: RunnerOptions }) {
 		this.conversationId = params.request.conversationId;
 		this.mode = params.mode;
 		this.model = params.request.model;
@@ -190,9 +185,7 @@ export class AgentRunner {
 		this.aborted = true;
 		try {
 			this.abortController.abort();
-		} catch {
-			// 忽略
-		}
+		} catch {}
 		for (const instance of Object.values(this.ctx.agentInstances)) {
 			if (!isTerminal(instance.status)) {
 				instance.status = 'interrupted';
@@ -247,10 +240,9 @@ export class AgentRunner {
 	 * 发起一轮 run。
 	 * - 会话已有根实例 → **永远沿用**（一个会话一个根实例，历史因此天然完整，见 docs/设计-ctx唯一真相与动态投影.md §3.1）
 	 * - 会话还没有根实例 → 新建，实例树里只有它自己
-	 * 注意：实例树与事件流**只追加、不再清空**（旧实现每轮新建根实例 + 清空，正是「ctx 无法承载整段历史」的根因）。
 	 */
 	async run(userMessage: string): Promise<void> {
-		const limits = this.limits();
+		const limits = this.getModeLimits();
 		this.ctx.budget = { total: limits.totalRounds, spent: 0 };
 		this.ctx.modeId = this.mode.id;
 
@@ -278,12 +270,10 @@ export class AgentRunner {
 		root.status = 'running';
 		root.interruptReason = undefined;
 		root.task = userMessage;
-		// 反思次数是实例级字段且只减不增；根实例永续之后必须按轮重置，否则反思用尽一次就再也不反思了
-		if (!isNewRoot) root.reflectionsRemaining = this.defOf(root).reflectionCount ?? 0;
-		// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，
-		// 这里只补「沿用已有实例」的情况，否则会出现两条一模一样的 user 消息。
-		if (!isNewRoot) root.messages.push(message({ role: 'user', content: userMessage }));
+		const agentDef = this.getAgentDefinitionByInstance(root);
 		root.lastUpdatedAt = now();
+		if (!isNewRoot) root.reflectionsRemaining = agentDef.reflectionCount ?? 0;	// 反思次数是实例级字段且只减不增；根实例永续之后必须按轮重置，否则反思用尽一次就再也不反思了
+		if (!isNewRoot) root.messages.push(message({ role: 'user', content: userMessage }));	// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，非新建的时候才在这里再补一条
 		this.emitEvent(root, 'user_message', { content: userMessage });
 		if (!isNewRoot) {
 			this.emitStream({
@@ -302,27 +292,24 @@ export class AgentRunner {
 
 	// #region 实例管理
 
-	private limits() {
+	/** 获取当前模式配置的的运行限制。若未配置（理论上保存时校验可以避免用户不配置此项）则给一个较高的限制值 */
+	private getModeLimits() {
 		const limits = this.mode.limits ?? {};
 		return {
-			totalRounds: limits.totalRounds ?? 200,
-			agentInstanceRounds: limits.agentInstanceRounds ?? 50,
-			warnAtRemaining: limits.warnAtRemaining ?? 3,
+			totalRounds: limits.totalRounds ?? 1000,
+			agentInstanceRounds: limits.agentInstanceRounds ?? 200,
+			warnAtRemaining: limits.warnAtRemaining ?? 0,
 		};
 	}
 
-	private defOf(agentInstance: AgentInstance): AgentDefinition {
-		return this.mode.agents[agentInstance.agentId] ?? Object.values(this.mode.agents)[0];
+	private getAgentDefinitionByInstance(agentInstance: AgentInstance): AgentDefinition {
+		const def = this.mode.agents[agentInstance.agentId];
+		if (!def) throw new Error(`当前实例正在使用的 Agent "${agentInstance.agentId}" 在当前模式 "${this.mode.id}" 下不存在配置。可能是插件配置发生了变化，不兼容当前会话`);
+	    return def;
 	}
 
-	private createInstance(params: {
-		agentInstanceId: string;
-		agentId: string;
-		def: AgentDefinition;
-		depth: number;
-		task: string;
-		parentAgentInstanceId?: string;
-	}): AgentInstance {
+	/** 创建一个 Agent 实例，放入 this.ctx 中，并补充父实例的 childAgentInstanceIds、发送事件 */
+	private createInstance(params: { agentInstanceId: string; agentId: string; def: AgentDefinition; depth: number; task: string; parentAgentInstanceId?: string }): AgentInstance {
 		const instance: AgentInstance = {
 			agentInstanceId: params.agentInstanceId,
 			conversationId: this.conversationId,
@@ -337,7 +324,7 @@ export class AgentRunner {
 				message({
 					role: 'user',
 					content: params.parentAgentInstanceId
-						? `[来自父 Agent 的任务]\n${params.task}`
+						? `[来自父 Agent 的任务]\n${params.task}`	// TODO 提示词中同样可以嵌入 parentPrompt，考虑配置是否插入这句话
 						: params.task,
 				}),
 			],
@@ -345,8 +332,7 @@ export class AgentRunner {
 			summaries: [],
 			reflectionsRemaining: params.def.reflectionCount ?? 0,
 			rounds: 0,
-			// 由 llm usage emitter 累加（见 http-server.recordUsageInCtx），不在这里算
-			llmCalls: 0,
+			llmCalls: 0,	// 由 llm usage emitter 累加（见 http-server.recordUsageInCtx），不在这里算
 			childAgentInstanceIds: [],
 			startedAt: now(),
 			lastUpdatedAt: now(),
@@ -382,29 +368,30 @@ export class AgentRunner {
 
 	// #region agentLoop
 
-	private enterLoop(agentInstanceId: string, trigger: LlmTrigger): void {
+	private enterLoop(agentInstanceId: string, trigger: LlmTriggerReason): void {
 		void this.agentLoop(agentInstanceId, trigger).catch((e) => {
 			logMsg.error(`[Runner] agentLoop 异常: ${(e as Error).message}`);
 		});
 	}
 
-	private maybeReenter(agentInstanceId: string, trigger: LlmTrigger): void {
+	/** 条件性重入：检查实例是否满足重新进入 agentLoop 的前提条件，满足则重新启动循环，不满足则静默跳过。 */
+	private maybeReenter(agentInstanceId: string, trigger: LlmTriggerReason): void {
 		const instance = this.ctx.agentInstances[agentInstanceId];
-		if (!instance) return;
-		if (isTerminal(instance.status)) return;
-		if ((instance.pendingCallIds ?? []).length > 0) return;
-		if (this.busy.has(agentInstanceId)) return;
-		instance.status = 'running';
-		this.enterLoop(agentInstanceId, trigger);
+		if (!instance) return;                                    // ① 实例不存在 → 跳过
+		if (isTerminal(instance.status)) return;                  // ② 已终态（succeeded/failed/interrupted）→ 跳过
+		if ((instance.pendingCallIds ?? []).length > 0) return;   // ③ 还有未完成的 tool call → 跳过
+		if (this.busy.has(agentInstanceId)) return;               // ④ 实例正在 agentLoop 中执行 → 跳过
+		instance.status = 'running';                              // ⑤ 标记为运行中
+		this.enterLoop(agentInstanceId, trigger);                 // ⑥ 启动新一轮循环
 	}
 
-	private async agentLoop(agentInstanceId: string, trigger: LlmTrigger): Promise<void> {
+	private async agentLoop(agentInstanceId: string, trigger: LlmTriggerReason): Promise<void> {
 		const instance = this.ctx.agentInstances[agentInstanceId];
 		if (!instance || isTerminal(instance.status)) return;
 		if (this.busy.has(agentInstanceId)) return;
 		this.busy.add(agentInstanceId);
 
-		let nextTrigger: LlmTrigger | null = null;
+		let nextTrigger: LlmTriggerReason | null = null;
 		// 本段 agentLoop 的账本快照：进入时记一次，退出时算增量播报给前端
 		const tokensBefore: TokenUsage = { ...(instance.tokens ?? {}) };
 		const callsBefore = instance.llmCalls ?? 0;
@@ -416,7 +403,7 @@ export class AgentRunner {
 				return;
 			}
 
-			const limits = this.limits();
+			const limits = this.getModeLimits();
 			instance.rounds += 1;
 			this.ctx.budget.spent += 1;
 
@@ -427,7 +414,7 @@ export class AgentRunner {
 				return;
 			}
 
-			const def = this.defOf(instance);
+			const def = this.getAgentDefinitionByInstance(instance);
 			const tools = getToolsForAgentInstance(instance, def, this.mode);
 			const systemPrompt = this.buildSystemPrompt(instance, tools);
 
@@ -506,7 +493,7 @@ export class AgentRunner {
 				...result.toolCalls.map((tc) => tc.id),
 			];
 			instance.status = 'running';
-			nextTrigger = await this.dispatch(instance, def, result.toolCalls);
+			nextTrigger = await this.dispatchToolUse(instance, def, result.toolCalls);
 			this.persist();
 		} catch (e) {
 			exitReason = 'error';
@@ -525,15 +512,13 @@ export class AgentRunner {
 				this.handleChildTerminal(instance);
 			}
 		} finally {
-			this.busy.delete(agentInstanceId);
 			// 只有「本段到此为止、不再重入」才播报小计：重入的话后面还会接着花，
 			// 每段都报会让界面上出现一串互相矛盾的小计。
 			// 判断实例此刻的状态即可区分是「等用户」还是「等子 Agent」，不用把标记从 dispatch 里传出来。
 			if (!nextTrigger) {
 				const pending = instance.pendingCallIds ?? [];
 				// ⚠️ ask_user 与等子 Agent 都会把实例置成 pending，光看 status 分不开。
-				// 真正的区别在「等的东西是不是 client 工具」—— delegate 的 callId 留在 pending 里
-				// 是等子实例，ask_user 的 callId 留在 pending 里是等用户点按钮。
+				// 真正的区别在「等的东西是不是 client 工具」—— delegate 的 callId 留在 pending 里是等子实例，ask_user 的 callId 留在 pending 里是等用户点按钮。
 				exitReason = pending.some((id) => this.isClientToolResult(instance, id))
 					? 'ask_user'
 					: pending.length > 0
@@ -543,6 +528,7 @@ export class AgentRunner {
 			}
 			// 重入统一放这里：任何 return 路径（含结束路径的反思轮）都先释放 busy 再重入，
 			// 否则 maybeReenter 会被 busy 守卫挡掉。
+			this.busy.delete(agentInstanceId);
 			if (nextTrigger) this.maybeReenter(agentInstanceId, nextTrigger);
 		}
 	}
@@ -599,16 +585,12 @@ export class AgentRunner {
 
 	// #endregion
 
-	// #region 调度器
+	// #region 工具调用逻辑
 
 	/** 执行一批工具调用；返回「若为 null 表示不需要重入」 */
-	private async dispatch(
-		instance: AgentInstance,
-		def: AgentDefinition,
-		toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[],
-	): Promise<LlmTrigger | null> {
+	private async dispatchToolUse(instance: AgentInstance, def: AgentDefinition, toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[]): Promise<LlmTriggerReason | null> {
 		const resolved: string[] = [];
-		let needReenter: LlmTrigger | null = null;
+		let needReenter: 'tool_results' | null = null;	// 普通工具调用完成之后需要重入调用 llm；询问用户这种中断场景，或者等子 Agent 这种场景就不需要重入
 		let finishSummary: string | null = null;
 		let suspended = false;
 
@@ -691,13 +673,7 @@ export class AgentRunner {
 	}
 
 	/** 构造某次工具调用的 ToolContext（编排原语捕获 callId） */
-	private buildToolContext(
-		instance: AgentInstance,
-		def: AgentDefinition,
-		callId: string,
-		reason: string,
-		toolName: string,
-	): ToolContext {
+	private buildToolContext(instance: AgentInstance, def: AgentDefinition, callId: string, reason: string, toolName: string): ToolContext {
 		return {
 			ctx: this.ctx,
 			agentInstanceId: instance.agentInstanceId,
@@ -979,7 +955,7 @@ export class AgentRunner {
 
 	// #region 任务清单
 
-	private applyTaskListOp(op: TaskListOp): string {
+	private applyTaskListOp(op: TaskListWriteArgs): string {
 		const items = parseTaskList(this.ctx.taskList);
 		switch (op.op) {
 			case 'add':
@@ -1008,10 +984,11 @@ export class AgentRunner {
 
 	// #region 结束路径（含反思）
 
-	/** 结束路径。返回值 = 结束后要重入的触发类型（反思轮），null = 真结束 */
-	private async endPath(instance: AgentInstance, summary: string, opts: { forced?: boolean } = {}): Promise<LlmTrigger | null> {
+	/** 结束路径。如果需要反思，将往 ctx 中写入反思条目并返回 'reflection'，否则触发 agent_end 事件，并返回 null。forced 代表强制结束不反思 */
+	private async endPath(instance: AgentInstance, summary: string, opts: { forced?: boolean } = {}): Promise<'reflection' | null> {
 		const hadSummary = !!summary.trim();
-		const canReflect = hadSummary && !opts.forced && instance.reflectionsRemaining > 0 && !this.aborted;
+		const hasReflectPrompt = resolveReflectionPrompt(this.mode, this.getAgentDefinitionByInstance(instance));
+		const canReflect = hadSummary && hasReflectPrompt && !opts.forced && instance.reflectionsRemaining > 0 && !this.aborted;
 
 		if (canReflect) {
 			instance.reflectionsRemaining -= 1;
@@ -1089,8 +1066,9 @@ export class AgentRunner {
 
 	/** 反思轮：额外一次 LLM 请求，输入 = 该实例的初始 system 提示词 + 本次总结 */
 	private async reflect(instance: AgentInstance, summary: string): Promise<string> {
-		const def = this.defOf(instance);
-		const prompt = resolveReflectionPrompt(this.mode, def).text;
+		const def = this.getAgentDefinitionByInstance(instance);
+		const prompt = resolveReflectionPrompt(this.mode, def)?.text;
+		if (!prompt) return '';
 
 		const initialSystem = instance.messages.find((m) => m.role === 'system' && !m.uiOnly)?.content ?? '';
 		const result = await callLlm(
@@ -1180,6 +1158,7 @@ export class AgentRunner {
 		this.persist();
 	}
 
+	/** 标记实例为已中断，更新状态、触发事件、（如果自己是子实例）处理结束事件 */
 	private markInterrupted(instance: AgentInstance, reason: string): void {
 		instance.status = 'interrupted';
 		instance.interruptReason = reason;
@@ -1189,6 +1168,7 @@ export class AgentRunner {
 		this.persist();
 	}
 
+	/** 触发 donePromise 的 resolve */
 	private finishDone(): void {
 		if (this.doneResolve) {
 			this.doneResolve();
@@ -1226,9 +1206,7 @@ export class AgentRunner {
 	 * 状态是显式的：前端不再靠 `content === '用户已跳过此提问'` 这类字符串比对判断卡片该显示成什么。
 	 */
 	private setAskUserState(instance: AgentInstance, callId: string, status: AskUserState['status'], answer?: string): void {
-		const existing = instance.messages.find(
-			(m) => m.kind === 'ask_user_state' && (m.data as AskUserState).callId === callId,
-		);
+		const existing = instance.messages.find((m) => m.kind === 'ask_user_state' && (m.data as AskUserState).callId === callId);
 		if (existing) {
 			existing.data = { callId, status, answer };
 			existing.updatedAt = now();
@@ -1260,13 +1238,13 @@ export class AgentRunner {
 	}
 
 	private buildSystemPrompt(instance: AgentInstance, tools: AgentTool[]): string {
-		const def = this.defOf(instance);
+		const def = this.getAgentDefinitionByInstance(instance);
 		const children = instance.childAgentInstanceIds
 			.map((id) => this.findInstance(id))
 			.filter((c): c is AgentInstance => !!c);
 		const unfinished = children.filter((c) => c.status === 'pending' || c.status === 'interrupted' || c.status === 'running');
 
-		const limits = this.limits();
+		const limits = this.getModeLimits();
 		const totalLeft = limits.totalRounds - this.ctx.budget.spent;
 		const agentInstanceLeft = limits.agentInstanceRounds - instance.rounds;
 		const warn = totalLeft <= limits.warnAtRemaining || agentInstanceLeft <= limits.warnAtRemaining;
@@ -1324,10 +1302,11 @@ export class AgentRunner {
 		this.options.onStream?.({ ...event, timestamp: now() });
 	}
 
+	/** 更新最近更新时间，然后向 conversations Proxy 写一下，触发自动存盘 */
 	private persist(): void {
 		this.ctx.updatedAt = now();
-		const conv = conversations[this.conversationId];
-		if (conv) conv.agentCtx = this.ctx;
+		const conversation = conversations[this.conversationId];
+		if (conversation) conversation.agentCtx = this.ctx;
 	}
 }
 
@@ -1363,31 +1342,26 @@ export function ensurePluginsLoaded(): void {
 	logMsg(`[Plugins] 已加载 ${result.modes.length} 个模式：${result.modes.map((m) => m.id).join(', ')}`);
 }
 
-export interface CreateRunnerResult {
-	runner?: AgentRunner;
-	error?: string;
-}
-
 /** 根据请求装配一个 Runner（加载插件 → 解析模式 → 取/建 ctx） */
-export function createRunner(request: AgentRunRequest, options: RunnerOptions = {}): CreateRunnerResult {
+export function createRunner(request: AgentRunRequest, options: RunnerOptions = {}): { runner?: AgentRunner; error?: string } {
 	ensurePluginsLoaded();
 
 	const mode = getMode(request.modeId);
 	if (!mode) {
 		const available = listModes().map((m) => m.id).join(', ') || '(无)';
-		return { error: `模式不存在: ${request.modeId}。可用模式：${available}` };
+		return { error: `模式不存在: ${request.modeId}。目前已加载的所有模式：${available}` };
 	}
 
-	const conv = conversations[request.conversationId];
-	if (!conv) return { error: `会话不存在: ${request.conversationId}` };
-	conv.modeId = mode.id;
+	const conversation = conversations[request.conversationId];
+	if (!conversation) return { error: `会话不存在: ${request.conversationId}` };
+	conversation.modeId = mode.id;
 
 	// 先把 ctx 挂到会话上（写裸对象），再读回来 —— 读回来的一定是深层代理，
 	// 这样 Runner 里的每一次改动都会自动刷新会话 updatedAt 并防抖落盘。
-	if (!conv.agentCtx) {
-		conv.agentCtx = emptyCtx(request.conversationId, mode.id);
+	if (!conversation.agentCtx) {
+		conversation.agentCtx = emptyCtx(request.conversationId, mode.id);
 	}
-	const ctx = conv.agentCtx as AgentCtx;
+	const ctx = conversation.agentCtx as AgentCtx;
 	ctx.conversationId = request.conversationId;
 	ctx.modeId = mode.id;
 

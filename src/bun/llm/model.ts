@@ -18,7 +18,7 @@ import type {
 	ModelConfig,
 	TokenUsage,
 	LlmPurpose,
-	LlmTrigger,
+	LlmTriggerReason,
 	LlmRequestRecord,
 } from '@shared/agent';
 import { safeParseJson } from '../utils';
@@ -85,7 +85,7 @@ export interface LlmCallMeta {
 	agentName?: string;
 	depth?: number;
 	modeId?: string;
-	trigger?: LlmTrigger;
+	trigger?: LlmTriggerReason;
 	triggeredByCallIds?: string[];
 	agentInstanceRound?: number;
 }

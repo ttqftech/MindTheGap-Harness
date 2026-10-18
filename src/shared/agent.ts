@@ -446,7 +446,7 @@ export type LlmPurpose =
 	| 'other';
 
 /** 什么导致了这次请求 */
-export type LlmTrigger =
+export type LlmTriggerReason =
 	| 'initial'			// 实例刚创建，第一次请求
 	| 'user_message'			// 根实例收到用户新发言
 	| 'tool_results'			// 回填了一批普通工具结果之后
@@ -468,7 +468,7 @@ export interface LlmRequestRecord {
 	depth?: number;
 	modeId?: string;
 	purpose: LlmPurpose;
-	trigger?: LlmTrigger;
+	trigger?: LlmTriggerReason;
 	triggeredByCallIds?: string[];		// 这次请求是在回填哪些 tool_call 的结果之后发出的
 	producedToolCallIds?: string[];		// 这次请求产出了哪些 tool_call（与 ctx 里的 messages 对齐）
 	agentInstanceRound?: number;		// 该实例的第几轮

@@ -11,26 +11,16 @@
      plugins/<pluginId>/<modeId>/<agentId>/{agent.json,prompt.md,reflection.md}  Agent 定义
        └─ reflection.md 存在时，该 Agent 的反思轮**整份替换**模式级的反思提示词
 
-   模式配置不再有「settings 覆盖层」：设置页直接编辑 mode.json 本身
-   （PUT /api/modes/:id → saveModeJson），校验不通过就不落盘。
-
    优先级：用户插件目录（~/.mindthegap-harness/plugins）> 应用内置目录（plugins/）。
    同名 mode.id 以后加载者覆盖，并在结果里标注 overridden。
 
-   内置目录的定位复用 storage 里「从 cwd 逐级向上找」的策略：
-   dev 时 cwd 是项目根，打包后是应用目录。
+   内置目录的定位复用 storage 里「从 cwd 逐级向上找」的策略：dev 时 cwd 是项目根，打包后是应用目录。
    ========================================================================== */
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import type {
-	AgentDefinition,
-	AbilityPolicy,
-	ModeDefinition,
-	PluginManifest,
-} from '@shared/agent';
-import { DEFAULT_REFLECTION_PROMPT } from '../agent/defaultPrompts';
+import type { AgentDefinition, AbilityPolicy, ModeDefinition, PluginManifest } from '@shared/agent';
 
 /** 反思提示词的文件名（模式级 / Agent 级同名，按目录位置区分语义） */
 const REFLECTION_FILE = 'reflection.md';
@@ -108,16 +98,7 @@ function readJson<T>(filePath: string): T | null {
 	}
 }
 
-function readText(filePath: string, fallback = ''): string {
-	try {
-		return readFileSync(filePath, 'utf-8');
-	} catch {
-		return fallback;
-	}
-}
-
-/** 文件不存在时返回 null（与 readText 的「给个空串兜底」区分开：这里要能判断「有没有」） */
-function readTextOrNull(filePath: string): string | null {
+function readText(filePath: string): string | null {
 	try {
 		return readFileSync(filePath, 'utf-8');
 	} catch {
@@ -139,38 +120,36 @@ function isDir(p: string): boolean {
 
 /**
  * 反思提示词按位置回退查找（找到第一个「存在且非空」的文件即用）：
- *   <agentDir>/reflection.md  >  <modeDir>/reflection.md
- * 都不存在时返回 null，由调用方回退到代码里的内置默认。
+ *   <agentDir>/reflection.md → <modeDir>/reflection.md → null
  *
  * 语义是**整份替换**而不是叠加：Agent 级文件存在时，模式级连一个字都不参与拼接。
- * （曾经还有一层插件级 `plugins/<pluginId>/reflection.md`，确认没用到，已去掉。）
  */
 function findReflectionPrompt(dirs: { agentDir?: string; modeDir?: string }): { text: string; path: string } | null {
 	const candidates: string[] = [];
 	if (dirs.agentDir) candidates.push(join(dirs.agentDir, REFLECTION_FILE));
 	if (dirs.modeDir) candidates.push(join(dirs.modeDir, REFLECTION_FILE));
 	for (const file of candidates) {
-		const text = readTextOrNull(file);
+		const text = readText(file);
 		if (text && text.trim()) return { text, path: file };
 	}
 	return null;
 }
 
 /**
- * 运行时（reflect()）用：这个实例的反思轮该用哪份提示词。
+ * 运行时（reflect()）用：这个实例的反思轮该用哪份提示词。并提供文件路径作为参考（文本在插件加载时就已读取，此处不会再读取）。
  * 优先级 agent 级 > 模式级 > 内置默认；都取加载期缓存的内容，
  * 改完 md 文件要 POST /api/plugins/reload 才生效（与其它插件数据一致）。
  */
-export function resolveReflectionPrompt(mode: ModeDefinition, def?: AgentDefinition): { text: string; path?: string } {
-	if (def?.reflectionPrompt?.trim()) {
+export function resolveReflectionPrompt(mode: ModeDefinition, agentDefinition?: AgentDefinition): { text: string; path?: string } | null {
+	if (agentDefinition?.reflectionPrompt?.trim()) {
 		const modeDir = mode.modeJsonPath ? dirname(mode.modeJsonPath) : mode.pluginDir;
 		return {
-			text: def.reflectionPrompt,
-			path: join(modeDir, def.id, def.reflectionPromptFile ?? REFLECTION_FILE),
+			text: agentDefinition.reflectionPrompt,
+			path: join(modeDir, agentDefinition.id, agentDefinition.reflectionPromptFile ?? REFLECTION_FILE),
 		};
 	}
 	if (mode.reflectionPrompt?.trim()) return { text: mode.reflectionPrompt, path: mode.reflectionPromptPath };
-	return { text: DEFAULT_REFLECTION_PROMPT };
+	return null;
 }
 
 // #endregion
@@ -184,7 +163,7 @@ let lastErrors: PluginLoadError[] = [];
 /** 上次 loadAllPlugins 的选项（saveModeJson 写盘后按同样口径重载） */
 let lastLoadOptions: LoadOptions = {};
 
-/** 单个插件目录 → 插件清单 */
+/** 按指定的单个插件目录地址，读取该插件清单 */
 function loadPluginManifest(pluginDir: string, source: 'builtin' | 'user', errors: PluginLoadError[]): PluginManifest | null {
 	const manifestPath = join(pluginDir, 'plugin.json');
 	const raw = readJson<Partial<PluginManifest>>(manifestPath);
@@ -211,70 +190,8 @@ function loadPluginManifest(pluginDir: string, source: 'builtin' | 'user', error
 	};
 }
 
-/** 单个 Agent 目录 → Agent 定义 */
-function loadAgentDefinition(
-	agentDir: string,
-	errors: PluginLoadError[],
-	ctx: { pluginId: string; modeId: string; knownToolNames: string[] | null },
-): AgentDefinition | null {
-	const agentJsonPath = join(agentDir, 'agent.json');
-	const raw = readJson<Partial<AgentDefinition>>(agentJsonPath);
-	if (!raw) {
-		errors.push({ level: 'error', pluginId: ctx.pluginId, modeId: ctx.modeId, message: `无法解析 agent.json: ${agentJsonPath}` });
-		return null;
-	}
-	if (!raw.id) {
-		errors.push({ level: 'error', pluginId: ctx.pluginId, modeId: ctx.modeId, message: `agent.json 缺 id: ${agentJsonPath}` });
-		return null;
-	}
-
-	const promptFile = raw.promptFile ?? 'prompt.md';
-	const prompt = readText(join(agentDir, promptFile));
-
-	// Agent 级反思提示词：文件存在才算数（存在即整份替换上层，不做拼接）
-	const reflectionPromptFile = raw.reflectionPromptFile ?? REFLECTION_FILE;
-	const reflectionPath = join(agentDir, reflectionPromptFile);
-	const reflectionPrompt = existsSync(reflectionPath) ? readText(reflectionPath) : '';
-
-	const ability: AbilityPolicy = raw.ability ?? {};
-	// 工具名校验：只 warn（可能是留给其他插件的动态工具 / MCP）
-	if (ctx.knownToolNames) {
-		const allow = ability.tools?.allow ?? [];
-		for (const name of allow) {
-			if (!ctx.knownToolNames.includes(name)) {
-				errors.push({
-					level: 'warn',
-					pluginId: ctx.pluginId,
-					modeId: ctx.modeId,
-					agentId: raw.id,
-					message: `工具名不在注册表: ${name}`,
-				});
-			}
-		}
-	}
-
-	return {
-		id: raw.id,
-		name: raw.name ?? raw.id,
-		promptFile,
-		prompt,
-		ability,
-		delegatable: raw.delegatable,
-		model: raw.model,
-		reflectionCount: raw.reflectionCount ?? 0,
-		reflectionPromptFile,
-		reflectionPrompt,
-	};
-}
-
-/** 单个模式目录 → 模式定义 */
-function loadModeDefinition(
-	pluginDir: string,
-	plugin: PluginManifest,
-	modeId: string,
-	errors: PluginLoadError[],
-	knownToolNames: string[] | null,
-): ModeDefinition | null {
+/** 按指定的单个插件目录地址 + 模式名，读取该插件模式定义（包含模式下的 agents） */
+function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: string, errors: PluginLoadError[], knownToolNames: string[] | null): ModeDefinition | null {
 	const modeDir = join(pluginDir, modeId);
 	if (!isDir(modeDir)) {
 		errors.push({ level: 'error', pluginId: plugin.id, modeId, message: `模式目录不存在: ${modeDir}` });
@@ -335,17 +252,68 @@ function loadModeDefinition(
 		maxDepth: raw.maxDepth ?? 0,
 		taskList: raw.taskList ?? { enabled: false, writable: false },
 		mcp: raw.mcp ?? 'none',
-		// 模式配置就是 mode.json 顶层的这几个字段（没有 settings 覆盖层了）
 		limits: raw.limits,
 		ui: raw.ui,
 		// 反思提示词按 agent 级 > 模式级 解析（agent 级在 def.reflectionPrompt 里）
 		reflectionPrompt: modeReflection?.text,
 		reflectionPromptPath: modeReflection?.path,
-		modeJsonText: readText(modeJsonPath),
+		modeJsonText: readText(modeJsonPath) ?? '',
 		modeJsonPath,
 		pluginId: plugin.id,
 		pluginName: plugin.name,
 		pluginDir,
+	};
+}
+
+/** 按指定的单个 Agent 目录地址，读取该 Agent 的定义 */
+function loadAgentDefinition(agentDir: string, errors: PluginLoadError[], ctx: { pluginId: string; modeId: string; knownToolNames: string[] | null }): AgentDefinition | null {
+	const agentJsonPath = join(agentDir, 'agent.json');
+	const raw = readJson<Partial<AgentDefinition>>(agentJsonPath);
+	if (!raw) {
+		errors.push({ level: 'error', pluginId: ctx.pluginId, modeId: ctx.modeId, message: `无法解析 agent.json: ${agentJsonPath}` });
+		return null;
+	}
+	if (!raw.id) {
+		errors.push({ level: 'error', pluginId: ctx.pluginId, modeId: ctx.modeId, message: `agent.json 缺 id: ${agentJsonPath}` });
+		return null;
+	}
+
+	const promptFile = raw.promptFile ?? 'prompt.md';
+	const prompt = readText(join(agentDir, promptFile)) ?? '';
+
+	// Agent 级反思提示词：文件存在才算数（存在即整份替换上层，不做拼接）
+	const reflectionPromptFile = raw.reflectionPromptFile ?? REFLECTION_FILE;
+	const reflectionPath = join(agentDir, reflectionPromptFile);
+	const reflectionPrompt = existsSync(reflectionPath) ? readText(reflectionPath) ?? '' : '';
+
+	const ability: AbilityPolicy = raw.ability ?? {};
+	// 工具名校验：只 warn（可能是留给其他插件的动态工具 / MCP）
+	if (ctx.knownToolNames) {
+		const allow = ability.tools?.allow ?? [];
+		for (const name of allow) {
+			if (!ctx.knownToolNames.includes(name)) {
+				errors.push({
+					level: 'warn',
+					pluginId: ctx.pluginId,
+					modeId: ctx.modeId,
+					agentId: raw.id,
+					message: `工具名不在注册表: ${name}`,
+				});
+			}
+		}
+	}
+
+	return {
+		id: raw.id,
+		name: raw.name ?? raw.id,
+		promptFile,
+		prompt,
+		ability,
+		delegatable: raw.delegatable,
+		model: raw.model,
+		reflectionCount: raw.reflectionCount ?? 0,
+		reflectionPromptFile,
+		reflectionPrompt,
 	};
 }
 
@@ -435,13 +403,6 @@ export function isLoaded(): boolean {
 
 // #region 写回 mode.json（设置页的源码编辑器）
 
-export interface SaveModeJsonResult {
-	ok: boolean;
-	error?: string;
-	/** 保存后重载得到的模式（成功时给调用方回传最新定义） */
-	mode?: ModeDefinition;
-}
-
 /**
  * 保存某个模式的 mode.json —— 设置页「插件 / 模式」面板的源码编辑器走这里。
  *
@@ -450,7 +411,7 @@ export interface SaveModeJsonResult {
  *   ② 落盘后：按加载器同一套规则重载，只要该模式出现 error 级加载错误就**回滚**到旧内容
  *      （宁可保存失败，也不要留下一个把模式弄坏的文件）。
  */
-export function saveModeJson(modeId: string, jsonText: string): SaveModeJsonResult {
+export function saveModeJson(modeId: string, jsonText: string): { ok: boolean; error?: string; mode?: ModeDefinition } {
 	const mode = getMode(modeId);
 	if (!mode) return { ok: false, error: `模式不存在: ${modeId}` };
 	if (!mode.modeJsonPath) return { ok: false, error: `模式 ${modeId} 没有关联的 mode.json` };
@@ -484,7 +445,7 @@ export function saveModeJson(modeId: string, jsonText: string): SaveModeJsonResu
 		return { ok: false, error: 'taskList 必须是对象，形如 {"enabled":true,"writable":true}' };
 	}
 
-	const prevText = readText(target);
+	const prevText = readText(target) ?? '';
 	try {
 		writeFileSync(target, jsonText.endsWith('\n') ? jsonText : `${jsonText}\n`, 'utf-8');
 	} catch (e) {

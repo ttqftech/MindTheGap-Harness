@@ -1,21 +1,19 @@
-/* ==========================================================================
-   工具系统 — MindTheGap-Harness
-
-   注意：主进程运行时是 Cottontail（JSC），不是 Bun。
-   所以必须用 node:* 系列 API，不能用 Bun.xxx。
-
-   本文件只负责「工具是什么、怎么执行」，不负责「谁来编排」：
-   - 编排类工具（delegate / finish / resume_* / ask_child / ask_user / task_list_*）
-     的实现就是调用 Runner 注入的编排原语，自己不碰 ctx 的状态机。
-   - `reason` 由工具层统一注入 JSON Schema 的 required，执行前再从 args 里剥离。
-
-   能力过滤：AgentDefinition.ability.tools 白名单 + ability.mcp 策略
-   （见 getToolsForAgentInstance）。
-   ========================================================================== */
+/**
+ * 工具系统 — MindTheGap-Harness
+ *
+ * 本文件只负责「工具是什么、怎么执行」，不负责「谁来编排」：
+ * - 编排类工具（delegate / finish / resume_* / ask_child / ask_user / task_list_*）的实现就是调用 Runner 注入的编排原语，自己不碰 ctx 的状态机。
+ * - `reason` 由工具层统一注入 JSON Schema 的 required，执行前再从 args 里剥离。
+ *
+ * 能力过滤：AgentDefinition.ability.tools 白名单 + ability.mcp 策略（见 getToolsForAgentInstance）。
+ *
+ * 注意：主进程运行时是 Cottontail（JSC），不是 Bun。所以必须用 node:* 系列 API，不能用 Bun.xxx。
+ */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, isAbsolute, relative, extname } from 'node:path';
 import { execSync } from 'node:child_process';
+import { FromSchema } from 'json-schema-to-ts';
 import type {
 	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool,
 	ModeDefinition, ToolResult,
@@ -25,19 +23,6 @@ import { searchEngines } from './web/engines';
 import { rankCandidates, type RankInput } from './web/rank';
 
 // #region 类型
-
-/** 任务清单操作（见设计 §10） */
-export interface TaskListOp {
-	op: 'add' | 'update' | 'remove' | 'replace';
-	/** add / update 的条目文本（形如 "实现 delegate 工具"） */
-	item?: string;
-	/** update / remove 的下标（从 0 开始，对应清单里第 n 条） */
-	index?: number;
-	/** update 时是否标记完成 */
-	done?: boolean;
-	/** replace 时的全文 */
-	list?: string;
-}
 
 /**
  * 工具执行上下文（即设计稿里的「大 Context」）。
@@ -63,7 +48,7 @@ export interface ToolContext {
 	askChild: (agentInstanceId: string, question: string) => Promise<ToolResult>;
 	askUser: (q: AskUserArgs) => Promise<ToolResult>;
 	readTaskList: () => string;
-	writeTaskList: (op: TaskListOp) => string;
+	writeTaskList: (op: { op: 'add' | 'update' | 'remove' | 'replace'; item?: string; index?: number; done?: boolean; list?: string }) => string;
 	/**
 	 * 工具内部发起一次**独立 LLM 请求**的能力（如 web_search 的候选相关性打分）。
 	 * 会照常写 requestLog（purpose=web_rank），所以这部分花费在账本里看得到。
@@ -93,11 +78,11 @@ export interface ToolLlmResult {
 }
 
 /** 工具定义 */
-export interface AgentTool {
+export interface AgentTool<TArgs extends Record<string, unknown> = Record<string, unknown>> {
 	name: string;
 	description: string;
 	parameters: Record<string, unknown>;
-	execute: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
+	execute: (args: TArgs, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 // #endregion
@@ -113,8 +98,8 @@ const toolRegistry = new Map<string, AgentTool>();
  */
 const dynamicToolSources = new Map<string, AgentTool[]>();
 
-export function registerTool(tool: AgentTool): void {
-	toolRegistry.set(tool.name, tool);
+export function registerTool<TArgs extends Record<string, unknown> = Record<string, unknown>>(tool: AgentTool<TArgs>): void {
+	toolRegistry.set(tool.name, tool as AgentTool);
 }
 
 export function getTool(name: string): AgentTool | undefined {
@@ -165,11 +150,8 @@ function mcpToolsFor(policy: 'none' | 'all' | string[]): AgentTool[] {
  * （曾经中间还有一层 modeConfig.includeMcp，那是「settings 覆盖 mode.json」时代的产物；
  *   现在模式配置就是 mode.json 本身，includeMcp 的语义等价于 mode.mcp: 'all' | 'none'。）
  */
-export function resolveMcpPolicy(
-	def: AgentDefinition,
-	mode: ModeDefinition,
-): 'none' | 'all' | string[] {
-	if (def.ability.mcp) return def.ability.mcp;
+export function resolveMcpPolicy(agentDefinition: AgentDefinition, mode: ModeDefinition): 'none' | 'all' | string[] {
+	if (agentDefinition.ability.mcp) return agentDefinition.ability.mcp;
 	return mode.mcp ?? 'none';
 }
 
@@ -179,13 +161,9 @@ export function resolveMcpPolicy(
  * - 编排类工具（delegate）在达到 maxDepth 时被移除
  * - MCP 工具按策略过滤
  */
-export function getToolsForAgentInstance(
-	agentInstance: AgentInstance,
-	def: AgentDefinition,
-	mode: ModeDefinition,
-): AgentTool[] {
-	const allow = def.ability.tools?.allow;
-	const deny = new Set(def.ability.tools?.deny ?? []);
+export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefinition: AgentDefinition, mode: ModeDefinition): AgentTool[] {
+	const allow = agentDefinition.ability.tools?.allow;
+	const deny = new Set(agentDefinition.ability.tools?.deny ?? []);
 	const depthExhausted = agentInstance.depth >= mode.maxDepth;
 
 	const builtin = Array.from(toolRegistry.values()).filter((t) => {
@@ -198,7 +176,7 @@ export function getToolsForAgentInstance(
 		return true;
 	});
 
-	const mcpPolicy = resolveMcpPolicy(def, mode);
+	const mcpPolicy = resolveMcpPolicy(agentDefinition, mode);
 	return [...builtin, ...mcpToolsFor(mcpPolicy)];
 }
 
@@ -563,8 +541,7 @@ registerTool({
 registerTool({
 	name: 'file_rename',
 	description:
-		'重命名或移动文件（也用于「重命名迁移」备份：把要改的原文件移到 ' +
-		'workspace/backups/<时间戳>-<原名>，再写新内容，避免直接覆盖造成不可逆丢失）。',
+		'重命名或移动文件（也用于「重命名迁移」备份：把要改的原文件移到 workspace/backups/<时间戳>-<原名>，再写新内容，避免直接覆盖造成不可逆丢失）。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -593,24 +570,30 @@ registerTool({
 
 registerTool({
 	name: 'bash',
-	description: `在运行目录中执行 shell 命令。当前运行环境是 Windows（shell 为 cmd.exe），请使用 Windows 兼容命令（如 dir、type、echo），不要用 Unix 专属命令（如 ls、date +%Y、grep -r）。`,
+	description: `在运行目录中执行 shell 命令。${
+		process.platform === 'win32'
+			? '当前运行环境是 Windows（shell 为 cmd.exe），请使用 Windows 兼容命令（如 dir、type、echo），不要用 Unix 专属命令（如 ls、date +%Y、grep -r）。'
+			: process.platform === 'darwin'
+				? '当前运行环境是 macOS（shell 为 /bin/sh），请使用 Unix 兼容命令（如 ls、cat、echo、grep）。'
+				: '当前运行环境是 Linux（shell 为 /bin/sh），请使用 Unix 兼容命令（如 ls、cat、echo、grep）。'
+	}`,
 	parameters: {
 		type: 'object',
 		properties: {
 			command: { type: 'string', description: '要执行的 shell 命令' },
-			timeout: { type: 'integer', description: '超时时间（毫秒），默认 10000' },
+			timeout: { type: 'integer', description: '超时时间（秒），默认 180' },
 		},
 		required: ['command'],
 	},
 	async execute(args, ctx) {
 		const cmd = args.command as string;
-		const timeout = (args.timeout as number) ?? 10000;
+		const timeout = (args.timeout as number) ?? 180;
 
 		try {
 			const output = execSync(cmd, {
 				cwd: ctx.runningDir && existsSync(ctx.runningDir) ? ctx.runningDir : undefined,
 				encoding: 'utf-8',
-				timeout,
+				timeout: timeout * 1000,
 				stdio: ['pipe', 'pipe', 'pipe'],
 			});
 
@@ -640,17 +623,20 @@ registerTool({
 
 const WEB_MAX_CHARS = 20000;
 const SEARCH_DEFAULT_PAGES = 3;
-const SEARCH_MAX_PAGES = 6;
+const SEARCH_MAX_PAGES = 10;
 const SEARCH_PAGE_CHARS = 4000;
 const SEARCH_TOTAL_CHARS = 24000;
 
+/**
+ * 抓取一个 URL 的正文，转成 Markdown（自动剥掉导航 / 脚本 / 样式等噪声，超长会截断）。
+ * 默认先用轻量 HTTP 请求；如果页面是靠 JS 渲染的空壳（SPA / 懒加载），或 HTTP 直接失败，
+ * 会自动改用无头浏览器渲染 —— 你不用自己判断该用哪种。
+ * 如果 URL 本来就是 API / JSON / 纯文本，会原样返回，不做转换。
+ */
 registerTool({
 	name: 'web_fetch',
 	description:
-		'抓取一个 URL 的正文，转成 Markdown（自动剥掉导航 / 脚本 / 样式等噪声，超长会截断）。' +
-		'默认先用轻量 HTTP 请求；如果页面是靠 JS 渲染的空壳（SPA / 懒加载），或 HTTP 直接失败，' +
-		'会自动改用无头浏览器渲染 —— 你不用自己判断该用哪种。' +
-		'如果 URL 本来就是 API / JSON / 纯文本，会原样返回，不做转换。',
+		'抓取一个 URL 的正文，支持转成 Markdown（自动剥掉导航、脚本、样式等噪声）或原样返回。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -658,12 +644,12 @@ registerTool({
 			format: {
 				type: 'string',
 				enum: ['auto', 'markdown', 'text', 'html', 'raw'],
-				description: '返回格式。auto（默认）= HTML 转 Markdown，非 HTML 原样返回；raw = 不做任何转换',
+				description: '返回格式。auto（默认）= 若为 HTML 则转 Markdown，否则原样返回；raw = 不转换',
 			},
 			render: {
 				type: 'string',
 				enum: ['auto', 'always', 'never'],
-				description: '是否允许用无头浏览器渲染。auto（默认）= HTTP 拿不到正文时才渲染；never = 只用 HTTP（更快）',
+				description: '是否用无头浏览器渲染。auto（默认）= HTTP 无有效正文时使用；never = 只用 HTTP（更快）',
 			},
 			maxChars: { type: 'integer', description: `最多返回多少字符，默认 ${WEB_MAX_CHARS}` },
 			waitMs: { type: 'integer', description: '渲染时：页面加载完再等多久（毫秒），慢站点用，默认 0' },
@@ -719,26 +705,30 @@ registerTool({
 	},
 });
 
+/**
+ * 多引擎网络搜索，并且**直接把最相关页面的正文抓回来**。
+ * 流程：同一个关键词并发查多个搜索引擎（必应 / 百度 / 搜狗 / 360 / 谷歌，某个引擎在当前网络下不可达时会如实标注、不影响其余结果）
+ * → 合并去重得到「标题 + 链接 + 摘要」候选 → 用一次独立模型调用按相关性给每条候选打分
+ * → 取分数最高的若干条展开正文。所以返回的是**经过相关性筛选、带正文的调研材料**，不是链接列表。
+ */
 registerTool({
 	name: 'web_search',
 	description:
-		'多引擎网络搜索，并且**直接把最相关页面的正文抓回来**。流程：同一个关键词并发查多个搜索引擎' +
-		'（必应 / 百度 / 搜狗 / 360 / 谷歌，某个引擎在当前网络下不可达时会如实标注、不影响其余结果）' +
-		'→ 合并去重得到「标题 + 链接 + 摘要」候选 → 用一次独立模型调用按相关性给每条候选打分 ' +
-		'→ 取分数最高的若干条展开正文。所以返回的是**经过相关性筛选、带正文的调研材料**，不是链接列表。' +
-		'需要外部世界的事实时优先用它；只有一个明确 URL 时用 web_fetch 更直接。',
+		'多引擎网络搜索，返回最相关页面的**正文**。' +
+		'该工具将并发调用多个搜索引擎，合并去重后进行 AI 打分，并返回**经过相关性筛选、的正文材料**，不是链接列表。' +
+		'需要外部世界事实时优先用它；只有一个明确 URL 时建议用 web_fetch 而非本工具。',
 	parameters: {
 		type: 'object',
 		properties: {
-			query: { type: 'string', description: '检索词：带上具体的产品名 / 版本号 / 报错原文，比泛泛的关键词有效得多' },
+			query: { type: 'string', description: '检索词' },
 			limit: {
 				type: 'integer',
-				description: `展开正文的条数，默认 ${SEARCH_DEFAULT_PAGES}（最多 ${SEARCH_MAX_PAGES}）。1~2 条适合只要一个事实，3~4 条适合需要对照多个来源`,
+				description: `展开正文的条数，默认 ${SEARCH_DEFAULT_PAGES}（最多 ${SEARCH_MAX_PAGES}）。2~3 条适合只要一个事实，4~6 条适合需要对照多个来源`,
 			},
 			engines: {
 				type: 'array',
 				items: { type: 'string', enum: ['bing', 'baidu', 'sogou', 'so', 'google'] },
-				description: '只用这些引擎（默认全部）。一般不用填',
+				description: '引擎白名单（默认全部）。建议不填',
 			},
 			maxCharsPerPage: { type: 'integer', description: `每篇正文最多返回多少字符，默认 ${SEARCH_PAGE_CHARS}` },
 		},
@@ -748,8 +738,8 @@ registerTool({
 		const query = String(args.query ?? '').trim();
 		if (!query) return { success: false, content: 'query 不能为空' };
 
-		const limit = Math.max(1, Math.min((args.limit as number) ?? SEARCH_DEFAULT_PAGES, SEARCH_MAX_PAGES));
-		const perPage = Math.max(500, (args.maxCharsPerPage as number) ?? SEARCH_PAGE_CHARS);
+		const limitResults = Math.max(1, Math.min((args.limit as number) ?? SEARCH_DEFAULT_PAGES, SEARCH_MAX_PAGES));
+		const limitPerPage = Math.max(500, (args.maxCharsPerPage as number) ?? SEARCH_PAGE_CHARS);
 
 		// ---- 1. 多引擎检索 ----
 		const searched = await searchEngines(query, {
@@ -775,12 +765,12 @@ registerTool({
 			engines: h.engines,
 		}));
 		const ranked = await rankCandidates(query, rankInput, (req) => ctx.runLlm(req), ctx.signal);
-		const picked = ranked.items.slice(0, limit);
+		const picked = ranked.items.slice(0, limitResults);
 
 		// ---- 3. 展开正文（一次浏览器调用覆盖所有需要渲染的页面）----
 		const fetched = await fetchMany(picked.map((p) => p.url), {
 			format: 'markdown',
-			maxChars: perPage,
+			maxChars: limitPerPage,
 			signal: ctx.signal,
 		});
 
@@ -811,7 +801,7 @@ registerTool({
 		});
 
 		// 没被展开的候选也列出来——它们是「已经过筛选」的备选，比让模型重新搜一遍便宜
-		const rest = ranked.items.slice(limit);
+		const rest = ranked.items.slice(limitResults);
 		if (rest.length > 0) {
 			const restLines = rest
 				.slice(0, 12)
@@ -822,7 +812,7 @@ registerTool({
 		let content = `${header}\n\n---\n\n${sections.join('\n\n---\n\n')}`;
 		let truncated = false;
 		if (content.length > SEARCH_TOTAL_CHARS) {
-			content = `${content.slice(0, SEARCH_TOTAL_CHARS)}\n\n...(搜索结果总长超过 ${SEARCH_TOTAL_CHARS} 字符，已截断。需要更多内容时用 web_fetch 打开上面某个链接)`;
+			content = `${content.slice(0, SEARCH_TOTAL_CHARS)}\n\n...(搜索结果过长，已截断。需要更多内容时请用 web_fetch 直接打开链接)`;
 			truncated = true;
 		}
 
@@ -860,6 +850,19 @@ registerTool({
 	},
 });
 
+// task_list_write
+const taskListWriteSchema = {
+	type: 'object',
+	properties: {
+		op:    { type: 'string', enum: ['add', 'update', 'remove', 'replace'] },
+		item:  { type: 'string' },
+		index: { type: 'integer' },
+		done:  { type: 'boolean' },
+		list:  { type: 'string' },
+	},
+	required: ['op'] as const,
+} as const;
+export type TaskListWriteArgs = FromSchema<typeof taskListWriteSchema>;
 registerTool({
 	name: 'task_list_write',
 	description:
@@ -869,19 +872,19 @@ registerTool({
 		properties: {
 			op: { type: 'string', enum: ['add', 'update', 'remove', 'replace'], description: '操作类型' },
 			item: { type: 'string', description: 'add / update 的条目文本' },
-			index: { type: 'integer', description: 'update / remove 的下标（从 0 开始）' },
+			index: { type: 'integer', description: 'update / remove 的下标' },
 			done: { type: 'boolean', description: 'update 时是否标记完成' },
 			list: { type: 'string', description: 'replace 时的清单全文' },
 		},
 		required: ['op'],
 	},
-	async execute(args, ctx) {
+	async execute(args: TaskListWriteArgs, ctx) {
 		const result = ctx.writeTaskList({
-			op: args.op as TaskListOp['op'],
-			item: args.item as string | undefined,
-			index: args.index as number | undefined,
-			done: args.done as boolean | undefined,
-			list: args.list as string | undefined,
+			op: args.op,
+			item: args.item,
+			index: args.index,
+			done: args.done,
+			list: args.list,
 		});
 		return { success: true, content: `任务清单已更新：\n${result || '(空)'}` };
 	},
@@ -894,8 +897,7 @@ registerTool({
 registerTool({
 	name: 'delegate',
 	description:
-		'把一批子任务委托给其他 Agent 执行（并行）。每个子 Agent 独立工作，完成后把总结回填给你。' +
-		'委托不会阻塞你：你会先进入等待，全部子实例结束后被自动唤醒。',
+		'把一批子任务委托给其他 Agent 执行（并行）。每个子 Agent 独立工作，完成后把总结回填给你。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -1048,7 +1050,5 @@ registerTool({
 		});
 	},
 });
-
-// #endregion
 
 // #endregion

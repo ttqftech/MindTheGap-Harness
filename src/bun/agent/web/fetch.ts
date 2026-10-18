@@ -207,10 +207,7 @@ export async function fetchUrl(inputUrl: string, opts: FetchOptions = {}): Promi
 }
 
 /** 走 HTTP：返回结果里 needRender=true 表示「拿到了 HTML 但正文太薄，建议渲染」 */
-async function fetchViaHttp(
-	url: string,
-	opts: { format: FetchFormat; maxChars: number; timeoutMs?: number; signal?: AbortSignal },
-): Promise<FetchOutcome & { needRender?: boolean }> {
+async function fetchViaHttp(url: string, opts: { format: FetchFormat; maxChars: number; timeoutMs?: number; signal?: AbortSignal }): Promise<FetchOutcome & { needRender?: boolean }> {
 	const ctrl = new AbortController();
 	const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? HTTP_TIMEOUT_MS);
 	const onAbort = () => ctrl.abort();
