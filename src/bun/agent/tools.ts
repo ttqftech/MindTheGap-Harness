@@ -41,7 +41,7 @@ export interface ToolContext {
 	/** 本轮 run 的中断信号（工具内部发起的网络 / LLM 请求都该跟着它一起断） */
 	signal: AbortSignal;
 	// ---- 编排原语 ----
-	delegate: (tasks: { agentId: string; task: string }[]) => Promise<ToolResult>;
+	delegate: (agentId: string, task: string) => Promise<ToolResult>;
 	finish: (summary: string) => Promise<ToolResult>;
 	resumePendingChild: (agentInstanceId: string) => Promise<ToolResult>;
 	resumeCompletedChild: (agentInstanceId: string, followUp: string) => Promise<ToolResult>;
@@ -897,44 +897,28 @@ registerTool({
 registerTool({
 	name: 'delegate',
 	description:
-		'把一批子任务委托给其他 Agent 执行（并行）。每个子 Agent 独立工作，完成后把总结回填给你。',
+		'把一个子任务委托给其他 Agent 执行。需要并行委托多个子任务时，请同时发起多个 delegate 调用。',
 	parameters: {
 		type: 'object',
 		properties: {
-			tasks: {
-				type: 'array',
-				description: '要委托的子任务列表',
-				items: {
-					type: 'object',
-					properties: {
-						agentId: { type: 'string', description: '目标 Agent 的 id（见「你可以委托的 Agent」清单）' },
-						task: { type: 'string', description: '自包含的任务说明：背景 / 范围 / 交付 / 约束' },
-					},
-					required: ['agentId', 'task'],
-				},
-			},
+			agentId: { type: 'string', description: '目标 Agent 的 id（见「你可以委托的 Agent」清单）' },
+			task: { type: 'string', description: '自包含的任务说明：背景 / 范围 / 交付 / 约束' },
 		},
-		required: ['tasks'],
+		required: ['agentId', 'task'],
 	},
 	async execute(args, ctx) {
-		const tasks = (args.tasks as { agentId: string; task: string }[]) ?? [];
-		if (!Array.isArray(tasks) || tasks.length === 0) {
-			return { success: false, content: 'tasks 必须是非空数组' };
-		}
-		// 白名单校验：def.delegatable ∩ mode.agents
+		const agentId = String(args.agentId ?? '');
+		const task = String(args.task ?? '').trim();
+		if (!agentId) return { success: false, content: 'agentId 不能为空' };
+		if (!task) return { success: false, content: 'task 不能为空' };
 		const allowed = (ctx.def.delegatable ?? []).filter((id) => ctx.mode.agents[id]);
-		for (const t of tasks) {
-			if (!ctx.mode.agents[t.agentId]) {
-				return { success: false, content: `不存在的 agentId: ${t.agentId}。可用：${allowed.join(', ') || '(无)'}` };
-			}
-			if (!allowed.includes(t.agentId)) {
-				return { success: false, content: `当前 Agent 不能委托给 ${t.agentId}。可用：${allowed.join(', ') || '(无)'}` };
-			}
-			if (!t.task?.trim()) {
-				return { success: false, content: `agentId=${t.agentId} 的 task 不能为空` };
-			}
+		if (!ctx.mode.agents[agentId]) {
+			return { success: false, content: `不存在的 agentId: ${agentId}。可用：${allowed.join(', ') || '(无)'}` };
 		}
-		return ctx.delegate(tasks);
+		if (!allowed.includes(agentId)) {
+			return { success: false, content: `当前 Agent 不能委托给 ${agentId}。可用：${allowed.join(', ') || '(无)'}` };
+		}
+		return ctx.delegate(agentId, task);
 	},
 });
 

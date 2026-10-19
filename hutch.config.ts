@@ -17,7 +17,7 @@ export default {
 		//   hutch electrobun dev --watch → electrobun 桌面应用，主进程变更时自动重载
 		// webview 通过 getMainViewUrl() 检测 Vite dev server 并连接 http://localhost:5173
 		// 效果：保存前端文件 → Vite HMR 即时热更新；保存主进程文件 → electrobun --watch 自动重载
-		dev: ["pnpm", "exec", "concurrently", "pnpm exec vite --port 5173 --config config/vite.mainview.ts", "hutch electrobun dev --watch"],
+		dev: ["pnpm", "exec", "concurrently", "pnpm exec vite --port 5173 --config config/vite.mainview.ts", "hutch electrobun dev --watch --inspect=9230"],
 
 		// 构建 + 启动（无 HMR，用于调试或预览生产产物）
 		start: "pnpm exec vite build --config config/vite.mainview.ts && hutch electrobun dev",

@@ -55,11 +55,14 @@ export interface LlmResponseChunk {
 
 export interface LlmCallResult {
 	text: string;
-	/** 思考模型的推理内容（需在多轮回传） */
 	reasoningContent: string;
 	toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
 	usage: TokenUsage;
 	finishReason?: string;
+	logId: string;
+	seq: number;
+	durationMs: number;
+	modelId: string;
 }
 
 export interface LlmRequest {
@@ -654,8 +657,14 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		finishReason = result.finishReason;
 		usage = result.usage ?? usage;
 		producedToolCallIds = result.toolCalls.map((tc) => tc.id);
-		emitUsage(meta, logId, seq, usage, Date.now() - startedAt, config.modelId);
-		return result;
+		return {
+			...result,
+			usage,
+			logId,
+			seq,
+			durationMs: Date.now() - startedAt,
+			modelId: config.modelId,
+		};
 	} catch (e) {
 		const err = e as Error & { status?: number; name?: string };
 		if (err?.name === 'AbortError' || signal?.aborted) {
@@ -706,46 +715,6 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		appendRequestRecord(record);
 		dumpPayload(meta.conversationId, logId, { request: { config, messages, tools }, record });
 	}
-}
-
-/** 一次 LLM 请求的用量播报（scope='call' 时携带足够的上下文，前端才能把它显示成「第几轮、谁、干什么」） */
-export interface UsageEmit {
-	conversationId: string;
-	agentInstanceId?: string;
-	logId: string;
-	seq: number;
-	tokens: TokenUsage;
-	purpose: LlmPurpose;
-	agentName?: string;
-	round?: number;
-	depth?: number;
-	durationMs?: number;
-	model?: string;
-}
-
-let usageEmitter: ((e: UsageEmit) => void) | null = null;
-
-export function setUsageEmitter(fn: typeof usageEmitter): void {
-	usageEmitter = fn;
-}
-
-function emitUsage(meta: LlmCallMeta, logId: string, seq: number, usage: TokenUsage, durationMs: number, model: string) {
-	if (!usageEmitter) return;
-	// 拿不到 usage 就不发：否则前端会多出一条「0 token」的噪声记录
-	if (Object.keys(usage).length === 0) return;
-	usageEmitter({
-		conversationId: meta.conversationId,
-		agentInstanceId: meta.agentInstanceId,
-		logId,
-		seq,
-		tokens: usage,
-		purpose: meta.purpose,
-		agentName: meta.agentName,
-		round: meta.agentInstanceRound,
-		depth: meta.depth,
-		durationMs,
-		model,
-	});
 }
 
 /** 供 runner 复用的派生类型 */

@@ -221,8 +221,6 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			break;
 		}
 		case 'usage': {
-			// 只记单次调用（scope='call'）；agentLoop 的「本段小计」是派生值，不落任何一处。
-			if (event.scope === 'loop') break;
 			const data: UsageEntry = {
 				seq: event.seq ?? 0,
 				round: event.round,

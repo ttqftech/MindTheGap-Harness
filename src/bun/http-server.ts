@@ -13,7 +13,7 @@ import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, M
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './agent/runner';
 import { getBuiltinToolNames } from './agent/tools';
-import { setMockResolver, setUsageEmitter, type UsageEmit } from './llm/model';
+import { setMockResolver } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
@@ -189,45 +189,6 @@ async function handleAgentAnswer(params: AgentAnswerRequest) {
 
 // #endregion
 
-// #region 任务清单
-
-function getTaskList(conversationId: string): string {
-	return getConversationCtxById(conversationId)?.taskList ?? '';
-}
-
-// #endregion
-
-/**
- * 把一次 LLM 请求的账本落进 ctx。
- *
- * 唯一埋点是 `callLlm` 的 usage emitter —— 主循环 / 反思 / ask_child / web_rank 四条路径都会经过它，所以账本只在这一处审计，不必在四个调用点各写一遍。
- *
- * 为什么导出：它不依赖 HTTP。`artifacts/e2e/probe-conversation.ts` 这类**进程内**探针不启本服务，需要手动 `setUsageEmitter(recordUsageInCtx)` 才能覆盖到账本落 ctx 这条链路（否则探针里账本恒为空）。
- */
-export function recordUsageInCtx(e: UsageEmit) {
-	if (!e.agentInstanceId) return;
-	const instance = getConversationCtxById(e.conversationId)?.agentInstances?.[e.agentInstanceId];
-	if (!instance) return;
-	instance.llmCalls = (instance.llmCalls ?? 0) + 1;
-	// 账本挂到「这次调用的产出物」上，不单开一条 system 条目（见 shared/agent.ts 的 `usages`）。
-	// emitter 在 callLlm 内部触发，比 runner push assistant 更早，所以先暂存在实例上，由 runner 取走。
-	instance.pendingUsage = [
-		...(instance.pendingUsage ?? []),
-		{
-			seq: e.seq,
-			round: e.round,
-			purpose: e.purpose,
-			model: e.model ?? '',
-			logId: e.logId,
-			input: e.tokens.input,
-			output: e.tokens.output,
-			cached: e.tokens.inputCached,
-			total: e.tokens.total,
-			durationMs: e.durationMs ?? 0,
-		},
-	];
-}
-
 /**
  * 启动 Agent HTTP 服务。
  * @param options.channel electrobun 发布通道（dev / canary / stable），仅用于 health 自报，默认 'unknown'
@@ -379,11 +340,14 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 				if (rest === 'tasklist') {
 					if (req.method === 'GET') {
-						sendJson(res, 200, { taskList: getTaskList(conversationId) });
+						sendJson(res, 200, {
+							taskList: getConversationCtxById(conversationId)?.taskList ?? '',
+						});
 						return;
 					}
 				}
 
+				// 读、删请求日志
 				if (rest === 'requests') {
 					if (req.method === 'GET') {
 						const limit = Number(url.searchParams.get('limit') ?? 50);
@@ -654,7 +618,6 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 	server.listen(HTTP_PORT, () => {
 		logMsg(`[HttpServer] Agent HTTP API 开始监听 http://localhost:${HTTP_PORT}`);
-		// 启动时加载插件 + 同步 requestLog 配置 + 订阅 usage 事件
 		const loaded = reloadPlugins();
 		setRequestLogOptions(getRequestLogOptionsFromSettings());
 		// 内置 mock：**每次请求现读**设置（开关/剧本改了下一轮立即生效；运行期间由路由守卫禁止切换）
@@ -663,26 +626,6 @@ export function startHttpServer(options: { channel?: string } = {}) {
 			if (!mock?.enabled) return null;
 			setMockScenario(mock.scenario);
 			return { baseUrl: ensureMockServer(), scenario: mock.scenario };
-		});
-		setUsageEmitter((e) => {
-			// 先落 ctx（真相），再广播（实时显示）：两者互不依赖，前端刷新后能从 ctx 重建
-			recordUsageInCtx(e);
-			broadcastAgentStream(e.conversationId, {
-				type: 'usage',
-				// ⚠️ timestamp 是**后端时间**：前端拿它当条目的 updatedAt，不许自己 Date.now()
-				timestamp: Date.now(),
-				agentInstanceId: e.agentInstanceId,
-				logId: e.logId,
-				tokens: e.tokens,
-				scope: 'call',
-				seq: e.seq,
-				round: e.round,
-				purpose: e.purpose,
-				agentName: e.agentName,
-				depth: e.depth,
-				durationMs: e.durationMs,
-				model: e.model,
-			});
 		});
 		for (const plugin of listPlugins()) {
 			logMsg(`[HttpServer] 插件 ${plugin.id} (${plugin.source}) → 模式 ${plugin.modes.join(', ')}`);

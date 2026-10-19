@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "hutch dev",
+			"type": "shell",
+			"command": "node",
+			"args": ["${workspaceFolder}/scripts/devWindows.cjs"],
+			"isBackground": true,
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"group": "dev-servers"
+			}
+		}
+	]
+}

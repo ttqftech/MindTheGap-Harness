@@ -1,0 +1,12 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Hutch Dev",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/scripts/devWindows.cjs",
+			"console": "integratedTerminal"
+		}
+	]
+}

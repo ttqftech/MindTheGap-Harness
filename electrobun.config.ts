@@ -16,6 +16,7 @@ export default {
 		cottontail: {
 			entrypoint: "src/bun/index.ts",
 			define: buildDefine(isDev),
+			sourcemap: "inline",
 		},
 		copy: {
 			"dist/index.html": "views/mainview/index.html",

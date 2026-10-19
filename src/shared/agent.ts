@@ -195,8 +195,7 @@ export type AgentInstanceMessage = LlmMessage & {
 	 * 为什么不做成一条独立的 `role:'system'` 条目：usage 本来就是「某一次 LLM 调用附带的一条数据」，
 	 * 拆成独立条目后投影只能把它平铺进转写，界面上就出现一堆与调用脱节的流水，与「一次调用一个块」冲突。
 	 *
-	 * 交接方式：usage emitter 在 `callLlm` 内部就触发（比 runner push 产出物更早），
-	 * 所以先暂存在 `AgentInstance.pendingUsage`，由 runner 在 push 产出物时取走（`runner.ts` 的 `adoptUsage`）。
+	 * 由 runner 在 push 产出物时直接从 callLlm 返回值构造，不再经过全局 emitter 中转。
 	 */
 	usages?: UsageEntry[];
 };
@@ -252,22 +251,16 @@ export interface AgentInstance {
 	messages: AgentInstanceMessage[];
 	/** 尚未拿到结果的 tool callId（便于调度器判断是否可重入，可从 messages 推导，这里缓存） */
 	pendingCallIds?: string[];
-	/**
-	 * 运行期暂存：usage emitter 记下、还没被某次 LLM 产出物领走的账本。
-	 * 正常流程里它在 push 产出物时立刻被清空（见 `runner.ts` 的 `adoptUsage`），落盘时通常不存在。
-	 * **不是给界面看的东西** —— 界面上的账本一律读 `AgentInstanceMessage.usages`。
-	 */
-	pendingUsage?: UsageEntry[];
 	/** 历次 finish 提交的总结（完成后仍可被重新唤醒接续，所以是数组） */
 	summaries?: string[];
 	/** 剩余反思次数（创建时 = AgentDefinition.reflectionCount ?? 0） */
 	reflectionsRemaining: number;
 	/** 本实例消耗的 agentLoop 轮数 */
 	rounds: number;
-	/** 本实例累计发起过多少次 LLM 请求（唯一写入点在 llm usage emitter） */
+	/** 本实例累计发起过多少次 LLM 请求（由 runner 在每次 callLlm 后累加） */
 	llmCalls: number;
 	childAgentInstanceIds: string[];
-	/** 本实例累计 token（唯一写入点在 llm usage emitter；唯一真相） */
+	/** 本实例累计 token（由 runner 在每次 callLlm 后累加；唯一真相） */
 	tokens?: TokenUsage;
 	startedAt: number;
 	lastUpdatedAt?: number;
@@ -330,12 +323,26 @@ export interface AgentEvent {
 	tokens?: TokenUsage;
 }
 
+/**
+ * 工具对**调度器**的处置要求。普通工具不设（= 结果当场可用，照常重入）。
+ *
+ * 这是调度器判断「这个 call 之后该干什么」的唯一信号 —— 以前它是 `structured['__orchestrator']` 这种魔法键 + `structured.status === 'pending'` 两套路子，全靠字符串约定串联。
+ * ⚠️ `structured` 是给**界面**看的（渲染嵌套树 / 成功失败），两者不是一回事，别互相嗅探。
+ */
+export type ToolControl =
+	| { kind: 'finish'; summary: string }
+	| { kind: 'ask_user'; args: AskUserArgs }
+	| { kind: 'await_child' };
+
 /** 工具调用的标准化结果 */
 export interface ToolResult {
 	success: boolean;
 	content: string;
+	/** 给界面看的结构化字段（如 delegate 的 `childAgentInstanceIds` / `status`） */
 	structured?: Record<string, unknown>;
 	error?: string;
+	/** 给调度器看的处置要求（见 `ToolControl`）。不进 LLM 上下文，也不下发给界面 */
+	control?: ToolControl;
 }
 
 /**
@@ -370,17 +377,13 @@ export type AgentStreamEvent = StreamEventBase & (
 		agentInstanceId?: string;
 		logId?: string;
 		tokens: TokenUsage;
-		scope?: 'call' | 'loop';	// call: 每次 LLM 请求结束就发一条　loop: agentLoop 中断时发（询问用户 / 完成任务 / 出错），带本段增量与实例累计
-		seq?: number;	// 该会话内第几次 LLM 请求（requestLog 的自增序号）
-		round?: number;	// 该实例的第几轮 agentLoop
-		purpose?: string;	// agent_loop / reflection / ask_child / web_rank
+		seq?: number;
+		round?: number;
+		purpose?: string;
 		agentName?: string;
 		depth?: number;
 		durationMs?: number;
 		model?: string;
-		loopDelta?: TokenUsage;	// 仅 scope='loop'：本段（本次 agentLoop）的增量
-		loopCalls?: number;	// 仅 scope='loop'：本段发生了几次 LLM 调用
-		reason?: 'ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child';	// 仅 scope='loop'：中断原因（ask_user' | 'finish' | 'interrupted' | 'error' | 'await_child'）
 	}
 	| { type: 'error'; agentInstanceId?: string; message: string }
 	| { type: 'done'; summary: string }
