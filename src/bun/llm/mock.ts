@@ -32,6 +32,7 @@ export const MOCK_SCENARIOS: { id: string; label: string }[] = [
 	{ id: 'delegate', label: 'delegate：委托一个子 Agent' },
 	{ id: 'code_web', label: 'code_web：委托 + 多引擎搜索' },
 	{ id: 'ask_user', label: 'ask_user：提问卡片' },
+	{ id: 'ask_user_multi', label: 'ask_user_multi：多问题 + 多选提问卡片' },
 	{ id: 'multi', label: 'multi：多轮工具 + 提问 + 收尾' },
 	{ id: 'reflect', label: 'reflect：反思给出真追问' },
 	{ id: 'task', label: 'task：任务清单读写（add→read→update→read）' },
@@ -235,8 +236,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 			if (toolResults === 2) {
 				await streamToolCall(res, 'ask_user', {
 					reason: '两次抓取都完成了，请用户决定下一步',
-					question: '信息都拿到了，要我汇总成一段话吗？',
-					options: [{ label: '汇总', description: '整理成一句话' }, { label: '不用了', description: '就到这儿' }],
+					questions: [{ question: '信息都拿到了，要我汇总成一段话吗？', selectionMode: 'single', options: [{ label: '汇总', description: '整理成一句话' }, { label: '不用了', description: '就到这儿' }] }],
 				}, '该问用户了。');
 				return;
 			}
@@ -343,9 +343,20 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 		if (currentScenario === 'ask_user') {
 			await streamToolCall(res, 'ask_user', {
 				reason: '需要用户决定用哪种方案',
-				question: '你希望先做 A 还是 B？',
-				options: [{ label: '方案 A', description: '先做 A' }, { label: '方案 B', description: '先做 B' }],
+				questions: [{ question: '你希望先做 A 还是 B？', selectionMode: 'single', options: [{ label: '方案 A', description: '先做 A' }, { label: '方案 B', description: '先做 B' }] }],
 			}, '需要用户拍板，先提问。');
+			return;
+		}
+
+		if (currentScenario === 'ask_user_multi') {
+			await streamToolCall(res, 'ask_user', {
+				reason: '需要用户在多个维度上做选择',
+				questions: [
+					{ question: '你想删除哪些类型的文件？', selectionMode: 'multi', options: [{ label: '.log 日志', description: '所有 .log 文件' }, { label: '.tmp 临时', description: '所有 .tmp 文件' }, { label: '.bak 备份', description: '所有 .bak 文件' }] },
+					{ question: '删除前要备份吗？', selectionMode: 'single', options: [{ label: '是，先备份再删', description: '安全但较慢' }, { label: '否，直接删除', description: '快速但不可逆' }] },
+					{ question: '删除范围？', selectionMode: 'single', options: [{ label: '仅当前目录', description: '不递归子目录' }, { label: '递归子目录', description: '包含所有子目录' }] },
+				],
+			}, '多问题 + 多选，请用户逐一确认。');
 			return;
 		}
 

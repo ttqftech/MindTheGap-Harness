@@ -18,7 +18,7 @@
  * 状态全部在 ctx 里；本类只在一次 run 期间做「内存中的调度缓存」（busy 集合、delegate 分组、挂起原因），进程重启后这些缓存可以安全地重新推导。
  */
 
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, AskUserState, ConversationRunStatus, LlmMessage, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, ConversationRunStatus, LlmMessage, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, UsageEntry } from '@shared/agent';
 import { callLlm } from '../llm/model';
 import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
@@ -33,7 +33,7 @@ const now = () => Date.now();
 /**
  * 一个挂在 `pendingCallIds` 里的 call 在等什么。
  *
- * 「等用户点按钮」和「等子 Agent 跑完」原本是两套互不认识的写法（前者靠扫消息里的 ask_user_state 条目反推，后者靠 structured.status === 'pending'），
+ * 「等用户点按钮」和「等子 Agent 跑完」原本是两套互不认识的写法（前者靠扫消息里的 tool result structured 反推，后者靠 structured.status === 'pending'），
  * 现在统一成一条路径：挂起时记原因 → `resolvePendingCall()` 回填 → 都等到了就重入。
  */
 type PendingWait = 'client' | 'child';
@@ -217,30 +217,9 @@ export class AgentRunner {
 			return { ok: false, error: `工具调用 ${toolCallId} 不是在等用户回答` };
 		}
 
-		this.setAskUserState(target, toolCallId, 'answered', result);
-		this.resolvePendingCall(target, toolCallId, { success: true, content: result, structured: { answer: result } }, 'answer');
+		this.resolvePendingCall(target, toolCallId, { success: true, content: result, structured: { askUserStatus: 'answered' as const, askUserAnswer: result } }, 'answer');
 		this.persist();
 		return { ok: true };
-	}
-
-	/**
-	 * 用户直接发新消息（不是回答问题）→ 本轮所有挂起的 call 一律作废。
-	 * 等用户的写成「已跳过」；等子 Agent 的不再驱动父实例（子实例跑完仍会补写结果进记录，只是没人等它了）。
-	 */
-	skipPendingClientTools(): void {
-		for (const instance of Object.values(this.ctx.agentInstances)) {
-			for (const callId of instance.pendingCallIds ?? []) {
-				if (this.pendingWait.get(callId) === 'client') {
-					const result: ToolResult = { success: true, content: '用户已跳过此提问' };
-					this.setAskUserState(instance, callId, 'skipped', '用户已跳过此提问');
-					this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, callId, toolName: 'ask_user', result: result });
-					this.writeToolResult(instance, callId, result);
-				}
-				this.pendingWait.delete(callId);
-			}
-			instance.pendingCallIds = [];
-			if (instance.status === 'pending') instance.status = 'running';
-		}
 	}
 
 	// #endregion
@@ -274,8 +253,24 @@ export class AgentRunner {
 			this.ctx.rootAgentInstanceId = instanceId;
 		}
 
-		// 上一轮挂起的 client 工具（ask_user）在用户发新消息时算作「已跳过」
-		this.skipPendingClientTools();
+		/**
+		 * 上一轮挂起的 client 工具（ask_user）在用户发新消息时算作「已跳过」
+		 * 
+		 * 用户直接发新消息（不是回答问题）→ 本轮所有挂起的 call 一律作废。
+		 * 等用户的写成「已跳过」；等子 Agent 的不再驱动父实例（子实例跑完仍会补写结果进记录，只是没人等它了）。
+		 */
+		for (const instance of Object.values(this.ctx.agentInstances)) {
+			for (const callId of instance.pendingCallIds ?? []) {
+				if (this.pendingWait.get(callId) === 'client') {
+					const result: ToolResult = { success: true, content: '用户已跳过此提问', structured: { askUserStatus: 'skipped' as const } };
+					this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, callId, toolName: 'ask_user', result });
+					this.writeToolResult(instance, callId, result);
+				}
+				this.pendingWait.delete(callId);
+			}
+			instance.pendingCallIds = [];
+			if (instance.status === 'pending') instance.status = 'running';
+		}
 
 		// 被中断 / 已完成的根实例：本次发言就是「唤醒它」，回到 running
 		root.status = 'running';
@@ -580,7 +575,34 @@ export class AgentRunner {
 				reason,
 			});
 
-			const toolCtx = this.buildToolContext(instance, def, call.id, reason, call.name);
+			// 构造某次工具调用的 ToolContext（编排原语捕获 callId）
+			const toolCtx = {
+				ctx: this.ctx,
+				agentInstanceId: instance.agentInstanceId,
+				runningDir: this.runningDir,
+				conversationDir: ensureConversationDir(this.conversationId),
+				reason,
+				def,
+				mode: this.mode,
+				signal: this.abortController.signal,
+				delegate: async (agentId, task) => this.primitiveDelegate(instance, call.id, agentId, task, call.name),
+				finish: async (summary) => ({
+					success: true,
+					content: summary,
+					control: { kind: 'finish', summary } satisfies ToolControl,
+				}),
+				resumePendingChild: async (targetId) => this.primitiveResumePending(instance, call.id, targetId, call.name),
+				resumeCompletedChild: async (targetId, followUp) => this.primitiveResumeCompleted(instance, call.id, targetId, followUp, call.name),
+				askChild: async (targetId, question) => this.primitiveAskChild(instance, targetId, question),
+				askUser: async (args) => ({
+					success: true,
+					content: '已向客户端发出提问，等待用户回应',
+					control: { kind: 'ask_user', args } satisfies ToolControl,
+				}),
+				readTaskList: () => this.ctx.taskList || '',
+				writeTaskList: (op) => this.applyTaskListOp(op),
+				runLlm: (req) => this.toolSubLlm(instance, req),
+			} satisfies ToolContext;
 			const result = await executeTool(call.name, call.arguments, toolCtx);
 			const control = result.control;
 
@@ -589,10 +611,9 @@ export class AgentRunner {
 			}
 
 			if (control?.kind === 'ask_user') {
-				// 挂起等用户：占位结果 + 卡片状态 → 前端弹卡片，callId 留在 pending 里
-				const placeholder: ToolResult = { success: true, content: '已向客户端发出提问，等待用户回应' };
+				// 挂起等用户：占位结果（含 askUserStatus）→ 前端弹卡片，callId 留在 pending 里
+				const placeholder: ToolResult = { success: true, content: '已向客户端发出提问，等待用户回应', structured: { askUserStatus: 'waiting' as const } };
 				this.writeToolResult(instance, call.id, placeholder);
-				this.setAskUserState(instance, call.id, 'waiting');
 				instance.status = 'pending';
 				this.pendingWait.set(call.id, 'client');
 				this.emitStream({
@@ -640,37 +661,6 @@ export class AgentRunner {
 		// 还有挂起的 call（等用户 / 等子 Agent）就不重入，等 resolvePendingCall() 唤醒
 		if ((instance.pendingCallIds ?? []).length > 0) return null;
 		return 'tool_results';
-	}
-
-	/** 构造某次工具调用的 ToolContext（编排原语捕获 callId） */
-	private buildToolContext(instance: AgentInstance, def: AgentDefinition, callId: string, reason: string, toolName: string): ToolContext {
-		return {
-			ctx: this.ctx,
-			agentInstanceId: instance.agentInstanceId,
-			runningDir: this.runningDir,
-			conversationDir: ensureConversationDir(this.conversationId),
-			reason,
-			def,
-			mode: this.mode,
-			signal: this.abortController.signal,
-			delegate: async (agentId, task) => this.primitiveDelegate(instance, callId, agentId, task, toolName),
-			finish: async (summary) => ({
-				success: true,
-				content: summary,
-				control: { kind: 'finish', summary } satisfies ToolControl,
-			}),
-			resumePendingChild: async (targetId) => this.primitiveResumePending(instance, callId, targetId, toolName),
-			resumeCompletedChild: async (targetId, followUp) => this.primitiveResumeCompleted(instance, callId, targetId, followUp, toolName),
-			askChild: async (targetId, question) => this.primitiveAskChild(instance, targetId, question),
-			askUser: async (args) => ({
-				success: true,
-				content: '已向客户端发出提问，等待用户回应',
-				control: { kind: 'ask_user', args } satisfies ToolControl,
-			}),
-			readTaskList: () => this.ctx.taskList || '',
-			writeTaskList: (op) => this.applyTaskListOp(op),
-			runLlm: (req) => this.toolSubLlm(instance, req),
-		};
 	}
 
 	// #endregion
@@ -1190,26 +1180,6 @@ export class AgentRunner {
 		}
 		instance.lastUpdatedAt = now();
 		this.emitEvent(instance, 'tool_result', { callId, success: result.success, content: content.slice(0, 2000) });
-	}
-
-	/**
-	 * 写 / 更新某次 ask_user 的卡片状态（uiOnly 条目）。
-	 * 状态是显式的：前端不再靠 `content === '用户已跳过此提问'` 这类字符串比对判断卡片该显示成什么。
-	 */
-	private setAskUserState(instance: AgentInstance, callId: string, status: AskUserState['status'], answer?: string): void {
-		const existing = instance.messages.find((m) => m.kind === 'ask_user_state' && (m.data as AskUserState).callId === callId);
-		if (existing) {
-			existing.data = { callId, status, answer };
-			existing.updatedAt = now();
-		} else {
-			instance.messages.push({
-				...message({ role: 'system', content: '' }),
-				uiOnly: true,
-				kind: 'ask_user_state',
-				data: { callId, status, answer },
-			});
-		}
-		instance.lastUpdatedAt = now();
 	}
 
 	private buildSystemPrompt(instance: AgentInstance, tools: AgentTool[]): string {

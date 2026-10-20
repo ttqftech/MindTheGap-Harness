@@ -16,7 +16,7 @@ import type { MenuItem } from 'ffbox-ui';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/store';
 import type { ModelConfig } from '@shared/agent';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
-import type { RenderAgentNode, RenderAskInfo, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
+import type { RenderAgentNode, RenderAskInfo, RenderAskQuestion, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
 import * as agentBridge from '@mainview/agentBridge';
 import type { UsageEntry } from '@shared/agent';
 import { requestFolderPath } from '@mainview/localBridge';
@@ -198,11 +198,29 @@ function parseMcpName(name: string): { server: string; method: string } | null {
  * 组件一旦被换掉（任何一次投影重算都可能让 `<For>` 把它当新项），局部 state 直接清零重数。
  */
 function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => void }) {
-	const [choice, setChoice] = createSignal<string | null>(null);
-	const [extra, setExtra] = createSignal('');
-	const [freeText, setFreeText] = createSignal('');
 	const answered = () => props.block.status !== 'waiting';
-	const options = () => props.block.options;
+	const questions = () => props.block.questions;
+
+	const [singleChoices, setSingleChoices] = createSignal<Record<number, string | null>>({});
+	const [multiChoices, setMultiChoices] = createSignal<Record<number, Set<string>>>({});
+	const [questionFreeTexts, setQuestionFreeTexts] = createSignal<Record<number, string>>({});
+	const [extra, setExtra] = createSignal('');
+
+	const toggleSingle = (qi: number, label: string) => {
+		setSingleChoices((prev) => ({ ...prev, [qi]: prev[qi] === label ? null : label }));
+	};
+
+	const toggleMulti = (qi: number, label: string) => {
+		setMultiChoices((prev) => {
+			const next = new Map(Object.entries(prev).map(([k, v]) => [Number(k), new Set(v)]));
+			const set = next.get(qi) ?? new Set<string>();
+			if (set.has(label)) set.delete(label); else set.add(label);
+			next.set(qi, set);
+			const obj: Record<number, Set<string>> = {};
+			next.forEach((v, k) => { obj[k] = v; });
+			return obj;
+		});
+	};
 
 	// block.updatedAt 来自后端（ctx 里是条目的更新时间，在飞时是 SSE 的 timestamp）
 	const elapsedText = () => {
@@ -213,21 +231,44 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 
 	const submit = () => {
 		const parts: string[] = [];
-		if (choice()) parts.push(`选择：${choice()}`);
-		if (freeText().trim()) parts.push(freeText().trim());
+		for (let i = 0; i < questions().length; i++) {
+			const q = questions()[i];
+			const selected: string[] = [];
+			if (q.selectionMode === 'multi') {
+				const set = multiChoices()[i];
+				if (set?.size) selected.push(...set);
+			} else {
+				const c = singleChoices()[i];
+				if (c) selected.push(c);
+			}
+			const ft = questionFreeTexts()[i]?.trim();
+			if (selected.length > 0 || ft) {
+				const subParts: string[] = [];
+				if (selected.length > 0) subParts.push(`选择：${selected.join('、')}`);
+				if (ft) subParts.push(ft);
+				parts.push(`${q.question}\n${subParts.join('\n')}`);
+			}
+		}
 		if (extra().trim()) parts.push(`补充：${extra().trim()}`);
 		props.onSubmit(parts.join('\n') || '(未填写内容)');
 	};
 
-	// 数字键直接选第 N 项（设计稿「按 1 / 2 选择」）。只在等待中生效，且不抢输入框里的数字。
+	const firstQuestionWithOptions = () => {
+		const qs = questions();
+		if (qs.length === 1 && qs[0].selectionMode !== 'multi') return qs[0];
+		return null;
+	};
+
 	const onKeyDown = (e: KeyboardEvent) => {
 		if (answered()) return;
 		const target = e.target as HTMLElement | null;
 		if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return;
+		const fq = firstQuestionWithOptions();
+		if (!fq) return;
 		const n = Number(e.key);
-		if (!Number.isInteger(n) || n < 1 || n > options().length) return;
+		if (!Number.isInteger(n) || n < 1 || n > fq.options.length) return;
 		e.preventDefault();
-		setChoice(options()[n - 1].label);
+		toggleSingle(0, fq.options[n - 1].label);
 	};
 
 	onMount(() => {
@@ -250,37 +291,60 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 				</Show>
 			</div>
 
-			<div class={styles['ask-card-question']}>{props.block.question}</div>
-
 			<Show when={!answered()}>
-				<Show when={options().length > 0}>
-					<div class={styles['ask-card-options']}>
-						<For each={options()}>
-							{(opt, index) => (
-								<button
-									class={styles['ask-card-option']}
-									classList={{ [styles['is-picked']]: choice() === opt.label }}
-									onclick={() => setChoice(opt.label)}
-								>
-									<span class={styles['ask-card-option-index']}>{index() + 1}</span>
-									<span class={styles['ask-card-option-label']}>{opt.label}</span>
-									<Show when={opt.description}>
-										<span class={styles['ask-card-option-desc']}>{opt.description}</span>
-									</Show>
-								</button>
-							)}
-						</For>
-					</div>
-				</Show>
-
-				{/* 自由输入常驻：选项之外总能自己写一句（设计稿的「其它数值直接输入」） */}
-				<textarea
-					class={styles['ask-card-input']}
-					placeholder="或直接输入你的回答..."
-					rows={1}
-					value={freeText()}
-					oninput={(e) => setFreeText(e.currentTarget.value)}
-				/>
+				<For each={questions()}>
+					{(q, qi) => (
+						<div class={styles['ask-card-question-group']}>
+							<div class={styles['ask-card-question']}>{q.question}</div>
+							<Show when={q.options.length > 0}>
+								<div class={styles['ask-card-options']}>
+									<For each={q.options}>
+										{(opt, oi) => {
+											const isPicked = () => {
+												if (q.selectionMode === 'multi') {
+													return multiChoices()[qi()]?.has(opt.label) ?? false;
+												}
+												return singleChoices()[qi()] === opt.label;
+											};
+											return (
+												<button
+													class={styles['ask-card-option']}
+													classList={{ [styles['is-picked']]: isPicked() }}
+													onclick={() => {
+														if (q.selectionMode === 'multi') toggleMulti(qi(), opt.label);
+														else toggleSingle(qi(), opt.label);
+													}}
+												>
+													<Show when={q.selectionMode === 'multi'}>
+														<span class={styles['ask-card-option-check']}>
+															<Show when={isPicked()}>
+																✓
+															</Show>
+														</span>
+													</Show>
+													<Show when={q.selectionMode !== 'multi'}>
+														<span class={styles['ask-card-option-index']}>{oi() + 1}</span>
+													</Show>
+													<span class={styles['ask-card-option-label']}>{opt.label}</span>
+													<Show when={opt.description}>
+														<span class={styles['ask-card-option-desc']}>{opt.description}</span>
+													</Show>
+												</button>
+											);
+										}}
+									</For>
+								</div>
+							</Show>
+							<textarea
+								class={styles['ask-card-input']}
+								placeholder="或直接输入你的回答..."
+								rows={1}
+								value={questionFreeTexts()[qi()] ?? ''}
+								oninput={(e) => setQuestionFreeTexts((prev) => ({ ...prev, [qi()]: e.currentTarget.value }))}
+							/>
+						</div>
+					)}
+				</For>
 
 				<div class={styles['ask-card-extra-label']}>还有什么要补充的吗？（可留空）</div>
 				<textarea
@@ -293,7 +357,11 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 
 				<div class={styles['ask-card-foot']}>
 					<span class={styles['ask-card-hint']}>
-						{options().length > 0 ? `按 1 - ${options().length} 选择 · 也可以直接输入` : '直接输入回答 · esc 跳过本轮'}
+						{(() => {
+							const fq = firstQuestionWithOptions();
+							if (fq) return `按 1 - ${fq.options.length} 选择 · 也可以直接输入`;
+							return '直接输入回答 · esc 跳过本轮';
+						})()}
 					</span>
 					<span class={styles['ask-card-foot-spacer']} />
 					<button class={styles['ask-card-submit']} onclick={submit}>

@@ -170,11 +170,10 @@ export type AgentInstanceStatus =
 
 /**
  * 条目的结构化载荷种类（`kind`）：
- * - `ask_user_state` 属 **uiOnly**（界面要看、不下发模型）
  * - `tool_result` / `reflection` 是普通条目的附加信息，仍会进 LLM 上下文
  *   （`tool_result` 解掉「成功/失败靠 `[失败] ` 前缀嗅探」；`reflection` 解掉「反思文本和 system prompt 分不开」）
  */
-export type MessageKind = 'ask_user_state' | 'tool_result' | 'reflection';
+export type MessageKind = 'tool_result' | 'reflection';
 
 /**
  * 实例条目 = LLM 消息 + 时间戳 + 可选的结构化载荷。
@@ -188,7 +187,7 @@ export type AgentInstanceMessage = LlmMessage & {
 	uiOnly?: true;
 	kind?: MessageKind;
 	/** `kind` 对应的结构化载荷 */
-	data?: AskUserState | ToolResultInfo | ReflectionInfo;
+	data?: ToolResultInfo | ReflectionInfo;
 	/**
 	 * 这次 LLM 调用的账本，挂在**这次调用的产出物**上（assistant 条目 / 反思条目）。
 	 *
@@ -215,17 +214,16 @@ export interface UsageEntry {
 	/** agentLoop 本段的小计不落盘：由前端按区间对 usage 条目求和 */
 }
 
-/** `kind: 'ask_user_state'` 的载荷：提问卡片的状态（不再靠字符串比对） */
-export interface AskUserState {
-	callId: string;
-	status: 'waiting' | 'answered' | 'skipped';
-	answer?: string;
+/** ask_user 工具结果的结构化字段：提问卡片的状态（不再靠字符串比对） */
+export interface AskUserStructured {
+	askUserStatus: 'waiting' | 'answered' | 'skipped';
+	askUserAnswer?: string;
 }
 
 /** `kind: 'tool_result'` 的载荷：工具结果的终态信息 */
 export interface ToolResultInfo {
 	success: boolean;
-	/** 工具返回的结构化字段（如 delegate 的 `childAgentInstanceIds` / `status`，渲染嵌套树要用） */
+	/** 工具返回的结构化字段（如 delegate 的 `childAgentInstanceIds` / `status`，ask_user 的 `askUserStatus` / `askUserAnswer`，渲染要用） */
 	structured?: Record<string, unknown>;
 	error?: string;
 }
@@ -423,11 +421,19 @@ export interface AgentRunRequest {
 	model: ModelConfig;
 }
 
+/** ask_user 中单个问题的定义 */
+export interface AskUserQuestion {
+	question: string;
+	/** 选择模式：single = 单选（默认），multi = 多选 */
+	selectionMode?: 'single' | 'multi';
+	/** 选项（每个可带描述）；为空时该问题只接受自由输入 */
+	options?: { label: string; description?: string }[];
+}
+
 /** ask_user 的参数 */
 export interface AskUserArgs {
-	question: string;
-	/** 单选项（每个可带描述）；为空时前端只给自由输入 */
-	options?: { label: string; description?: string }[];
+	/** 0~多个问题；为空时前端只给自由输入 */
+	questions: AskUserQuestion[];
 }
 
 /** POST /api/agent/answer —— 续接 client 工具（ask_user） */

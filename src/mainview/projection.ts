@@ -10,7 +10,7 @@
  * 设计稿：docs/设计-ctx唯一真相与动态投影.md §4
  */
 
-import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserState, ReflectionInfo, TokenUsage, ToolResultInfo, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, ReflectionInfo, TokenUsage, ToolResultInfo, UsageEntry } from '@shared/agent';
 
 // #region 渲染树类型
 
@@ -56,12 +56,18 @@ export interface RenderTextSub extends BlockBase {
 	content: string;
 }
 
+/** ask_user 中单个问题的渲染信息 */
+export interface RenderAskQuestion {
+	question: string;
+	selectionMode: 'single' | 'multi';
+	options: { label: string; description?: string }[];
+}
+
 /** ask_user 的提问卡片内容（它没有「工具输出」，结果是「用户回答」） */
 export interface RenderAskInfo {
 	callId: string;
-	question: string;
-	options: { label: string; description?: string }[];
-	status: AskUserState['status'];
+	questions: RenderAskQuestion[];
+	status: AskUserStructured['askUserStatus'];
 	answer?: string;
 	/** 这条提问的最新状态时间：waiting = 提问被提出的那一刻，answered = 用户回答的那一刻 */
 	updatedAt: number;
@@ -163,16 +169,10 @@ export function foldCtxToRenderTree(ctx: AgentCtx | null | undefined): RenderAge
 function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 	const entries = instance.messages ?? [];
 
-	// 索引：callId → 工具结果条目 / 提问卡片状态条目
+	// 索引：callId → 工具结果条目
 	const resultByCallId = new Map<string, AgentInstanceMessage>();
-	const askStateByCallId = new Map<string, AgentInstanceMessage>();
 	for (const entry of entries) {
 		if (entry.role === 'tool' && entry.toolCallId) resultByCallId.set(entry.toolCallId, entry);
-		if (entry.kind === 'ask_user_state') {
-			const state = entry.data as AskUserState;
-			// 存条目而不是存状态本身：条目的 updatedAt 是提问卡自己要用的时间
-			if (state?.callId) askStateByCallId.set(state.callId, entry);
-		}
 	}
 
 	const blocks: RenderBlock[] = [];
@@ -200,10 +200,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 			continue;
 		}
 
-		// ② 提问卡片状态：跟随它的那次工具调用渲染（见 ⑥），不单独出行
-		if (entry.kind === 'ask_user_state') continue;
-
-		// ③ 工具结果：贴在对应 toolCall 的位置（见 ⑥），不单独成块
+		// ② 工具结果：贴在对应 toolCall 的位置（见 ⑥），不单独成块
 		if (entry.role === 'tool') continue;
 
 		// ④ system：本实例的 system prompt，不进转写（反思已在 ① 处理掉）
@@ -225,16 +222,27 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		}
 		for (const toolCall of entry.toolCalls ?? []) {
 			const resultEntry = resultByCallId.get(toolCall.id);
-			const askEntry = askStateByCallId.get(toolCall.id);
 			const resultInfo = resultEntry?.data as ToolResultInfo | undefined;
 			const args = parseArgs(toolCall.function.arguments);
 			const reason = typeof args?.reason === 'string' ? args.reason : '';
 			// 这一次工具调用的最近更新时间：有结果算结果的，没有（还在跑）算这次 LLM 调用的
-			const toolUpdatedAt = Math.max(resultEntry?.updatedAt ?? 0, askEntry?.updatedAt ?? 0) || entry.updatedAt;
+			const toolUpdatedAt = resultEntry?.updatedAt ?? entry.updatedAt;
 
 			// ask_user 的工具调用渲染成提问卡片（它的「结果」是用户回答）
 			if (toolCall.function.name === 'ask_user') {
-				const state = askEntry?.data as AskUserState | undefined;
+				const askStructured = resultInfo?.structured as AskUserStructured | undefined;
+				const askStatus = askStructured?.askUserStatus ?? 'waiting';
+				const rawQuestions = Array.isArray(args?.questions) ? args.questions as unknown[] : [];
+				const questions: RenderAskQuestion[] = rawQuestions.length > 0
+					? rawQuestions.map((q) => {
+							const obj = q as Record<string, unknown>;
+							return {
+								question: typeof obj?.question === 'string' ? obj.question : '需要你的确认',
+								selectionMode: obj?.selectionMode === 'multi' ? 'multi' as const : 'single' as const,
+								options: Array.isArray(obj?.options) ? (obj.options as RenderAskQuestion['options']) : [],
+							};
+						})
+					: [{ question: typeof args?.question === 'string' ? args.question : '需要你的确认', selectionMode: 'single', options: Array.isArray(args?.options) ? (args.options as RenderAskQuestion['options']) : [] }];
 				subBlocks.push({
 					type: 'tool',
 					key: nextKey('ask'),
@@ -242,17 +250,15 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 					callId: toolCall.id,
 					name: toolCall.function.name,
 					reason,
-					status: state?.status === 'waiting' ? 'running' : 'success',
+					status: askStatus === 'waiting' ? 'running' : 'success',
 					args: toolCall.function.arguments,
 					output: '',
 					ask: {
 						callId: toolCall.id,
-						question: typeof args?.question === 'string' ? args.question : '需要你的确认',
-						options: Array.isArray(args?.options) ? (args.options as RenderAskInfo['options']) : [],
-						status: state?.status ?? 'waiting',
-						answer: state?.answer,
-						// waiting 时 = 提问被提出的那一刻（阻塞计时就认它）；answered 时 = 用户回答的那一刻
-						updatedAt: askEntry?.updatedAt ?? entry.updatedAt,
+						questions,
+						status: askStatus,
+						answer: askStructured?.askUserAnswer,
+						updatedAt: resultEntry?.updatedAt ?? entry.updatedAt,
 					},
 				});
 				continue;
@@ -458,10 +464,15 @@ function sameAsk(a: RenderAskInfo | undefined, b: RenderAskInfo | undefined): bo
 		|| a.status !== b.status
 		|| a.answer !== b.answer
 		|| a.updatedAt !== b.updatedAt
-		|| a.question !== b.question
-		|| a.options.length !== b.options.length
+		|| a.questions.length !== b.questions.length
 	) return false;
-	return a.options.every((opt, i) => opt.label === b.options[i].label && opt.description === b.options[i].description);
+	return a.questions.every((q, i) => {
+		const bq = b.questions[i];
+		return q.question === bq.question
+			&& q.selectionMode === bq.selectionMode
+			&& q.options.length === bq.options.length
+			&& q.options.every((opt, j) => opt.label === bq.options[j].label && opt.description === bq.options[j].description);
+	});
 }
 
 /**
@@ -520,6 +531,40 @@ export function createEmptyOverlay(conversationId?: string, modeId?: string): Ov
 }
 
 /**
+ * 从 overlay 的增量消息中剔除已存在于 committed ctx 的重复消息。
+ *
+ * 场景：run 在飞期间（如 ask_user 等待用户回答），用户切走再切回来。
+ * 切回来时 loadConversationCtx 会从后端拉取 ctx（后端已通过 persist() 持久化了部分消息），
+ * 而 overlay 里仍保留着同一轮 run 的全部在飞消息 —— 如果简单拼接就会重复。
+ *
+ * 去重策略：用消息的稳定标识符做集合差。
+ * - tool 结果：用 toolCallId（唯一）
+ * - assistant 消息中的 toolCalls：用 toolCalls[0].id（一次 LLM 调用最多一批 toolCall，用首个 id 即可区分）
+ * - 其他消息（user / system / reflection）：用 role + content 前缀组合（不用 updatedAt，因为 runner now() 和 SSE event.timestamp 之间可能有几 ms 偏差）
+ */
+function dedupOverlayMessages(committed: AgentInstanceMessage[], overlay: AgentInstanceMessage[]): AgentInstanceMessage[] {
+	if (committed.length === 0 || overlay.length === 0) return overlay;
+
+	const existingKeys = new Set<string>();
+	for (const m of committed) {
+		existingKeys.add(messageKey(m));
+	}
+
+	return overlay.filter((m) => !existingKeys.has(messageKey(m)));
+}
+
+function messageKey(m: AgentInstanceMessage): string {
+	if (m.role === 'tool' && m.toolCallId) return `tool:${m.toolCallId}`;
+	if (m.role === 'assistant' && m.toolCalls?.length) return `assistant_tc:${m.toolCalls[0].id}`;
+	// user / system / reflection / 纯文本 assistant：
+	// 用 role + content 前缀做键。不用 updatedAt，因为 runner 的 now() 和 SSE event.timestamp
+	// 之间可能有几 ms 偏差，导致同一消息在 committed 和 overlay 中 updatedAt 不同而无法匹配。
+	// 同一实例内不会同时出现两条 role+contentPrefix 相同的消息（content 截 80 字符足以区分）。
+	const contentPrefix = (m.content ?? '').slice(0, 80);
+	return `${m.role}:${contentPrefix}`;
+}
+
+/**
  * 合成「已提交的 ctx」与「在飞的 overlay」→ 一份可直接交给 `foldCtxToRenderTree()` 的 ctx。
  * 同名实例的 messages 是「已提交 + 在飞」拼接；overlay 里独有的实例用 meta 补成完整实例。
  * 纯函数，不改动入参（只做浅拷贝）。
@@ -544,8 +589,8 @@ export function mergeOverlayCtx(ctx: AgentCtx | null | undefined, overlay: Overl
 	for (const [id, delta] of Object.entries(overlay.instances)) {
 		const committed = agentInstances[id];
 		agentInstances[id] = committed
-			// 实例已存在：保留已有字段，将增量消息追加到已有消息列表末尾
-			? { ...committed, messages: [...committed.messages, ...delta.messages] }
+			// 实例已存在：保留已有字段，将增量消息追加到已有消息列表末尾（跳过已持久化的重复消息）
+			? { ...committed, messages: [...committed.messages, ...dedupOverlayMessages(committed.messages, delta.messages)] }
 			// 实例不存在（首次出现）：用 overlay.meta 中的展示信息创建空实例，再填入增量消息
 			: createEmptyAgentInstance(base, id, overlay.meta[id] ?? {}, delta.messages);
 	}

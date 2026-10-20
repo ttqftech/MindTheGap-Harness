@@ -961,6 +961,12 @@
         }
     }
 
+    .ask-card-question-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
     .ask-card-question {
         font-size: var(--fs-m);
         line-height: var(--lh-body);
@@ -1007,6 +1013,26 @@
 
             &.is-picked .ask-card-option-index {
                 color: var(--accent);
+            }
+
+            .ask-card-option-check {
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                border: 1px solid var(--border-strong);
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                color: var(--accent);
+                background-color: var(--bg-sub1-header);
+                transition: border-color var(--dur-fast), background-color var(--dur-fast);
+            }
+
+            &.is-picked .ask-card-option-check {
+                border-color: var(--accent-soft-border);
+                background-color: var(--accent-soft);
             }
 
             .ask-card-option-label {

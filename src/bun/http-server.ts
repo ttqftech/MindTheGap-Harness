@@ -81,10 +81,6 @@ export function broadcastAgentStream(conversationId: string, event: AgentStreamE
 	}
 }
 
-function dispatchStream(conversationId: string, event: AgentStreamEvent) {
-	broadcastAgentStream(conversationId, event);
-}
-
 // #region 插件 / 模式
 
 /** 重新加载插件并把 requestLog 配置同步给 llm 层 */
@@ -144,11 +140,11 @@ async function handleAgentRun(params: AgentRunRequest) {
 	}
 
 	const { runner, error } = agentRunner.createRunner(params, {
-		onStream: (event) => dispatchStream(conversationId, event),
+		onStream: (event) => broadcastAgentStream(conversationId, event),
 	});
 	if (!runner) {
-		dispatchStream(conversationId, { type: 'error', timestamp: Date.now(), message: error ?? 'Agent 启动失败' });
-		dispatchStream(conversationId, { type: 'done', timestamp: Date.now(), summary: '' });
+		broadcastAgentStream(conversationId, { type: 'error', timestamp: Date.now(), message: error ?? 'Agent 启动失败' });
+		broadcastAgentStream(conversationId, { type: 'done', timestamp: Date.now(), summary: '' });
 		return { ok: false, error };
 	}
 
@@ -163,7 +159,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 		.catch((err) => {
 			activeRunners.delete(conversationId);
 			console.error(`[Agent] Runner ${conversationId} error:`, err);
-			dispatchStream(conversationId, { type: 'error', timestamp: Date.now(), message: err?.message ?? String(err) });
+			broadcastAgentStream(conversationId, { type: 'error', timestamp: Date.now(), message: err?.message ?? String(err) });
 		});
 
 	return { ok: true, conversationId };

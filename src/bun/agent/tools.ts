@@ -220,11 +220,7 @@ export function toLlmTools(tools: AgentTool[], requireReason = true): LlmTool[] 
 // #region 执行
 
 /** 剥离 reason 后执行工具 */
-export async function executeTool(
-	name: string,
-	args: Record<string, unknown>,
-	ctx: ToolContext,
-): Promise<ToolResult> {
+export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
 	const tool = getTool(name);
 	if (!tool) {
 		return { success: false, content: `Tool "${name}" not found`, error: 'UNKNOWN_TOOL' };
@@ -1009,29 +1005,53 @@ registerTool({
 	parameters: {
 		type: 'object',
 		properties: {
-			question: { type: 'string', description: '要问的问题' },
-			options: {
+			questions: {
 				type: 'array',
-				description: '单选选项（可留空，只做自由输入）',
+				description: '0~多个问题；为空时前端只给自由输入',
 				items: {
 					type: 'object',
 					properties: {
-						label: { type: 'string' },
-						description: { type: 'string' },
+						question: { type: 'string', description: '问题文本' },
+						selectionMode: {
+							type: 'string',
+							enum: ['single', 'multi'],
+							description: '选择模式：single = 单选（默认），multi = 多选',
+						},
+						options: {
+							type: 'array',
+							description: '选项（每个可带描述）；为空时该问题只接受自由输入',
+							items: {
+								type: 'object',
+								properties: {
+									label: { type: 'string' },
+									description: { type: 'string' },
+								},
+								required: ['label'],
+							},
+						},
 					},
-					required: ['label'],
+					required: ['question'],
 				},
 			},
 		},
-		required: ['question'],
+		required: ['questions'],
 	},
 	async execute(args, ctx) {
-		const question = String(args.question ?? '').trim();
-		if (!question) return { success: false, content: 'question 不能为空' };
-		return ctx.askUser({
-			question,
-			options: (args.options as AskUserArgs['options']) ?? [],
-		});
+		const rawQuestions = args.questions as unknown[];
+		if (!Array.isArray(rawQuestions)) return { success: false, content: 'questions 必须是数组' };
+		const questions: AskUserArgs['questions'] = rawQuestions
+			.map((q) => {
+				if (!q || typeof q !== 'object') return null;
+				const question = String((q as Record<string, unknown>).question ?? '').trim();
+				if (!question) return null;
+				const selectionMode = (q as Record<string, unknown>).selectionMode === 'multi' ? 'multi' as const : 'single' as const;
+				const options = Array.isArray((q as Record<string, unknown>).options)
+					? ((q as Record<string, unknown>).options as { label: string; description?: string }[]).filter((o) => o?.label)
+					: [];
+				return { question, selectionMode, options };
+			})
+			.filter((q): q is NonNullable<typeof q> => q !== null);
+		return ctx.askUser({ questions });
 	},
 });
 

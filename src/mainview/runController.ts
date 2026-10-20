@@ -216,8 +216,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			break;
 		}
 		case 'tool_end': {
-			// ask_user 的「工具块」不渲染（它渲染成提问卡片），所以不必进 overlay
-			if (event.toolName !== 'ask_user') upsertToolResult(instanceId, event);
+			upsertToolResult(instanceId, event);
 			break;
 		}
 		case 'usage': {
@@ -269,14 +268,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			break;
 		}
 		case 'client_tool_call': {
-			getInstanceMessagesByIdSafe(instanceId).push({
-				role: 'system',
-				content: '',
-				uiOnly: true,
-				kind: 'ask_user_state',
-				data: { callId: event.callId, status: 'waiting' },
-				updatedAt: event.timestamp,
-			});
+			// ask_user 挂起：tool_end 事件会带占位结果（含 structured.askUserStatus），不再需要额外消息
 			break;
 		}
 		case 'agent_end': {
@@ -317,6 +309,9 @@ const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 	if (event.type === 'client_tool_call') {
 		// ask_user 挂起：本轮还没结束（实例在等用户），但不再主动产出 ⇒ waiting
 		actions.setConversationRunStatus(conversationId, 'waiting');
+	} else if (event.type === 'tool_end' && event.toolName === 'ask_user') {
+		// ask_user 的 tool_end 紧跟 client_tool_call 之后发出，此时实例仍在等用户，
+		// 不能把 waiting 冲回 running（否则 UI 会显示"运行中"而非"等待输入"）
 	} else {
 		actions.setConversationRunStatus(conversationId, 'running');
 	}
@@ -430,15 +425,20 @@ export async function stopRun(conversationId?: string): Promise<void> {
 export async function answerAskUser(conversationId: string, callId: string, text: string): Promise<void> {
 	const skipped = text === '用户已跳过此提问';
 	overlayActions.produce(conversationId, (draft) => {
-		// 在 overlay 里把某次提问的状态改掉（回答 / 跳过）
+		// 在 overlay 里把某次提问的工具结果 structured 改掉（回答 / 跳过）
 		for (const instance of Object.values(draft.instances)) {
 			const entry = instance.messages.find(
-				(m) => m.kind === 'ask_user_state' && (m.data as { callId?: string })?.callId === callId,
+				(m) => m.role === 'tool' && m.toolCallId === callId,
 			);
 			if (entry) {
-				entry.data = { callId, status: skipped ? 'skipped' : 'answered', answer: text };
+				const data = entry.data as { success?: boolean; structured?: Record<string, unknown> } | undefined;
+				if (data) {
+					data.structured = { ...data.structured, askUserStatus: skipped ? 'skipped' : 'answered', askUserAnswer: text };
+				} else {
+					entry.data = { success: true, structured: { askUserStatus: skipped ? 'skipped' : 'answered', askUserAnswer: text } };
+				}
 				// 这是**唯一**一处允许前端自己取时间：填回答是界面动作，后端此刻还没有任何事件能对上它
-				// （它的真值要等本轮跑完重拉 ctx 才由 setAskUserState 盖过去）。
+				// （它的真值要等本轮跑完重拉 ctx 才由 writeToolResult 盖过去）。
 				entry.updatedAt = Date.now();
 				return;
 			}
