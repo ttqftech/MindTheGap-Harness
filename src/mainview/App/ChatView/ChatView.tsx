@@ -21,9 +21,10 @@ import * as agentBridge from '@mainview/agentBridge';
 import type { UsageEntry } from '@shared/agent';
 import { requestFolderPath } from '@mainview/localBridge';
 import { startRun, stopRun, answerAskUser } from '@mainview/runController';
-import { folderLabel, sameFolderPath } from '@shared/utils';
+import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
 import { alertMsgbox, showMenu } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView';
+import MTGlogo from './MTG-logo-transparent.svg';
 import styles from './ChatView.module.css';
 
 // #region 图标
@@ -71,14 +72,6 @@ function StopIcon() {
 	return (
 		<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
 			<rect x="6" y="6" width="12" height="12" rx="2"/>
-		</svg>
-	);
-}
-
-function SparkleIcon() {
-	return (
-		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-			<path d="M12 2l2 7 7 2-7 2-2 7-2-7-7-2 7-2z"/>
 		</svg>
 	);
 }
@@ -285,66 +278,65 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 						<circle cx="6" cy="9.4" r="0.7" fill="currentColor" stroke="none" />
 					</svg>
 				</span>
-				<span class={styles['ask-card-title']}>需要你的确认</span>
+				<span class={styles['ask-card-title']}>对齐颗粒度</span>
 				<Show when={!answered()}>
 					<span class={styles['ask-card-timer']}>{elapsedText()}</span>
 				</Show>
 			</div>
 
 			<Show when={!answered()}>
-				<For each={questions()}>
-					{(q, qi) => (
-						<div class={styles['ask-card-question-group']}>
-							<div class={styles['ask-card-question']}>{q.question}</div>
-							<Show when={q.options.length > 0}>
-								<div class={styles['ask-card-options']}>
-									<For each={q.options}>
-										{(opt, oi) => {
-											const isPicked = () => {
-												if (q.selectionMode === 'multi') {
-													return multiChoices()[qi()]?.has(opt.label) ?? false;
-												}
-												return singleChoices()[qi()] === opt.label;
-											};
-											return (
-												<button
-													class={styles['ask-card-option']}
-													classList={{ [styles['is-picked']]: isPicked() }}
-													onclick={() => {
-														if (q.selectionMode === 'multi') toggleMulti(qi(), opt.label);
-														else toggleSingle(qi(), opt.label);
-													}}
-												>
-													<Show when={q.selectionMode === 'multi'}>
-														<span class={styles['ask-card-option-check']}>
-															<Show when={isPicked()}>
-																✓
-															</Show>
-														</span>
-													</Show>
-													<Show when={q.selectionMode !== 'multi'}>
-														<span class={styles['ask-card-option-index']}>{oi() + 1}</span>
-													</Show>
-													<span class={styles['ask-card-option-label']}>{opt.label}</span>
-													<Show when={opt.description}>
-														<span class={styles['ask-card-option-desc']}>{opt.description}</span>
-													</Show>
-												</button>
-											);
-										}}
-									</For>
-								</div>
-							</Show>
-							<textarea
-								class={styles['ask-card-input']}
-								placeholder="或直接输入你的回答..."
-								rows={1}
-								value={questionFreeTexts()[qi()] ?? ''}
-								oninput={(e) => setQuestionFreeTexts((prev) => ({ ...prev, [qi()]: e.currentTarget.value }))}
-							/>
-						</div>
-					)}
-				</For>
+				<For each={questions()}>{(question, qi) => (
+					<div class={styles.questionGroup}>
+						<div class={styles.questionTitle}>{question.question}</div>
+						<Show when={question.options.length > 0}>
+							<div class={styles.options}>
+								<For each={question.options}>
+									{(opt, oi) => {
+										const isPicked = () => {
+											if (question.selectionMode === 'multi') {
+												return multiChoices()[qi()]?.has(opt.label) ?? false;
+											}
+											return singleChoices()[qi()] === opt.label;
+										};
+										return (
+											<button
+												class={styles['ask-card-option']}
+												classList={{ [styles['is-picked']]: isPicked() }}
+												onclick={() => {
+													if (question.selectionMode === 'multi') toggleMulti(qi(), opt.label);
+													else toggleSingle(qi(), opt.label);
+												}}
+											>
+												<Show when={question.selectionMode === 'multi'}>
+													<span class={styles['ask-card-option-check']}>
+														<Show when={isPicked()}>
+															✓
+														</Show>
+													</span>
+												</Show>
+												<Show when={question.selectionMode !== 'multi'}>
+													<span class={styles['ask-card-option-index']}>{oi() + 1}</span>
+												</Show>
+												<span class={styles['ask-card-option-label']}>{opt.label}</span>
+												<Show when={opt.description}>
+													<span class={styles['ask-card-option-desc']}>{opt.description}</span>
+												</Show>
+											</button>
+										);
+									}}
+								</For>
+							</div>
+						</Show>
+						<textarea
+							class={styles['ask-card-input']}
+							placeholder="或直接输入你的回答..."
+							rows={1}
+							value={questionFreeTexts()[qi()] ?? ''}
+							oninput={(e) => setQuestionFreeTexts((prev) => ({ ...prev, [qi()]: e.currentTarget.value }))}
+						/>
+					</div>
+				
+				)}</For>
 
 				<div class={styles['ask-card-extra-label']}>还有什么要补充的吗？（可留空）</div>
 				<textarea
@@ -374,7 +366,7 @@ function AskUserCard(props: { block: RenderAskInfo; onSubmit: (text: string) => 
 			</Show>
 
 			<Show when={answered()}>
-				<div class={styles['ask-card-answer']}>{props.block.answer}</div>
+				<div class={styles.finalAnswer}>{props.block.answer}</div>
 			</Show>
 		</div>
 	);
@@ -784,7 +776,7 @@ export default function ChatView() {
 				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
 				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
 				return (
-					<details class={styles['reasoning']}>
+					<details class={styles.reasoning}>
 						<summary class={styles['reasoning-head']}>
 							<span class={styles['reasoning-caret']}>▶</span>
 							<span class={styles['reasoning-label']}>思考</span>
@@ -1147,18 +1139,16 @@ export default function ChatView() {
 			{/* 聊天区域 */}
 			<div class={styles.chatArea} ref={chatAreaRef}>
 				<Show when={!renderTree()}>
-					<div class={styles['empty-state']}>
-						<div class={styles['empty-state-logo']}>
-							<SparkleIcon />
-						</div>
-						<h2>MindTheGap-Harness</h2>
+					<div class={styles.emptyState}>
+						<h2>{getTimeString(new Date(), false)}</h2>
+						<MTGlogo class={styles.logo} />
 						<p>请小心间隙！Please Mind The Gap！嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟📢</p>
 					</div>
 				</Show>
 
 				<Show when={appState.ui.viewMode === 'chat' && renderTree()}>
 					<div
-						class={styles['message-list']}
+						class={styles.messageList}
 						ref={(el) => {
 							// 以下代码用于性能测试。不需要时可整个都去掉
 							let domMutations = 0;

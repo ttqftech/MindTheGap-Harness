@@ -79,6 +79,8 @@ export default function TitleBar() {
 	/** 浏览器模式：整条栏照常画，但窗口按钮不可用 */
 	const inNativeWindow = isElectrobunEnv();
 
+	const hasUnread = createMemo(() => state.ui.unreadConversationIds.length > 0);
+
 	const serviceTooltipContent = createMemo(() => {
 		const env = frontendEnvInfo();
 		if (!env) return ``;
@@ -130,15 +132,15 @@ export default function TitleBar() {
 	// #endregion
 
 	return (
-		<div class={styles.titleBar}>
+		<div class={`${styles.titleBar} ${hasUnread() ? styles.titleBarFlash : ''}`}>
 			{/* 品牌锁型 — 点击切换设置面板，下滑拖拽拉出。MTG-long.svg 是完整品牌词标（MINDTHEGAP + HARNESS） */}
-			<div class={styles['title-bar-brand']} onmousedown={startSettingsDrag} {...useTooltip('设置面板')}>
-				<MTGxlong class={styles['app-mark']} />
+			<div class={styles.brandWrapper} onmousedown={startSettingsDrag} {...useTooltip('设置面板')}>
+				<MTGxlong class={styles.logo} />
 			</div>
 
 			{/* 折叠 / 展开侧边栏 */}
 			<button
-				class={styles['title-bar-icon-btn']}
+				class={styles.titleBarIconButton}
 				{...useTooltip(state.ui.leftSidebarCollapsed ? '展开主侧边栏 (Ctrl+B)' : '折叠主侧边栏 (Ctrl+B)')}
 				aria-label={state.ui.leftSidebarCollapsed ? '展开主侧边栏' : '折叠主侧边栏'}
 				onclick={() => actions.toggleLeftSidebar()}
@@ -146,7 +148,7 @@ export default function TitleBar() {
 				<CollapseSidebarIcon />
 			</button>
 			<button
-				class={styles['title-bar-icon-btn']}
+				class={styles.titleBarIconButton}
 				{...useTooltip(state.ui.rightSidebarCollapsed ? '展开右侧边栏 (Ctrl+Shift+B)' : '折叠右侧边栏 (Ctrl+Shift+B)')}
 				aria-label={state.ui.rightSidebarCollapsed ? '展开右侧边栏' : '折叠右侧边栏'}
 				onclick={() => actions.toggleRightSidebar()}
@@ -155,10 +157,10 @@ export default function TitleBar() {
 			</button>
 
 			{/* 菜单栏 */}
-			<nav class={styles['menu-bar']}>
+			<nav class={styles.menuBar}>
 				<For each={APP_MENUS}>
 					{(group) => (
-						<button class={styles['menu-bar-item']} onclick={(e) => openMenu(group, e.currentTarget)}>
+						<button class={styles.menuBarItem} onclick={(e) => openMenu(group, e.currentTarget)}>
 							{group.label}
 						</button>
 					)}
@@ -166,16 +168,16 @@ export default function TitleBar() {
 			</nav>
 
 			{/* 拖拽区：占了剩下的宽度，双击切换最大化 */}
-			<div class={styles['title-bar-drag']} ondblclick={() => void handleMaximizeClick()} />
+			<div class={styles.dragArea} ondblclick={() => void handleMaximizeClick()} />
 
 			{/* 运行时徽标 */}
-			<div class={styles['local-badge']} {...useTooltip(serviceTooltipContent())}>
-				<span class={styles['status-dot']} />
-				{frontendEnvInfo() ? <span class={styles['local-badge-text']}>版本 {frontendEnvInfo()?.appVersion}</span> : null}
+			<div class={styles.versionBadge} {...useTooltip(serviceTooltipContent())}>
+				<span class={styles.statusDot} />
+				{frontendEnvInfo() ? <span class={styles.statusText}>版本 {frontendEnvInfo()?.appVersion}</span> : null}
 			</div>
 
 			{/* 窗口控制组 */}
-			<div class={styles['title-bar-buttons']}>
+			<div class={styles.fixedButtons}>
 				<button
 					aria-label="最小化窗口"
 					title="最小化"

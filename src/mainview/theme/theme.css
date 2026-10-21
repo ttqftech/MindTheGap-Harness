@@ -98,55 +98,46 @@
 
 .themeDark {
 	/* 背景 / 表面 */
-	--bg-app: hwb(225 4.7% 93.7%);              /* 主工作区 */
-	--bg-sidebar: hwb(220 6.3% 91.4%);          /* 侧边栏 */
-	--bg-titlebar-from: hwb(217.5 9% 87.8%);    /* 标题栏渐变起（上） */
-	--bg-titlebar-to: hwb(220 7.1% 90.6%);      /* 标题栏渐变止（下） */
-	--bg-sub1: hwb(214.3 6.3% 91%);          /* 卡片 / 消息体 */
-	--bg-sub1-header: hwb(221.5 8.2% 86.7%);   /* 卡片头部 / 内嵌标记 */
-	--bg-input: hwb(217.5 7.1% 89.8%);            /* 输入框 */
-	--bg-bubble-user: hwb(217.5 7.8% 89%);      /* 用户消息气泡 */
-	--bg-chip: hwb(216 9% 87.1%);             /* 小徽标（LOCAL / 上下文标记） */
+	--bg-app: hwb(210 10% 87.5%);			/* 主工作区、子 Agent 块 */
+	--bg-sidebar: hwb(210 5% 90%);
+	--bg-titlebar: hwb(210 5% 90%);
+	--bg-sub1: hwb(210 17.5% 80%);			/* 卡片 / 消息体 */
+	--bg-sub1-header: hwb(210 20% 77.5%);	/* 卡片头部 / 内嵌标记 */
+	--bg-input: hwb(210 7.5% 90%);			/* 输入框（主输入框、提问输入框） */
+	--bg-bubble-user: hwb(180 10% 65%);	/* 用户消息气泡 */
+	--bg-chip: hwb(210 15% 82.5%);			/* 小徽标（LOCAL / 上下文标记） */
 	--bg-progress-track: hwb(217.5 8.6% 88.2%);   /* 进度条底槽 */
 	--bg-hover: hwb(0 100% 0% / 0.04);
 	--bg-active: hwb(0 100% 0% / 0.07);
-	--bg-selected: hwb(35.9 23.5% 9% / 0.12);
-	--bg-scrim: hwb(0 0% 100% / 0.55);
+	--bg-shadow: #00000077;
 
 	/* 描边 */
-	--border-app: hwb(216.9 12.9% 82%);
-	--border: hwb(216 10.6% 85.5%);              /* 分隔线（默认） */
-	--border-input: hwb(215 14.9% 80.4%);
-	--border-strong: hwb(215 16.5% 78.8%);
+	--border-titlebar: var(--accent);
+	--border: hwb(210 15% 80%);              /* 分隔线（默认） */
+	--border-input: hwb(215 15% 80%);
+	--border-strong: hwb(215 17.5% 77.5%);
 
 	/* 文字 */
-	--text-primary: hwb(60 90.6% 8.6%);
-	--text-body: hwb(60 82.7% 16.5%);
-	--text-secondary: hwb(60 78% 21.2%);
-	--text-tertiary: hwb(60 54.9% 44.3%);
-	--text-quiet: hwb(216 43.1% 52.9%);
-	--text-faint: hwb(218.2 38.4% 57.3%);
-	--text-disabled: hwb(215 30.6% 64.7%);
+	--text-primary: hwb(35 95% 5%);
+	--text-primary-strong: hwb(35 100% 0%);
+	--text-secondary: hwb(35 80% 20%);
+	--text-tertiary: hwb(35 60% 40%);
+	--text-placeholder: hwb(35 60% 40% / 0.4);
+	--text-disabled: hwb(35 60% 40% / 0.4);
+	--text-tip: hwb(35 60% 40% / 0.7);
+	--text-user: var(--text-primary);
 
 	/* 强调 / 状态 */
-	--accent: hwb(35.9 23.5% 9%);
+	--accent: hwb(35 20% 10%);
 	--accent-hover: hwb(36 33.3% 5.9%);
 	--accent-ink: hwb(200 8.6% 90.2%);          /* 压在强调色上的文字 */
 	--accent-soft: hwb(36.5 7.5% 83.5%);
 	--accent-soft-border: hwb(39 12.5% 63.9%);
 
-	--success: hwb(112.1 54.1% 31%);
-	--success-soft: hwb(106.7 9.4% 87.1%);
-	--success-soft-border: hwb(99 18.4% 73.7%);
-
-	--warn-bg: hwb(40 5.5% 91%);             /* 反思卡 */
-	--warn-border: hwb(42.2 9.4% 76.1%);
-	--warn-text: hwb(35.9 23.5% 9%);
-	--warn-chip-bg: hwb(40 5.9% 85.9%);
-	--warn-chip-text: hwb(37.8 35.3% 21.2%);
+	--success: hwb(115 50% 10%);
 
 	--ask-bg: hwb(216 7.5% 90.6%);              /* 提问卡片 */
-	--ask-border: hwb(216.7 18% 74.9%);
+	--ask-border: var(--border);
 
 	--mcp-bg: hwb(210 5.9% 90.2%);              /* MCP 调用卡 */
 	--mcp-border: hwb(205.7 11.8% 80%);
@@ -184,55 +175,46 @@
 
 .themeLight {
 	/* 背景 / 表面 */
-	--bg-app: hwb(195 98% 1%);
+	--bg-app: hwb(195 98% 1%);				/* 主工作区、子 Agent 块 */
 	--bg-sidebar: hwb(195 95% 3%);
-	--bg-titlebar-from: hwb(210 98% 1.2%);
-	--bg-titlebar-to: hwb(210 94.9% 3.5%);
-	--bg-sub1: hwb(195 95% 3%);
-	--bg-sub1-header: hwb(195 92% 4%);
-	--bg-input: hwb(0 100% 0%);
-	--bg-bubble-user: var(--bg-sub1);
-	--bg-chip: hwb(210 94.5% 3.9%);
+	--bg-titlebar: linear-gradient(180deg, hwb(195 97% 2%), hwb(195 95% 3%));
+	--bg-sub1: hwb(195 95% 3%);			/* 卡片 / 消息体 */
+	--bg-sub1-header: hwb(195 92% 4%);		/* 卡片头部 / 内嵌标记 */
+	--bg-input: hwb(0 99.5% 0%);			/* 输入框（主输入框、提问输入框） */
+	--bg-bubble-user: var(--bg-sub1);		/* 用户消息气泡 */
+	--bg-chip: hwb(195 92.5% 5%);			/* 小徽标（LOCAL / 上下文标记） */
 	--bg-progress-track: hwb(216 92.9% 5.1%);
 	--bg-hover: hwb(220 6.3% 89% / 0.04);
 	--bg-active: hwb(220 6.3% 89% / 0.07);
-	--bg-selected: hwb(35.9 23.5% 9% / 0.14);
-	--bg-scrim: hwb(220 6.3% 89% / 0.18);
+	--bg-shadow: #11111177;
 
 	/* 描边 */
-	--border-app: hwb(217.5 87.8% 9%);
-	--border: hwb(210 89.4% 8.2%);
-	--border-input: hwb(217.5 87.8% 9%);
-	--border-strong: hwb(212.7 82.7% 12.9%);
+	--border-titlebar: hwb(195 87.5% 10%);
+	--border: hwb(195 87.5% 10%);
+	--border-input: hwb(195 87.5% 10%);
+	--border-strong: hwb(195 85% 12.5%);
 
 	/* 文字 */
-	--text-primary: hwb(213.3 10.6% 85.9%);
-	--text-body: hwb(215 20% 75.3%);
-	--text-secondary: hwb(214.3 29% 65.5%);
-	--text-tertiary: hwb(214.3 35.3% 59.2%);
-	--text-quiet: hwb(216 46.3% 47.8%);
-	--text-faint: hwb(216 54.9% 39.2%);
-	--text-disabled: hwb(214.3 66.7% 27.8%);
+	--text-primary: hwb(0 20% 80%);
+	--text-primary-strong: hwb(35 0% 50%);
+	--text-secondary: hwb(35 35% 65%);
+	--text-tertiary: hwb(35 50% 50%);
+	--text-placeholder: hwb(35 50% 50% / 0.4);
+	--text-disabled: hwb(35 50% 50% / 0.6);
+	--text-tip: hwb(120 30% 60% / 0.7);
+	--text-user: var(--text-primary);
 
 	/* 强调 / 状态 */
-	--accent: hwb(35.9 23.5% 9%);
+	--accent: hwb(35 25% 5%);
 	--accent-hover: hwb(37.6 12.2% 15.3%);
 	--accent-ink: hwb(200 8.6% 90.2%);
 	--accent-soft: hwb(37.8 88.6% 0.8%);
 	--accent-soft-border: hwb(38.6 65.1% 6.3%);
 
-	--success: hwb(111.8 34.1% 45.9%);
-	--success-soft: hwb(102.9 93.3% 3.9%);
-	--success-soft-border: hwb(104.3 78.8% 12.2%);
+	--success: hwb(115 20% 20%);
 
-	--warn-bg: hwb(40 93.3% 0.8%);
-	--warn-border: hwb(40 73.3% 6.7%);
-	--warn-text: hwb(36.3 10.2% 34.1%);
-	--warn-chip-bg: hwb(39.3 85.5% 3.1%);
-	--warn-chip-text: hwb(39.1 12.5% 45.9%);
-
-	--ask-bg: hwb(220 96.9% 2%);
-	--ask-border: hwb(212.7 86.7% 9%);
+	--ask-bg: color-mix(var(--bg-app) 60%, var(--bg-input) 20%);
+	--ask-border: var(--border);
 
 	--mcp-bg: hwb(204 96.1% 2%);
 	--mcp-border: hwb(205.3 84.3% 8.2%);
@@ -288,7 +270,7 @@ html:not(.themeLight):not(.themeDark) {
    两个类同时挂在 <html> 上，故用复合选择器保证在浅色下也能覆盖。 */
 
 .accentAmber {
-	--accent: hwb(35 25% 8%);
+	--accent: hwb(35 20% 10%);
 	--accent-hover: hwb(35 33.3% 5.9%);
 	--accent-ink: hwb(200 8.6% 90.2%);
 	--accent-soft: hwb(35 7.5% 83.5%);
@@ -296,6 +278,7 @@ html:not(.themeLight):not(.themeDark) {
 	--ring-color: hwb(35 25% 8% / 0.40);
 }
 .accentAmber.themeLight {
+	--accent: hwb(35 25% 5%);
 	--accent-hover: hwb(37.6 12.2% 15.3%);
 	--accent-soft: hwb(37.8 88.6% 0.8%);
 	--accent-soft-border: hwb(38.6 65.1% 6.3%);
@@ -393,7 +376,7 @@ html:not(.themeLight):not(.themeDark) {
 :root {
 	--fontColor: var(--text-primary);
 	--fontColorDim: var(--text-tertiary);
-	--fontColorMuted: var(--text-quiet);
+	--fontColorMuted: var(--text-placeholder);
 	--textLight: var(--text-tertiary);
 	--dangerColor: var(--danger);
 	--monoFont: var(--font-mono);
@@ -406,7 +389,7 @@ html:not(.themeLight):not(.themeDark) {
 	--88: var(--text-tertiary);
 	--55: var(--text-primary);
 	--33: var(--text-primary);
-	--66: var(--text-quiet);
+	--66: var(--text-placeholder);
 
 	--primary: var(--accent);
 	--primaryHover: var(--accent-hover);
@@ -417,10 +400,6 @@ html:not(.themeLight):not(.themeDark) {
 	--errorBg: var(--danger-soft);
 	--errorBgActive: var(--danger-soft);
 	--warning: var(--warn-text);
-
-	--hoverBg: var(--bg-hover);
-	--activeBg: var(--bg-active);
-	--selectedBg: var(--bg-selected);
 }
 
 /* ---------- 7. FFBox-UI 组件所需 ----------

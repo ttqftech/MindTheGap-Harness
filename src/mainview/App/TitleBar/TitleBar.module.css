@@ -12,14 +12,14 @@
 	gap: 10px;
 	height: var(--titlebar-h);
 	flex-shrink: 0;
-	background: linear-gradient(180deg, var(--bg-titlebar-from), var(--bg-titlebar-to));
-	border-bottom: 1px solid var(--border-app);
+	background: var(--bg-titlebar);
+	border-bottom: 1px solid var(--border-titlebar);
 	user-select: none;
 	-webkit-app-region: drag;
 
 	/* ---------- 品牌锁型 ---------- */
 
-	.title-bar-brand {
+	.brandWrapper {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -31,8 +31,7 @@
 		&:hover {
 			background-color: var(--bg-active);
 		}
-
-		.app-mark {
+		.logo {
 			display: inline-flex;
 			align-items: center;
 			height: 100%;
@@ -46,28 +45,9 @@
 		}
 	}
 
-	.brand-name {
-		font-family: var(--font-brand);
-		font-size: 12.5px;
-		font-weight: 700;
-		letter-spacing: 0.01em;
-		color: var(--text-primary);
-		-webkit-app-region: no-drag;
-		app-region: no-drag;
-	}
-
-	.brand-suffix {
-		font-family: var(--font-brand);
-		font-size: 12.5px;
-		font-weight: 300;
-		color: var(--text-tertiary);
-		-webkit-app-region: no-drag;
-		app-region: no-drag;
-	}
-
 	/* ---------- 折叠侧边栏 ---------- */
 
-	.title-bar-icon-btn {
+	.titleBarIconButton {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -89,15 +69,13 @@
 
 	/* ---------- 菜单栏 ---------- */
 
-	.menu-bar {
+	.menuBar {
 		display: flex;
 		align-items: center;
 		gap: 16px;
 		flex-shrink: 0;
 		-webkit-app-region: no-drag;
-		app-region: no-drag;
-
-		.menu-bar-item {
+		.menuBarItem {
 			font-family: var(--font-ui);
 			font-size: var(--fs-s);
 			color: var(--text-tertiary);
@@ -111,7 +89,7 @@
 
 	/* ---------- 拖拽占位（唯一的原生窗口拖拽区） ---------- */
 
-	.title-bar-drag {
+	.dragArea {
 		flex: 1;
 		min-width: 0;
 		height: 100%;
@@ -121,7 +99,7 @@
 
 	/* ---------- 运行时徽标 ---------- */
 
-	.local-badge {
+	.versionBadge {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -132,17 +110,14 @@
 		background-color: var(--bg-chip);
 		border: 1px solid var(--border-input);
 		-webkit-app-region: no-drag;
-		app-region: no-drag;
-
-		.status-dot {
+		.statusDot {
 			width: 6px;
 			height: 6px;
 			border-radius: var(--r-full);
 			background-color: var(--success);
 			flex-shrink: 0;
 		}
-
-		.local-badge-text {
+		.statusText {
 			font-family: var(--font-mono);
 			font-size: var(--fs-xxs);
 			color: var(--text-tertiary);
@@ -152,7 +127,7 @@
 
 	/* ---------- 窗口控制组 ---------- */
 
-	.title-bar-buttons {
+	.fixedButtons {
 		display: flex;
 		align-items: stretch;
 		align-self: stretch;
@@ -180,4 +155,26 @@
 			}
 		}
 	}
+}
+
+@keyframes titlebar-flash {
+	0% {
+		--bg-titlebar: var(--accent);
+		--text-primary: #fff;
+		--text-secondary: #fff;
+		--text-tertiary: #fff;
+		--text-disabled: rgba(255, 255, 255, 0.4);
+		--bg-hover: rgba(255, 255, 255, 0.15);
+		--bg-active: rgba(255, 255, 255, 0.25);
+		--bg-chip: rgba(255, 255, 255, 0.15);
+		--border-strong: rgba(255, 255, 255, 0.3);
+		--border-input: rgba(255, 255, 255, 0.2);
+	}
+	100% {
+		/* background: var(--bg-titlebar); */
+	}
+}
+
+.titleBarFlash {
+	animation: titlebar-flash 1s linear infinite;
 }

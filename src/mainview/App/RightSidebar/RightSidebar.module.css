@@ -29,7 +29,7 @@
 	.rightSidebar-title {
 		font-family: var(--font-mono);
 		font-size: var(--fs-xxs);
-		color: var(--text-faint);
+		color: var(--text-secondary);
 	}
 
 	.rightSidebar-count {
@@ -49,7 +49,7 @@
 		height: 18px;
 		padding: 0;
 		border-radius: var(--r-sm);
-		color: var(--text-faint);
+		color: var(--text-secondary);
 		transition: background-color var(--dur-fast), color var(--dur-fast);
 		&:hover {
 			background-color: var(--bg-hover);

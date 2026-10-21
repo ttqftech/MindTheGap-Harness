@@ -237,12 +237,12 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 					? rawQuestions.map((q) => {
 							const obj = q as Record<string, unknown>;
 							return {
-								question: typeof obj?.question === 'string' ? obj.question : '需要你的确认',
+								question: typeof obj?.question === 'string' ? obj.question : '对齐颗粒度',
 								selectionMode: obj?.selectionMode === 'multi' ? 'multi' as const : 'single' as const,
 								options: Array.isArray(obj?.options) ? (obj.options as RenderAskQuestion['options']) : [],
 							};
 						})
-					: [{ question: typeof args?.question === 'string' ? args.question : '需要你的确认', selectionMode: 'single', options: Array.isArray(args?.options) ? (args.options as RenderAskQuestion['options']) : [] }];
+					: [{ question: typeof args?.question === 'string' ? args.question : '对齐颗粒度', selectionMode: 'single', options: Array.isArray(args?.options) ? (args.options as RenderAskQuestion['options']) : [] }];
 				subBlocks.push({
 					type: 'tool',
 					key: nextKey('ask'),

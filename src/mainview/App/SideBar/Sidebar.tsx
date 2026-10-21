@@ -289,12 +289,12 @@ export default function Sidebar() {
 									</Show>
 								</div>
 								<Show when={expandedFolders().has(folder.id)}>
-									<div class={styles['tree-items']}>
+									<div class={styles.treeItems}>
 										<For each={conversations()}>{(conv) => {
 											const isActive = () => state.activeConversationId === conv.id;
 											return (
 												<div
-													class={styles['tree-item']}
+													class={styles.treeItem}
 													classList={{
 														[styles.active]: isActive(),
 														// ⚠️ 只取**这个会话自己**的运行态（后端 activeRunners + 根实例 status），

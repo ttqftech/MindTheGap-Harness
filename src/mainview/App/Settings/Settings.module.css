@@ -44,7 +44,7 @@
 	.settings-overlay {
 		position: absolute;
 		inset: 0;
-		background-color: var(--bg-scrim);
+		background-color: var(--bg-shadow);
 		opacity: var(--settings-progress, 0);
 	}
 
@@ -208,7 +208,7 @@
 
 			.setting-group-desc {
 				font-size: var(--fs-s);
-				color: var(--text-quiet);
+				color: var(--text-placeholder);
 				margin-bottom: 8px;
 			}
 
@@ -233,7 +233,7 @@
 
 					.setting-row-desc {
 						font-size: var(--fs-xs);
-						color: var(--text-quiet);
+						color: var(--text-placeholder);
 					}
 				}
 
@@ -244,7 +244,7 @@
 
 				.setting-row-desc {
 					font-size: var(--fs-xs);
-					color: var(--text-quiet);
+					color: var(--text-placeholder);
 				}
 			}
 
@@ -252,7 +252,7 @@
 			.setting-row-value {
 				flex-shrink: 0;
 				font-size: var(--fs-s);
-				color: var(--text-quiet);
+				color: var(--text-placeholder);
 			}
 
 			/* ---------- 分段控件 ---------- */
