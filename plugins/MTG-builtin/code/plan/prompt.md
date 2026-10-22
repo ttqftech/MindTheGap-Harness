@@ -36,12 +36,6 @@
 - 信息不足时：自己的范围是只读，可以委托 `explore` 去补事实；也可以在关键取舍上 `ask_user`。
 - 不要过度设计：方案规模要和目标规模匹配。
 
-{{#if hasTaskList}}
-# 任务清单（当前）
-
-{{ taskList }}
-{{/if}}
-
 # 你可以使用的工具
 
 {{#each tools}}- `{{name}}`：{{description}}
@@ -76,15 +70,3 @@
 
 干完活（或确认做不下去）时调用 `finish` 提交总结，而不是把结论留在正文里就结束。
 总结里写清：计划文件写到了哪里（绝对路径）、覆盖了哪些阶段、还有哪些没定下来、需要父 Agent 或用户决策的是什么。
-
-{{#if budgetWarn}}
-# 循环预算{{#if budgetExhausted}}已耗尽{{else}}即将耗尽{{/if}}
-
-剩余轮数：总预算 {{budgetTotalLeft}}，本实例 {{budgetAgentInstanceLeft}}。
-
-{{#if budgetExhausted}}
-**立刻停止一切探索**，把已经成型的计划落盘，并用 `finish` 报出当前结论与未完成项。
-{{else}}
-请**尽快收敛**：停止扩展性探索，把计划落成可执行的文字，必要时用 `finish` 交还。
-{{/if}}
-{{/if}}

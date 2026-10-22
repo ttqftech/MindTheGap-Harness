@@ -62,6 +62,10 @@ export interface AgentDefinition {
 	reflectionPromptFile?: string;
 	/** 由加载器读入的 Agent 级反思提示词内容（没有文件时为空串） */
 	reflectionPrompt?: string;
+	/** 动态状态提示词文件名（相对 agent 目录，默认 `prompt.state.md`）。渲染后仅拼入 LLM 请求尾部，不写入 instance.messages，以保持首条 system 消息不变从而利用 KV Cache */
+	statePromptFile?: string;
+	/** 由加载器读入的动态状态模板内容（没有文件时为空串） */
+	statePrompt?: string;
 }
 
 /**
@@ -264,6 +268,8 @@ export interface AgentInstance {
 	lastUpdatedAt?: number;
 	/** 中断 / 失败原因（供父实例的「尚未完成的子 Agent」段落展示） */
 	interruptReason?: string;
+	/** 动态状态快照：key → 上次序列化值，用于 buildPromptScope 计算 stateChanged */
+	stateSnapshot?: Record<string, string>;
 }
 
 export interface RunBudget {

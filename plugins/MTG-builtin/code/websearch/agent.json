@@ -2,6 +2,7 @@
 	"id": "websearch",
 	"name": "网络信息搜索",
 	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
 	"reflectionCount": 0,
 	"ability": {
 		"mcp": "none",

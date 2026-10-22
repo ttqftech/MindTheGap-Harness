@@ -24,7 +24,7 @@ import { mcpManager } from '../mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
 import { conversations, ensureConversationDir, settings } from '../storage';
 import { logMsg } from '../utils';
-import { renderSystemPrompt } from './prompt';
+import { renderSystemPrompt, renderStatePrompt } from './prompt';
 import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
@@ -419,9 +419,9 @@ export class AgentRunner {
 
 			const def = this.getAgentDefinitionByInstance(instance);
 			const tools = getToolsForAgentInstance(instance, def, this.mode);
-			const systemPrompt = this.buildSystemPrompt(instance, tools);
 
-			// 最终 prompt 为空 → 不下发 system message（「空」模式的准确落地方式）
+			const systemPrompt = this.buildSystemPrompt(instance, tools);
+			// 空 prompt → 不下发 system message（「空」模式的 prompt.md 就是空的）
 			if (systemPrompt.trim()) {
 				if (instance.messages[0]?.role === 'system') {
 					instance.messages[0] = message({ role: 'system', content: systemPrompt });
@@ -435,10 +435,19 @@ export class AgentRunner {
 			const requireReason = def.ability.requireReason !== false;
 			const llmTools = toLlmTools(tools, requireReason);
 
+			// 动态状态：渲染 prompt.state.md，非空则拼入本次 LLM 请求尾部（不写入 instance.messages）
+			const promptCtx = this.buildPromptContext(instance, tools);
+			const { content: stateContent, snapshot } = renderStatePrompt(promptCtx);
+			const llmMessages = toLlmMessages(instance.messages);
+			if (stateContent.trim()) {
+				llmMessages.push({ role: 'system', content: stateContent });
+			}
+			instance.stateSnapshot = snapshot;
+
 			const result = await callLlm(
 				{
 					config: this.model,
-					messages: toLlmMessages(instance.messages),
+					messages: llmMessages,
 					tools: llmTools,
 					onChunk: (chunk) => {
 						// 思考增量先发：思考模型的推理阶段通常远长于正文，
@@ -1182,7 +1191,7 @@ export class AgentRunner {
 		this.emitEvent(instance, 'tool_result', { callId, success: result.success, content: content.slice(0, 2000) });
 	}
 
-	private buildSystemPrompt(instance: AgentInstance, tools: AgentTool[]): string {
+	private buildPromptContext(instance: AgentInstance, tools: AgentTool[]): import('./prompt').PromptContext {
 		const def = this.getAgentDefinitionByInstance(instance);
 		const children = instance.childAgentInstanceIds
 			.map((id) => this.findInstance(id))
@@ -1195,7 +1204,7 @@ export class AgentRunner {
 		const warn = totalLeft <= limits.warnAtRemaining || agentInstanceLeft <= limits.warnAtRemaining;
 		const exhausted = totalLeft <= 0 || agentInstanceLeft <= 0;
 
-		return renderSystemPrompt({
+		return {
 			agentInstance: instance,
 			def,
 			mode: this.mode,
@@ -1210,7 +1219,11 @@ export class AgentRunner {
 			depthExhausted: instance.depth >= this.mode.maxDepth,
 			taskList: this.ctx.taskList,
 			mcpSection: this.mcpSectionFor(tools),
-		});
+		};
+	}
+
+	private buildSystemPrompt(instance: AgentInstance, tools: AgentTool[]): string {
+		return renderSystemPrompt(this.buildPromptContext(instance, tools));
 	}
 
 	private mcpSectionFor(tools: AgentTool[]): string {

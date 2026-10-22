@@ -2,6 +2,7 @@
 	"id": "explore",
 	"name": "探索",
 	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
 	"reflectionCount": 0,
 	"ability": {
 		"mcp": "none",

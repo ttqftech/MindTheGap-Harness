@@ -46,15 +46,3 @@
 
 干完活（或确认做不下去）时调用 `finish` 提交总结，而不是把结论留在正文里就结束。
 总结里写清楚：查了哪些地方、结论是什么、证据是哪里（`路径:行号`）、哪些没查到。
-
-{{#if budgetWarn}}
-# 循环预算{{#if budgetExhausted}}已耗尽{{else}}即将耗尽{{/if}}
-
-剩余轮数：总预算 {{budgetTotalLeft}}，本实例 {{budgetAgentInstanceLeft}}。
-
-{{#if budgetExhausted}}
-**立刻停止一切探索**，用 `finish` 输出当前结论、已完成的部分和未完成项（连同原因）。
-{{else}}
-请**尽快收敛**：停止扩展性探索，把已经查到的事实整理成结论，用 `finish` 交还。
-{{/if}}
-{{/if}}

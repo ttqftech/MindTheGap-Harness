@@ -442,6 +442,22 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		hasBackgroundTasks: false,
 	};
 
+	// stateChanged：将当前 scope 快照与上轮比对，结果供 prompt.state.md 用 {{#if stateChanged.any}} 消费
+	const currentSnap: Record<string, string> = {};
+	for (const [k, v] of Object.entries(scope)) {
+		currentSnap[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
+	}
+	const prevSnap = agentInstance.stateSnapshot ?? {};
+	const stateChangedEntries: Record<string, boolean> = {};
+	let anyChanged = !agentInstance.stateSnapshot;
+	for (const key of Object.keys(currentSnap)) {
+		const changed = currentSnap[key] !== prevSnap[key];
+		stateChangedEntries[key] = changed;
+		if (changed) anyChanged = true;
+	}
+	scope.stateChanged = { ...stateChangedEntries, any: anyChanged };
+	scope._stateSnapshot = currentSnap;
+
 	// 基座自己也可以带 {{platform}} / {{time}} 之类的变量：
 	// 用当前作用域再渲染一遍。此刻 scope.basePrompt 还是空串，所以基座里写 {{ basePrompt }}
 	// 不会自引用。要不要把基座放进 system prompt，由 prompt.md 里有没有 {{ basePrompt }} 决定。
@@ -466,6 +482,23 @@ export function renderSystemPrompt(ctx: PromptContext): string {
 	return renderTemplate(template, buildPromptScope(ctx))
 		.replace(/\n{3,}/g, '\n\n')
 		.trim();
+}
+
+/**
+ * 渲染动态状态提示词（`prompt.state.md`），仅在内容非空时由调用方拼入 LLM 请求尾部。
+ * 不写入 instance.messages，以保持首条 system 消息不变从而利用 KV Cache。
+ *
+ * 返回渲染结果与新的快照（由调用方写回 instance.stateSnapshot）。
+ */
+export function renderStatePrompt(ctx: PromptContext): { content: string; snapshot: Record<string, string> } {
+	const template = ctx.def.statePrompt ?? '';
+	if (!template.trim()) return { content: '', snapshot: {} };
+	const scope = buildPromptScope(ctx);
+	const content = renderTemplate(template, scope)
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+	const snapshot = (scope._stateSnapshot ?? {}) as Record<string, string>;
+	return { content, snapshot };
 }
 
 // #endregion

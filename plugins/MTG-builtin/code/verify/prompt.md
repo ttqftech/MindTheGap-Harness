@@ -44,15 +44,3 @@
 # 完成约定
 
 干完活（或确认做不下去）时调用 `finish` 提交总结，而不是把结论留在正文里就结束。
-
-{{#if budgetWarn}}
-# 循环预算{{#if budgetExhausted}}已耗尽{{else}}即将耗尽{{/if}}
-
-剩余轮数：总预算 {{budgetTotalLeft}}，本实例 {{budgetAgentInstanceLeft}}。
-
-{{#if budgetExhausted}}
-**立刻停止一切探索**，用 `finish` 报出当前结论：验证到哪一步、哪些通过、哪些没覆盖。
-{{else}}
-请**尽快收敛**：把已经跑出来的证据整理成结论，用 `finish` 交还。
-{{/if}}
-{{/if}}

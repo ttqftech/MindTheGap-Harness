@@ -24,27 +24,6 @@
 
 - 用 `delegate`，参数是 `tasks: [{ agentId, task }]`，一次可以提交多条（并行执行）。
 - 委托不会阻塞你：子 Agent 跑完之前你会进入等待，跑完后你被自动唤醒。
-
-{{#if hasChildren}}
-# 你的子 Agent
-
-{{#each children}}- [{{agentId}}] `{{agentInstanceId}}`（{{agentName}}）状态={{statusLabel}}｜任务：{{taskLine}}
-{{/each}}
-{{/if}}
-
-{{#if hasUnfinished}}
-# 尚未完成的子 Agent
-
-{{#each unfinished}}- [{{agentId}}] `{{agentInstanceId}}`（{{agentName}}）状态={{statusLabel}}{{#if interruptReason}}｜原因：{{interruptReason}}{{/if}}｜任务：{{taskLine}}
-{{/each}}
-
-{{#if hasTool.resume_pending_child}}
-你可以用 `resume_pending_child` 让它接着干；已经完成但需要它继续做别的事，用 `resume_completed_child` 并附上补充任务。
-**不要对同一个子 Agent 反复 resume**——那会造成恢复风暴。
-{{else}}
-这些子任务没有跑完。如实告诉用户「该项查询未完成」，**不要替它编造结论**。
-{{/if}}
-{{/if}}
 {{/if}}
 
 # 你可以使用的工具
@@ -60,15 +39,3 @@
 
 拿到结果后（或确认做不下去时）调用 `finish` 提交总结，不要只把结论写在正文里。
 总结里写清：用户问了什么、查到什么、数据来源是哪里。
-
-{{#if budgetWarn}}
-# 循环预算{{#if budgetExhausted}}已耗尽{{else}}即将耗尽{{/if}}
-
-剩余轮数：总预算 {{budgetTotalLeft}}，本实例 {{budgetAgentInstanceLeft}}。
-
-{{#if budgetExhausted}}
-**立刻停止一切动作**，用 `finish` 报出当前结论与未完成项（连同原因）。
-{{else}}
-请**尽快收敛**：不要追加委托、不要交叉验证，把手上结果整理好交还。
-{{/if}}
-{{/if}}

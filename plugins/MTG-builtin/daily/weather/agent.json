@@ -2,6 +2,7 @@
 	"id": "weather",
 	"name": "天气查询",
 	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
 	"reflectionCount": 1,
 	"delegatable": [],
 	"model": "standard",

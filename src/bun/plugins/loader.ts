@@ -286,6 +286,11 @@ function loadAgentDefinition(agentDir: string, errors: PluginLoadError[], ctx: {
 	const reflectionPath = join(agentDir, reflectionPromptFile);
 	const reflectionPrompt = existsSync(reflectionPath) ? readText(reflectionPath) ?? '' : '';
 
+	// 动态状态提示词：默认 prompt.state.md，文件不存在时为空串（不注入动态状态）
+	const statePromptFile = raw.statePromptFile ?? 'prompt.state.md';
+	const statePromptPath = join(agentDir, statePromptFile);
+	const statePrompt = existsSync(statePromptPath) ? readText(statePromptPath) ?? '' : '';
+
 	const ability: AbilityPolicy = raw.ability ?? {};
 	// 工具名校验：只 warn（可能是留给其他插件的动态工具 / MCP）
 	if (ctx.knownToolNames) {
@@ -314,6 +319,8 @@ function loadAgentDefinition(agentDir: string, errors: PluginLoadError[], ctx: {
 		reflectionCount: raw.reflectionCount ?? 0,
 		reflectionPromptFile,
 		reflectionPrompt,
+		statePromptFile,
+		statePrompt,
 	};
 }
 

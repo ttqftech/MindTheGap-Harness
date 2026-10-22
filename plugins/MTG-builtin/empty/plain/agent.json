@@ -2,5 +2,6 @@
 	"id": "plain",
 	"name": "默认",
 	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
 	"ability": { "tools": { "allow": [] }, "mcp": "none" }
 }

@@ -2,6 +2,7 @@
 	"id": "verify",
 	"name": "验证",
 	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
 	"reflectionCount": 0,
 	"ability": {
 		"mcp": "none",
