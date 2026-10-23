@@ -11,17 +11,8 @@
    从 src/bun/agent/model.ts 迁入本目录（本次重构唯一的目录结构变化）。
    ========================================================================== */
 
-import type {
-	LlmMessage,
-	LlmTool,
-	LlmToolCall,
-	ModelConfig,
-	TokenUsage,
-	LlmPurpose,
-	LlmTriggerReason,
-	LlmRequestRecord,
-} from '@shared/agent';
-import { safeParseJson } from '../utils';
+import type { LlmMessage, LlmTool, LlmToolCall, ModelConfig, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
+import { logMsg, safeParseJson } from '../utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 
 // #region 类型
@@ -633,6 +624,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 			firstChunkMs = Date.now() - startedAt;
 			firstChunkSeen = true;
 		}
+		logMsg(`[model] chunk`, chunk);
 		if (chunk.usage) usage = { ...usage, ...chunk.usage };
 		onChunk(chunk);
 	};
@@ -640,6 +632,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 	const systemText = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
 	const toolNames = tools.map((t) => t.function.name);
 
+	logMsg(`[model] 将调用 LLM 接口`, config, messages, tools);
 	try {
 		const result = await (async () => {
 			switch (config.apiFormat) {

@@ -85,7 +85,7 @@ export async function answerToolCall(params: { conversationId: string; toolCallI
 
 // #region 流式订阅
 
-export function subscribeStream(conversationId: string, listener: (event: AgentStreamEvent) => void, onOpen?: () => void): () => void {
+export function subscribeStream(conversationId: string, listener: (event: AgentStreamEvent) => void, onOpen?: () => void, onError?: () => void): () => void {
 	const es = new EventSource(`${HTTP_BASE}/api/agent/stream?conversationId=${encodeURIComponent(conversationId)}`);
 	// ⚠️ 建连是**异步**的（几百 ms）。调用方必须在发 run **之前**等到这里 open ——
 	//    后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，会永久丢失，
@@ -103,7 +103,9 @@ export function subscribeStream(conversationId: string, listener: (event: AgentS
 		}
 	};
 	es.onerror = () => {
-		// EventSource 自动重连
+		// ⚠️ EventSource 默认自动重连，但重连有上限（浏览器通常 ~5s 间隔无限重试）。如果后端已不再推送（run 已结束 / 服务崩溃），无限重连只会浪费资源。
+		//    通知调用方连接出了问题，让它决定是否要关闭订阅并收尾（2026-09-22 加）。
+		onError?.();
 	};
 	return () => es.close();
 }

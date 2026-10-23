@@ -16,11 +16,7 @@ import styles from './RenderTree.module.css';
  * 聊天视图和图示视图共享同一份渲染树数据，只是投影方式不同——
  * 本组件负责「聊天消息列表」这种投影。
  */
-export default function RenderTreeView(props: {
-	tree: RenderAgentNode;
-	openOverrides: Map<string, boolean>;
-	convId: string;
-}) {
+export default function RenderTreeView(props: { tree: RenderAgentNode; openOverrides: Map<string, boolean>; convId: string }) {
 	const { openOverrides, convId } = props;
 
 	/** 一次 LLM 调用的账本：贴在所属块的**下方**（它是那次调用自带的一条数据，不是独立条目） */
@@ -201,7 +197,7 @@ export default function RenderTreeView(props: {
 					<div class={styles['agent-tool-group']}>
 						{toolBlock}
 						<div class={styles['agent-tool-children']}>
-							<For each={tool.children}>{(child) => renderNode(child, false)}</For>
+							<For each={tool.children}>{(child) => renderNode(() => child, false)}</For>
 						</div>
 					</div>
 				);
@@ -220,38 +216,38 @@ export default function RenderTreeView(props: {
 	}
 
 	/** 消息头 / AGENT：指示灯 + AGENT + Agent 名 + 状态标记 */
-	const renderAgentHeaderFor = (node: RenderAgentNode) => (
+	const renderAgentHeaderFor = (node: () => RenderAgentNode) => (
 		<div class={styles['message-head']}>
 			<span class={styles['message-head-dot']} />
 			<span class={`${styles['message-head-label']} ${styles['is-agent']}`}>AGENT</span>
-			<span class={styles['message-head-meta']}>{node.agentName || node.agentId}</span>
-			<span class={styles['message-head-chip']}>{STATUS_LABEL[node.status] ?? node.status}</span>
+			<span class={styles['message-head-meta']}>{node().agentName || node().agentId}</span>
+			<span class={styles['message-head-chip']}>{STATUS_LABEL[node().status] ?? node().status}</span>
 			<span class={styles['message-head-spacer']} />
 		</div>
 	);
 
 	/** 运行摘要：设计稿的指标胶囊（耗时 / 工具调用 / 重入我们暂时拿不到，只出这四项） */
-	const renderRunSummaryFor = (node: RenderAgentNode) => (
-		<Show when={node.tokens || node.llmCalls > 0}>
+	const renderRunSummaryFor = (node: () => RenderAgentNode) => (
+		<Show when={node().tokens || node().llmCalls > 0}>
 			<div class={styles['run-summary']}>
 				<span class={styles['summary-chip']}>
 					<span class={styles['summary-chip-key']}>LLM 调用</span>
-					{node.llmCalls}
+					{node().llmCalls}
 				</span>
 				<span class={styles['summary-chip']}>
 					<span class={styles['summary-chip-key']}>tokens</span>
-					↑{fmtTokens(node.tokens?.input)} ↓{fmtTokens(node.tokens?.output)}
+					↑{fmtTokens(node().tokens?.input)} ↓{fmtTokens(node().tokens?.output)}
 				</span>
-				<Show when={node.tokens?.inputCached}>
+				<Show when={node().tokens?.inputCached}>
 					<span class={styles['summary-chip']}>
 						<span class={styles['summary-chip-key']}>缓存</span>
-						{fmtTokens(node.tokens!.inputCached)}
+						{fmtTokens(node().tokens!.inputCached)}
 					</span>
 				</Show>
-				<Show when={node.rounds > 0}>
+				<Show when={node().rounds > 0}>
 					<span class={styles['summary-chip']}>
 						<span class={styles['summary-chip-key']}>轮次</span>
-						{node.rounds}
+						{node().rounds}
 					</span>
 				</Show>
 			</div>
@@ -299,20 +295,25 @@ export default function RenderTreeView(props: {
 				);
 
 			case 'agent':
-				return renderNode(block.node, false);
+				return renderNode(() => block.node, false);
 		}
 	};
 
 	/**
 	 * 一个 Agent 实例 = 一个块序列（含它的子节点）。
 	 * 子 Agent 用 `<details>` 整块折叠（名字 + 状态 + 任务在头部，展开才是它自己的产出）。
+	 *
+	 * ⚠️ `currentNode` 参数是 accessor（访问器），不是值——这是「流式可见」和「逐块复用」能同时成立的前提：
+	 * - 传值：`node.blocks` 在组件体（只执行一次）里就被求值，闭包捕获首帧快照 ⇒ 之后的流式增量全看不到。
+	 * - 传 accessor：`<For each={currentNode().blocks}>` 的 `each` 是编译出的 getter，读取落在 For 自己的 memo 里，才能实现每次投影重算都会重新取数组、**逐项按引用比较**
+	 *   同理，节点自身的字段（status / tokens / …）都在 JSX 表达式里读 `currentNode().x`，天生响应式。
 	 */
-	const renderNode = (node: RenderAgentNode, isRoot: boolean) => {
+	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {
 		const blockList = () => (
-			<For each={node.blocks}>
+			<For each={currentNode().blocks}>
 				{(block, index) => (
 					<>
-						<Show when={index() === getFirstNonUserIndex(node)}>{renderAgentHeaderFor(node)}</Show>
+						<Show when={index() === getFirstNonUserIndex(currentNode())}>{renderAgentHeaderFor(currentNode)}</Show>
 						{renderBlock(block, true)}
 					</>
 				)}
@@ -323,7 +324,7 @@ export default function RenderTreeView(props: {
 			return (
 				<div class={styles['agent-reply']}>
 					{blockList()}
-					{renderRunSummaryFor(node)}
+					{renderRunSummaryFor(currentNode)}
 				</div>
 			);
 		}
@@ -333,24 +334,30 @@ export default function RenderTreeView(props: {
 				class={styles['agent-node']}
 				/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。
 				   曾经按 status 自动折（跑完就收起），结果是「子 Agent 一完成就从界面上消失」。 */
-				open={openOverrides.get(`node:${node.agentInstanceId}`) ?? true}
-				ontoggle={(e) => openOverrides.set(`node:${node.agentInstanceId}`, e.currentTarget.open)}
+				open={openOverrides.get(`node:${currentNode().agentInstanceId}`) ?? true}
+				ontoggle={(e) => openOverrides.set(`node:${currentNode().agentInstanceId}`, e.currentTarget.open)}
 			>
 				<summary class={styles['agent-node-header']}>
 					<span class={styles['agent-node-caret']}>▶</span>
-					<span class={styles['agent-node-name']}>{node.agentName || node.agentId}</span>
-					<span class={styles['agent-node-status']}>{STATUS_LABEL[node.status] ?? node.status}</span>
-					<Show when={node.task}>
-						<span class={styles['agent-node-task']}>{node.task}</span>
+					<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
+					<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
+					<Show when={currentNode().task}>
+						<span class={styles['agent-node-task']}>{currentNode().task}</span>
 					</Show>
 				</summary>
 				<div class={styles['agent-node-body']}>
-					<For each={node.blocks}>{(block) => renderBlock(block, false)}</For>
-					{renderRunSummaryFor(node)}
+					<For each={currentNode().blocks}>{(block) => renderBlock(block, false)}</For>
+					{renderRunSummaryFor(currentNode)}
 				</div>
 			</details>
 		);
 	};
 
-	return renderNode(props.tree, true);
+	/**
+	 * 渲染入口。
+	 * 
+	 * 注意：`props.tree` 必须在**会被重新执行的跟踪作用域里**读——
+	 *    组件体顶层不是跟踪作用域，`return renderNode(props.tree, true)` 会把第一帧的树捕获进闭包，会导致后续更新没有被追踪，导致「流式输出要等整块跑完才出现」。
+	 */
+	return renderNode(() => props.tree!, true);
 }

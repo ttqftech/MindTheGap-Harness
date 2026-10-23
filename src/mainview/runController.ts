@@ -74,6 +74,19 @@ export function subscribe(
 		conversationId,
 		(event) => handlers.get(conversationId)?.(event),
 		onOpen,
+		() => {
+			// ⚠️ SSE 连接断开：如果 runStatus 仍为 running/waiting，说明后端已不再推送
+			//   但前端还卡在「运行中」（服务崩溃 / 网络断开等），需要兜底收尾（2026-09-22 加）。
+			//   用 setTimeout 延迟检查：EventSource onerror 在正常重连时也会触发，
+			//   给它一点时间重连，如果 runStatus 仍是 alive 再收尾。
+			setTimeout(() => {
+				const conv = appState.conversations.find((c) => c.id === conversationId);
+				if (conv?.runStatus === 'running' || conv?.runStatus === 'waiting') {
+					runErrorActions.set(conversationId, 'SSE 连接断开，运行已中止');
+					void endRun(conversationId);
+				}
+			}, 5000);
+		},
 	);
 	sources.set(conversationId, unsub);
 }
@@ -298,9 +311,10 @@ const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 		return;
 	}
 	if (event.type === 'error') {
-		// ⚠️ 按会话隔离：即使这条错误属于**别的**会话，也只写它自己那份，
-		//   当前查看的会话不会冒出来一条别人的错误。
 		runErrorActions.set(conversationId, event.message);
+		// endRun 会 unsubscribe + clear overlay + set runStatus='stopped' + 重拉 ctx。
+		// endRun 不再 clear runError（见下方 endRun 注释），所以错误会持续显示到下一轮 beginRun。
+		void endRun(conversationId);
 		return;
 	}
 	// ⚠️ runStatus 是 per-conversation 的：这里刷新的是 `conversationId` 自己那份，
@@ -356,7 +370,9 @@ const endRun = async (conversationId: string) => {
 	// run 结束：停止监听（后端不再推送）。订阅是 per-conversation 的，关掉这个不会影响其它会话。
 	unsubscribe(conversationId);
 	overlayActions.clear(conversationId);
-	runErrorActions.clear(conversationId);
+	// ⚠️ 不再 clear runError：错误消息要持续显示给用户看，直到下一轮 beginRun 才清。
+	//   以前 endRun 里 clear 掉了，导致 SSE error 事件设的错误消息被紧接着的 endRun 立刻清掉，
+	//   用户只看到状态回到空闲但看不到任何错误提示（2026-09-22 修）。
 	// ⚠️ 这里必须**显式**收尾：runStatus 是后端「活着才下发」的运行态，结束时列表接口里没有这个键，
 	//   光靠 loadConversationCtx 的 meta 刷新清不掉本地那份 running（见 store 的 refreshConversationMeta 注释）。
 	actions.setConversationRunStatus(conversationId, 'stopped');

@@ -24,7 +24,7 @@ import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
 import { alertMsgbox, showMenu } from '@mainview/ffboxBridge';
 import DiagramView from './DiagramView/DiagramView';
 import MTGlogo from './MTG-logo-transparent.svg';
-import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL } from './RenderTree/shared';
+import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow } from './RenderTree/shared';
 import RenderTreeView from './RenderTree/RenderTree';
 import styles from './ChatView.module.css';
 
@@ -55,7 +55,11 @@ export default function ChatView() {
 	});
 
 	/** 界面内容：已提交的 ctx + 在飞的 overlay，共用同一个投影函数 */
-	const ENABLE_RENDER_TREE_DIFF = false;
+	/**
+	 * 投影 diff 开关：让内容没变的块保持旧引用，`<For>` 逐项比引用时就能复用 DOM。
+	 * ⚠️ 它生效的前提是「`<For>` 实例跨帧常驻」—— 见 `RenderTree/RenderTree.tsx` 里 `RenderTreeView` 的入口注释（accessor 读 props.tree + 非 keyed 的 `<Show>`）。
+	 */
+	const ENABLE_RENDER_TREE_DIFF = true;
 	let prevTree: RenderAgentNode | null = null;
 	const renderTree = createMemo(() => {
 		const conversation = getActiveConversation();
@@ -461,7 +465,7 @@ export default function ChatView() {
 			<div class={styles.chatArea} ref={chatAreaRef}>
 				<Show when={!renderTree()}>
 					<div class={styles.emptyState}>
-						<h2>{getTimeString(new Date(), false)}</h2>
+						<h2>{getTimeString(new Date(clockNow()), false)}</h2>
 						<MTGlogo class={styles.logo} />
 						<p>请小心间隙！Please Mind The Gap！嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟📢</p>
 					</div>
@@ -491,7 +495,7 @@ export default function ChatView() {
 						{/* 转写：根实例直接内联渲染，让 <For> 持久化以支持 reconciliation
 						    （AGENT 头插在用户发言之后，运行摘要贴在最下面） */}
 						<RenderTreeView
-							tree={renderTree()!}
+							tree={renderTree()}
 							openOverrides={openOverrides}
 							convId={appState.activeConversationId ?? ''}
 						/>

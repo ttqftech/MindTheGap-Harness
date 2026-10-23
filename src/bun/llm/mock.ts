@@ -314,7 +314,8 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 		if (currentScenario === 'code_web') {
 			if (!isSubAgent) {
 				await streamToolCall(res, 'delegate', {
-					tasks: [{ agentId: 'websearch', task: '查询北京今天的天气，用 web_search 找权威来源并给出结论' }],
+					agentId: 'websearch',
+					task: '查询北京今天的天气，用 web_search 找权威来源并给出结论',
 					reason: '需要实时外部信息，交给网络搜索 Agent',
 				}, '实时信息交给搜索子 Agent。');
 				return;
@@ -330,7 +331,8 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 		if (currentScenario === 'delegate') {
 			if (!isSubAgent) {
 				await streamToolCall(res, 'delegate', {
-					tasks: [{ agentId: 'explore', task: '说明一下这个仓库的目录结构' }],
+					agentId: 'explore',
+					task: '说明一下这个仓库的目录结构',
 					reason: '先摸清仓库结构，交给探索 Agent',
 				}, '先派个子 Agent 摸清结构。');
 				return;
