@@ -8,7 +8,7 @@ import RightSidebar from './RightSidebar/RightSidebar';
 import Settings from './Settings/Settings';
 import { setFFBoxContainer } from '../ffboxBridge';
 import { state, setState, actions, initApp, getActiveConversation, isConversationAlive } from '../store';
-import { newTask } from '../appCommands';
+import { newConversation } from '../appCommands';
 import { stopRun, initRunController } from '../runController';
 import styles from './App.module.css';
 
@@ -82,7 +82,7 @@ export default function App() {
 		const mod = e.ctrlKey || e.metaKey;
 		if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'n') {
 			e.preventDefault();
-			void newTask();
+			void newConversation();
 			return;
 		}
 		if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {

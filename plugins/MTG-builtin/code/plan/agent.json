@@ -4,7 +4,7 @@
 	"promptFile": "prompt.md",
 	"statePromptFile": "prompt.state.md",
 	"reflectionCount": 1,
-	"delegatable": ["explore"],
+	"delegatable": ["explore", "websearch"],
 	"ability": {
 		"mcp": "none",
 		"tools": {

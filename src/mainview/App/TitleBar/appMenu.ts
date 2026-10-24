@@ -10,7 +10,7 @@ import type { MenuItem } from '@mainview/ffboxBridge';
 import { state, actions, loadConversationCtx, refreshConversationMeta, isConversationAlive } from '@mainview/store';
 import { stopRun } from '@mainview/runController';
 import { windowControls } from '@mainview/localBridge';
-import { addFolderViaDialog, editCopy, editPaste, editSelectAll, newTask, openUserDataDir, setAppTheme, showAbout } from '@mainview/appCommands';
+import { addFolderViaDialog, editCopy, editPaste, editSelectAll, newConversation, openUserDataDir, setAppTheme, showAbout } from '@mainview/appCommands';
 import type { Accent, Density, ThemeMode } from '@mainview/theme/theme';
 
 export interface AppMenuGroup {
@@ -83,7 +83,7 @@ export const APP_MENUS_bak: AppMenuGroup[] = [
 		id: 'file',
 		label: '文件',
 		build: () => [
-			item('new-task', '新建任务', 'Ctrl+N', () => void newTask()),
+			item('new-conversation', '新建会话', 'Ctrl+N', () => void newConversation()),
 			item('add-folder', '添加工作目录…', undefined, () => void addFolderViaDialog()),
 			sep(),
 			item('settings', '设置…', 'Ctrl+,', () => actions.openSettings()),

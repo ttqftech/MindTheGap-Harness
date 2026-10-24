@@ -1,0 +1,13 @@
+{
+	"id": "analyze",
+	"name": "定损",
+	"promptFile": "prompt.md",
+	"reflectionCount": 0,
+	"model": "standard",
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["bash", "file_list", "file_read", "file_search", "file_write", "file_create", "finish"]
+		}
+	}
+}

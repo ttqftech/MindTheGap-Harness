@@ -1,0 +1,15 @@
+{
+	"id": "triage",
+	"name": "主控",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": 1,
+	"delegatable": ["scan", "analyze", "clean"],
+	"model": "standard",
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["delegate", "finish", "ask_user", "task_list_read", "task_list_write"]
+		}
+	}
+}

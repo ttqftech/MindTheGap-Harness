@@ -139,7 +139,7 @@ export async function getConversation(id: string): Promise<ServiceConversation |
 	}
 }
 
-export async function createConversation(params: { folderId?: string; title?: string }): Promise<ServiceConversation | null> {
+export async function createConversation(params: { folderId?: string; title?: string; modeId?: string }): Promise<ServiceConversation | null> {
 	try {
 		return await httpFetch<ServiceConversation>('/api/conversations', {
 			method: 'POST',

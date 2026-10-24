@@ -54,9 +54,9 @@
 {{#each delegatableAgents}}- `{{id}}`（{{name}}）
 {{/each}}
 
-- 用 `delegate` 工具，参数是 `tasks: [{ agentId, task }]`，一次可以提交多条（并行执行）。
+- 使用 `delegate` 工具。若需进行多个任务，可同时发出多次工具调用。
 - 委托的 `task` 必须**自包含**：子 Agent 看不到用户的原话，也看不到你的思考过程。
-- 委托不会阻塞你：子 Agent 跑完之前你会进入等待，跑完后你被自动唤醒。
+- 子 Agent 跑完之前你会进入等待，跑完后你被自动唤醒。
 - 当前深度 {{depth}} / 最大深度 {{maxDepth}}。
 
 {{#if depthExhausted}}

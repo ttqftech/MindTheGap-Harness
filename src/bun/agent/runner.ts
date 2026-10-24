@@ -159,7 +159,7 @@ export class AgentRunner {
 		this.conversationId = params.request.conversationId;
 		this.mode = params.mode;
 		this.model = params.request.model;
-		this.runningDir = params.request.runningDir || process.cwd();
+		this.runningDir = params.request.runningDir ?? '';
 		this.ctx = params.ctx;
 		this.options = params.options ?? {};
 		this.donePromise = new Promise((resolve) => {
@@ -230,6 +230,7 @@ export class AgentRunner {
 	 * 发起一轮 run。
 	 * - 会话已有根实例 → **永远沿用**（一个会话一个根实例，历史因此天然完整，见 docs/设计-ctx唯一真相与动态投影.md §3.1）
 	 * - 会话还没有根实例 → 新建，实例树里只有它自己
+	 * - 根实例的 Agent 不再是当前模式的根 Agent（切换过模式）→ **就地转换**成新模式的根 Agent，消息记录原样保留
 	 */
 	async run(userMessage: string): Promise<void> {
 		const limits = this.getModeLimits();
@@ -251,6 +252,16 @@ export class AgentRunner {
 			});
 			this.ctx.agentInstances[instanceId] = root;
 			this.ctx.rootAgentInstanceId = instanceId;
+		} else if (root.agentId !== this.mode.rootAgent) {
+			// 使用新模式的根 Agent 替换原来的 root
+			const newAgentDef = this.mode.agents[this.mode.rootAgent];
+			if (!newAgentDef) throw new Error(`模式 "${this.mode.id}" 的根 Agent "${this.mode.rootAgent}" 不存在配置`);
+			logMsg(`[Runner] 切换模式：根实例 ${root.agentInstanceId} 的 Agent "${root.agentId}" → "${newAgentDef.id}"（模式 "${root.modeId}" → "${this.mode.id}"），保留 ${root.messages.length} 条消息记录`);
+			root.agentId = newAgentDef.id;
+			root.agentName = newAgentDef.name;
+			root.modeId = this.mode.id;
+			root.lastUpdatedAt = now();
+
 		}
 
 		/**

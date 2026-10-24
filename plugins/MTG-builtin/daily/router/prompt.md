@@ -22,18 +22,10 @@
 {{#each delegatableAgents}}- `{{id}}`（{{name}}）
 {{/each}}
 
-- 用 `delegate`，参数是 `tasks: [{ agentId, task }]`，一次可以提交多条（并行执行）。
+- 用 `delegate`，**一次委托一个子任务**：参数是 `agentId` + 自包含的 `task`。要并行就**同时发起多次 `delegate` 调用**。
+- 委托的 `task` 必须**自包含**：子 Agent 看不到用户原话，也看不到你的思考过程。
 - 委托不会阻塞你：子 Agent 跑完之前你会进入等待，跑完后你被自动唤醒。
 {{/if}}
-
-# 你可以使用的工具
-
-{{#each tools}}- `{{name}}`：{{description}}
-{{/each}}
-
-# 调用理由
-
-每次调用工具都**必须**填 `reason` 字段，说明这次调用要做什么 —— 它会展示在界面上给用户看。
 
 # 完成约定
 

@@ -13,7 +13,7 @@
 
 import { createEffect, createMemo, createSignal, Show, onCleanup } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
-import type { ModelConfig } from '@shared/agent';
+import type { Folder, ModelConfig } from '@shared/agent';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/store';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
 import type { RenderAgentNode } from '@mainview/projection';
@@ -87,14 +87,21 @@ export default function ChatView() {
 		return `${provider.name} / ${model.displayName}`;
 	};
 
-	const currentFolderDisplay = () => {
+	/**
+	 * 当前的工作目录（= 会话所属的文件夹），**空白会话也有**。
+	 *
+	 * ⚠️ 空白会话（还没发出第一句）的目录只存在前端 `state.draftFolder` —— 它还没进 `state.folders`，
+	 *   所以这里不能只在 folders 里找，否则「没会话 ⇒ 显示不出来 / 选不了目录」（就是那个症状）。
+	 */
+	const activeFolder = (): Folder | null => {
 		const conv = getActiveConversation();
-		if (!conv) return '选择文件夹...';
-		const folder = appState.folders.find((f) => f.id === conv.folderId);
-		return folder ? folderLabel(folder) : '本地';
+		if (conv) return appState.folders.find((f) => f.id === conv.folderId) ?? null;
+		return appState.draftFolder ?? appState.folders.find((f) => f.id === 'local') ?? null;
 	};
 
-	const conversationTitle = () => getActiveConversation()?.title || '新任务';
+	const currentFolderDisplay = () => folderLabel(activeFolder() ?? { id: 'local', isLocal: true });
+
+	const conversationTitle = () => getActiveConversation()?.title || '新会话';
 
 	/**
 	 * 会话头部面包屑的第二段：当前工作目录的「额外信息」。
@@ -161,22 +168,37 @@ export default function ChatView() {
 	// #region 下拉菜单（文件夹 / 模式 / 模型）
 
 	const folderMenu = createMemo<MenuItem[]>(() => {
-		const activeFolderId = getActiveConversation()?.folderId;
-		return [
-			...appState.folders.map((f) => ({
-				type: 'radio' as const,
-				value: f.id,
-				label: folderLabel(f),
-				checked: activeFolderId === f.id,
-			})),
-			{ type: 'separator' as const },
-			{ type: 'normal' as const, value: '__new__', label: '+ 添加文件夹…' },
-		];
+		const active = activeFolder();
+		const items: MenuItem[] = appState.folders.map((f) => ({
+			type: 'radio' as const,
+			value: f.id,
+			label: folderLabel(f),
+			checked: active?.id === f.id,
+		}));
+		// 空白会话里刚选的新目录还不在 `state.folders` 里，得在这儿补一项，否则菜单里看不出选中了谁
+		if (active && !appState.folders.some((f) => f.id === active.id)) {
+			items.push({ type: 'radio' as const, value: active.id, label: folderLabel(active), checked: true });
+		}
+		items.push({ type: 'separator' as const });
+		items.push({ type: 'normal' as const, value: '__new__', label: '+ 添加文件夹…' });
+		return items;
 	});
 	/**
 	 * 选中一个运行文件夹。
-	 * 哨兵值 `__new__` = 去开目录对话框，并把当前会话切到新目录下。
+	 *
+	 * ⚠️ 分两条路：会话已经存在 ⇒ 回写后端（`setConversationFolder`）；
+	 *   还在空白态 ⇒ 只记在前端 `draftFolder`，等首句发出时才和会话一起落地。
+	 *   哨兵值 `__new__` = 去开目录对话框，选完直接切过去。
 	 */
+	const applyFolder = (folder: Folder) => {
+		const conv = getActiveConversation();
+		if (conv) {
+			void actions.setConversationFolder(conv.id, folder.id);
+			return;
+		}
+		// 在列表里就直接记它；不在（刚选的新目录）就整份记住 —— 都还不进 `state.folders`、不通知后端
+		actions.setDraftFolder(appState.folders.find((f) => f.id === folder.id) ?? { id: folder.id, path: folder.path });
+	};
 	const onFolderChange = (value: string) => {
 		if (isGenerating()) return;	// 运行期间不让改工作目录（下一轮才生效的那类改动统一锁住）
 		if (value === '__new__') {
@@ -191,10 +213,15 @@ export default function ChatView() {
 					if (!path) return;	// 用户取消
 					// 从这个菜单里选目录，意图就是「把当前会话放进这个目录」，顺手就切过去。
 					// ⚠️ 同一个目录选第二次时 `addFolder()` 返回 null（它只负责「加进列表」）——这时必须复用已有的那个，否则这次选择静默失效。
-					const folder = appState.folders.find((f) => sameFolderPath(f.id, path)) ?? actions.addFolder(path);
-					if (!folder) return;
+					const existing = appState.folders.find((f) => sameFolderPath(f.id, path));
+					if (existing) {
+						applyFolder(existing);
+						return;
+					}
+					const draft: Folder = { id: path, path };
 					const conv = getActiveConversation();
-					if (conv) actions.setConversationFolder(conv.id, folder.id);
+					// 有会话 ⇒ 这个目录得真的进列表（侧边栏分组 + 后端 settings）；空白态 ⇒ 先只记在前端
+					applyFolder(conv ? (actions.addFolder(path) ?? draft) : draft);
 				} catch (err) {
 					console.error('[ChatView] 选择文件夹出错', err);
 					void alertMsgbox('选择文件夹出错', String((err as Error)?.message ?? err));
@@ -202,8 +229,8 @@ export default function ChatView() {
 			})();
 			return;
 		}
-		const conv = getActiveConversation();
-		if (conv) actions.setConversationFolder(conv.id, value);
+		const folder = appState.folders.find((f) => f.id === value);
+		if (folder) applyFolder(folder);
 	};
 
 	const modeMenu = createMemo<MenuItem[]>(() =>
@@ -359,7 +386,15 @@ export default function ChatView() {
 
 		let conv = getActiveConversation();
 		if (!conv) {
-			conv = await actions.createConversation('local', text.slice(0, 20) || '新任务');
+			// ⚠️ 会话**到这一刻才真的存在**：空白态期间选的目录（`state.draftFolder`）也是在这里
+			//   才加进列表 / 写回后端 —— 点了「新建会话」但一个字没发，后端和侧边栏都不会有痕迹。
+			const draft = appState.draftFolder;
+			let folderId = 'local';
+			if (draft) {
+				const folder = appState.folders.find((f) => sameFolderPath(f.id, draft.id)) ?? actions.addFolder(draft.id);
+				folderId = folder?.id ?? draft.id;
+			}
+			conv = await actions.createConversation(folderId, text.slice(0, 20) || '新会话');
 			if (!conv) return;
 		} else if (!conv.agentCtx) {
 			// 会话还没有跑过 → 用首句当标题（旧逻辑用 messages 为空判断，现在等价于「没有 ctx」）
@@ -371,18 +406,18 @@ export default function ChatView() {
 		// 由后端回退到 process.cwd()。文件夹改过之后，下一轮 run 自动用新目录。
 		const runningDir = appState.folders.find((f) => f.id === conv.folderId)?.path;
 
-	setInputText('');
-	// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
-	openOverrides.clear();
-	prevTree = null;
-	// 「发起 / 停止 / 回答」全在 runController 里，这里只负责把 UI 上的东西（输入文本、模型配置、工作目录）交给它
-	void startRun({
-		conversationId: convId,
-		userMessage: text,
-		modeId: appState.currentModeId,
-		runningDir,
-		model: modelConfig,
-	});
+		setInputText('');
+		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
+		openOverrides.clear();
+		prevTree = null;
+		// 「发起 / 停止 / 回答」全在 runController 里，这里只负责把 UI 上的东西（输入文本、模型配置、工作目录）交给它
+		void startRun({
+			conversationId: convId,
+			userMessage: text,
+			modeId: appState.currentModeId,
+			runningDir,
+			model: modelConfig,
+		});
 	};
 
 	const handleKeyDown = (e: KeyboardEvent) => {

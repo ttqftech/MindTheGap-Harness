@@ -1,5 +1,5 @@
 ﻿/**
- * 侧边栏组件（设计稿：新建任务按钮 + 任务列表 + 底部运行时状态）
+ * 侧边栏组件（设计稿：新建会话按钮 + 会话列表 + 底部运行时状态）
  *
  * 分组沿用既有语义：一个「文件夹」= 一个工作目录，`id` 就是路径，
  * 显示名由 `folderLabel()` 现算（Folder 没有 name 字段）。
@@ -8,7 +8,7 @@
 import { createSignal, createMemo, createEffect, on, For, Show } from 'solid-js';
 import { state, actions, isConversationAlive, isConversationUnread } from '@mainview/store';
 import { showMenu, type MenuItem } from '@mainview/ffboxBridge';
-import { addFolderViaDialog, newTask } from '@mainview/appCommands';
+import { addFolderViaDialog, newConversation } from '@mainview/appCommands';
 import { useTooltip } from 'ffbox-ui';
 import { folderLabel, getTimeString } from '@shared/utils';
 import type { ConversationSort } from '@mainview/store';
@@ -236,11 +236,11 @@ export default function Sidebar() {
 			style={{ width: `${state.ui.leftSidebarCollapsed ? 0 : state.ui.leftSidebarWidth}px`, transition: isToggling() ? 'width 0.3s cubic-bezier(0.2, 0.2, 0.2, 1.1)' : 'none' }}
 		>
 			<Show when={!state.ui.leftSidebarCollapsed}>
-				{/* 顶部：新建任务 + 列表表头 */}
+				{/* 顶部：新建会话 + 列表表头 */}
 				<div class={styles['sidebar-top']}>
-					<button class={styles['new-task-btn']} onclick={() => void newTask()}>
+					<button class={styles['new-task-btn']} onclick={() => void newConversation()}>
 						<NewIcon />
-						<span class={styles['new-task-text']}>新建任务</span>
+						<span class={styles['new-task-text']}>新建会话</span>
 						<span style="flex: 1" />
 						<span class={styles['new-task-shortcut']}>Ctrl N</span>
 					</button>

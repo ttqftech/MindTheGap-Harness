@@ -22,9 +22,9 @@ export function setAppTheme(mode: ThemeMode) {
 	setTheme(mode);
 }
 
-/** 新建任务（沿用既有语义：落在「本地」目录下） */
-export async function newTask() {
-	await actions.createConversation('local');
+/** 新建会话：只把界面切成空白态，**不建后端会话**。文件夹同理：空白态里选的目录只存在前端（`state.draftFolder`），发首句时才 `addFolder()` */
+export function newConversation() {
+	actions.newConversation();
 }
 
 /**

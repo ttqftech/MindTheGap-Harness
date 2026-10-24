@@ -1,0 +1,11 @@
+{
+	"id": "storage",
+	"name": "存储清理",
+	"description": "磁盘盘点与垃圾清理：先只读扫描、再出方案、拿到用户明确批准后才动手，删除优先走回收站",
+	"rootAgent": "triage",
+	"maxDepth": 3,
+	"taskList": { "enabled": true, "writable": true },
+	"mcp": "none",
+	"limits": { "totalRounds": 150, "agentInstanceRounds": 50, "warnAtRemaining": 3 },
+	"ui": { "icon": "🧹", "accent": "teal" }
+}

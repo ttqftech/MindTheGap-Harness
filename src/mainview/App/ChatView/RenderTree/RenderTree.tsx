@@ -206,13 +206,15 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	};
 
 	/**
-	 * 用户发言之后的第一个块下标 —— AGENT 头就插在它前面。
+	 * 「用户 → assistant」回合边界 —— AGENT 头就插在这些块前面。
+	 * 消息列表可能是 [user][agent][tool][agent][user][agent]…：agent 自主连续执行的块不重复加头，
+	 * 只在每个用户消息**之后的第一个块**加一次。开头没有用户块时也算边界（避免头缺席）。
 	 * （头部必须跟在用户消息**下面**，不能跑到整段对话的最上面。）
 	 */
-	function getFirstNonUserIndex(node: RenderAgentNode): number {
-		let i = 0;
-		while (i < node.blocks.length && node.blocks[i].type === 'user') i++;
-		return i;
+	function isTurnStart(node: RenderAgentNode, i: number): boolean {
+		const block = node.blocks[i];
+		if (!block || block.type === 'user') return false;
+		return i === 0 || node.blocks[i - 1].type === 'user';
 	}
 
 	/** 消息头 / AGENT：指示灯 + AGENT + Agent 名 + 状态标记 */
@@ -308,49 +310,48 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 * - 传 accessor：`<For each={currentNode().blocks}>` 的 `each` 是编译出的 getter，读取落在 For 自己的 memo 里，才能实现每次投影重算都会重新取数组、**逐项按引用比较**
 	 *   同理，节点自身的字段（status / tokens / …）都在 JSX 表达式里读 `currentNode().x`，天生响应式。
 	 */
-	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {
-		const blockList = () => (
-			<For each={currentNode().blocks}>
-				{(block, index) => (
-					<>
-						<Show when={index() === getFirstNonUserIndex(currentNode())}>{renderAgentHeaderFor(currentNode)}</Show>
-						{renderBlock(block, true)}
-					</>
-				)}
-			</For>
-		);
-
+	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {		
 		if (isRoot) {
+			const blockList = () => (
+				<For each={currentNode().blocks}>
+					{(block, index) => (
+						<>
+							<Show when={isTurnStart(currentNode(), index())}>{renderAgentHeaderFor(currentNode)}</Show>
+							{renderBlock(block, true)}
+						</>
+					)}
+				</For>
+			);
 			return (
 				<div class={styles['agent-reply']}>
 					{blockList()}
 					{renderRunSummaryFor(currentNode)}
 				</div>
 			);
+		} else {
+			return (
+				<details
+					class={styles['agent-node']}
+					/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。
+					   曾经按 status 自动折（跑完就收起），结果是「子 Agent 一完成就从界面上消失」。 */
+					open={openOverrides.get(`node:${currentNode().agentInstanceId}`) ?? true}
+					ontoggle={(e) => openOverrides.set(`node:${currentNode().agentInstanceId}`, e.currentTarget.open)}
+				>
+					<summary class={styles['agent-node-header']}>
+						<span class={styles['agent-node-caret']}>▶</span>
+						<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
+						<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
+						<Show when={currentNode().task}>
+							<span class={styles['agent-node-task']}>{currentNode().task}</span>
+						</Show>
+					</summary>
+					<div class={styles['agent-node-body']}>
+						<For each={currentNode().blocks}>{(block) => renderBlock(block, false)}</For>
+						{renderRunSummaryFor(currentNode)}
+					</div>
+				</details>
+			);
 		}
-
-		return (
-			<details
-				class={styles['agent-node']}
-				/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。
-				   曾经按 status 自动折（跑完就收起），结果是「子 Agent 一完成就从界面上消失」。 */
-				open={openOverrides.get(`node:${currentNode().agentInstanceId}`) ?? true}
-				ontoggle={(e) => openOverrides.set(`node:${currentNode().agentInstanceId}`, e.currentTarget.open)}
-			>
-				<summary class={styles['agent-node-header']}>
-					<span class={styles['agent-node-caret']}>▶</span>
-					<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
-					<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
-					<Show when={currentNode().task}>
-						<span class={styles['agent-node-task']}>{currentNode().task}</span>
-					</Show>
-				</summary>
-				<div class={styles['agent-node-body']}>
-					<For each={currentNode().blocks}>{(block) => renderBlock(block, false)}</For>
-					{renderRunSummaryFor(currentNode)}
-				</div>
-			</details>
-		);
 	};
 
 	/**

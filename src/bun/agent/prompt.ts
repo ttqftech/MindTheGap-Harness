@@ -326,18 +326,6 @@ function childEntry(agentInstance: AgentInstance): Record<string, unknown> {
 	};
 }
 
-/** 会话目录下的几个固定子目录（模板里可以直接给 md 用绝对路径） */
-function conversationDirs(conversationDir: string): Record<string, string> {
-	if (!conversationDir) return { conversationDir: '', workspaceDir: '', docsDir: '', backupsDir: '', tmpDir: '' };
-	return {
-		conversationDir,
-		workspaceDir: join(conversationDir, 'workspace'),
-		docsDir: join(conversationDir, 'workspace', 'docs'),
-		backupsDir: join(conversationDir, 'workspace', 'backups'),
-		tmpDir: join(conversationDir, 'workspace', 'tmp'),
-	};
-}
-
 /**
  * 模板里可见的**全部**变量 —— 这是提示词与运行时之间唯一的接口。
  * 加变量只改这里，md 里用不用由模板作者决定。
@@ -348,7 +336,7 @@ function conversationDirs(conversationDir: string): Record<string, string> {
  * | `modeId` `modeName` `depth` `maxDepth` | 所处模式与层级 |
  * | `isRoot` `isSubAgent` `parentAgentInstanceId` | 树上位置（根实例没有父任务） |
  * | `platform` `shell` `time` `runningDir` | 运行环境 |
- * | `conversationDir` `workspaceDir` `docsDir` `backupsDir` `tmpDir` | 会话目录（由调用方传入，缺省为空串） |
+ * | `conversationDir` `workspaceDir` `docsDir` `backupsDir` `tmpDir` `mtgBinaryDir` | 会话目录（由调用方传入，缺省为空串）、二进制目录 |
  * | `basePrompt` | 基座提示词正文（**模板里不写这个占位符就不会出现在 system prompt 里**） |
  * | `parentPrompt` `hasParentPrompt` | 父 Agent 下发的任务 |
  * | `tools` `hasTools` `hasTool` | 工具清单（`hasTool.finish` / `hasTool.delegate` …） |
@@ -396,7 +384,14 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		shell: shellLabel(),
 		time: nowLabel(),
 		runningDir: ctx.runningDir || '(未指定)',
-		...conversationDirs(ctx.conversationDir ?? ''),
+		...(ctx.conversationDir ? {
+			conversationDir: ctx.conversationDir,
+			workspaceDir: join(ctx.conversationDir, 'workspace'),
+			docsDir: join(ctx.conversationDir, 'workspace', 'docs'),
+			backupsDir: join(ctx.conversationDir, 'workspace', 'backups'),
+			tmpDir: join(ctx.conversationDir, 'workspace', 'tmp'),
+		} : {}),
+		mtgBinaryDir: process.cwd(),
 
 		// 基座（先占位，最后再渲染，避免自引用）
 		basePrompt: '',

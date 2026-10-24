@@ -1,0 +1,14 @@
+{
+	"id": "clean",
+	"name": "清理执行",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": 0,
+	"model": "standard",
+	"ability": {
+		"mcp": "none",
+		"tools": {
+			"allow": ["bash", "file_list", "file_read", "file_delete", "file_rename", "file_write", "file_create", "finish"]
+		}
+	}
+}

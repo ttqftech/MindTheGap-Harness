@@ -78,6 +78,7 @@ export type AppState = {
 	folders: Folder[];
 	conversations: UIConversation[];
 	activeConversationId: string | null;
+	draftFolder: Folder | null;	// 「空白会话」（还没发出第一句话 ⇒ 后端还没有这个会话）选中的工作目录。不落盘、不通知后端。等首句发出时才由 `addFolder()` 落地。null = 本地
 	ui: UIState;
 	providers: ModelProvider[];
 	currentStandardModel: { providerId: string; modelId: string } | null;
@@ -123,6 +124,7 @@ export const defaultState: AppState = {
 	folders: [{ id: 'local', isLocal: true }],
 	conversations: [],
 	activeConversationId: null,
+	draftFolder: null,
 	ui: initialUI,
 	providers: [],
 	currentStandardModel: null,
@@ -510,9 +512,16 @@ export const actions = {
 			void agentBridge.updateConversation(conversationId, { folderId: 'local' });
 		}
 	},
-
-	async createConversation(folderId: string, title = '新任务') {
-		const conv = await agentBridge.createConversation({ folderId, title });
+	/** 新建会话 = **只进入空白态**（`activeConversationId = null`），不碰后端、不进侧边栏。真正的会话（连带它的工作目录）在**首句发出时**才建。 */
+	newConversation() {
+		setState('activeConversationId', null);
+	},
+	/** 空白会话的工作目录（见 `AppState.draftFolder`）。已经存在的会话走 `setConversationFolder()`（要回写后端），这里只动界面。 */
+	setDraftFolder(folder: Folder | null) {
+		setState('draftFolder', folder);
+	},
+	async createConversation(folderId: string, title = '新会话') {
+		const conv = await agentBridge.createConversation({ folderId, title, modeId: state.currentModeId });
 		if (conv) {
 			// 只取元信息：ctx 由界面按需拉（loadConversationCtx）
 			const uiConv: UIConversation = {
@@ -553,7 +562,7 @@ export const actions = {
 		);
 		await agentBridge.updateConversation(id, { title });
 	},
-	setConversationFolder(id: string, folderId: string) {
+	async setConversationFolder(id: string, folderId: string) {
 		setState(
 			'conversations',
 			produce((list) => {
@@ -564,9 +573,10 @@ export const actions = {
 				}
 			}),
 		);
-		void agentBridge.updateConversation(id, { folderId });
+		// ⚠️ 先写后端、再拉 meta：以前两个请求并行发出，`refreshConversationMeta()` 的列表请求很可能先落地，用旧的 folderId 覆盖刚写进 store 的值 —— 表现就是「选完弹回本地，再选一次才生效」。
+		await agentBridge.updateConversation(id, { folderId });
 		// ⚠️ 换了工作目录后 extraInfo（branch @ commit）要跟着刷新，否则面包屑还停在旧目录的 git 状态
-		void refreshConversationMeta(id);
+		await refreshConversationMeta(id);
 	},
 	/**
 	 * 写入某会话的 ctx 快照（唯一的 ctx 写入口）。

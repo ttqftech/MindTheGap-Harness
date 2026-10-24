@@ -197,7 +197,7 @@ export function withReasonParam(tool: AgentTool): LlmTool {
 		required?: string[];
 	};
 	params.properties = {
-		reason: { type: 'string', description: '你调用这个工具要做什么（必填，会展示在界面上）' },
+		reason: { type: 'string', description: '简述你调用这个工具要做什么（会展示在界面上）' },
 		...(params.properties ?? {}),
 	};
 	params.required = ['reason', ...(params.required ?? []).filter((r) => r !== 'reason')];
@@ -897,7 +897,7 @@ registerTool({
 	parameters: {
 		type: 'object',
 		properties: {
-			agentId: { type: 'string', description: '目标 Agent 的 id（见「你可以委托的 Agent」清单）' },
+			agentId: { type: 'string', description: '目标 Agent id（见「你可以委托的 Agent」清单）' },
 			task: { type: 'string', description: '自包含的任务说明：背景 / 范围 / 交付 / 约束' },
 		},
 		required: ['agentId', 'task'],

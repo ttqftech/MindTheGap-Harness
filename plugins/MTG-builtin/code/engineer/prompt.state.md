@@ -12,5 +12,10 @@
 {{/if}}
 </budget_warning>
 {{/if}}
+{{#if stateChanged.taskList}}
+<task_list>
+{{#each taskList}}- {{this}}{{/each}}
+</task_list>
+{{/if}}
 </state_update>
 {{/if}}

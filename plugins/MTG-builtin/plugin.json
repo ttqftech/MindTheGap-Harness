@@ -1,7 +1,7 @@
 {
 	"id": "MTG-builtin",
 	"name": "MTG 内置插件",
-	"version": "0.2.0",
-	"description": "MindTheGap-Harness 内置能力包：提供「编码」「日常信息查询」「空」三个模式",
-	"modes": ["code", "daily", "empty"]
+	"version": "0.3.0",
+	"description": "MindTheGap-Harness 内置能力包：提供「编码」「日常信息查询」「空」「存储清理」四个模式",
+	"modes": ["code", "daily", "empty", "storage"]
 }
