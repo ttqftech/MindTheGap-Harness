@@ -8,7 +8,7 @@
  * modes / agent/answer / plugins/reload / requests / tasklist
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, McpServerConfig, ModeDefinition, ModeSummary } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './agent/runner';
@@ -34,6 +34,9 @@ let overriddenModeIds: string[] = [];
 
 /** electrobun 发布通道，由 startHttpServer 的调用方注入（本文件不引 electrobun，便于独立运行） */
 let serviceChannel = 'unknown';
+
+/** listen 起来的 server 实例，退场时用它收端口 */
+let serverRef: Server | null = null;
 
 /** 组装 /api/health 的返回体：构建信息 + 运行时信息 */
 function healthInfo(): ServiceHealth {
@@ -612,6 +615,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 		}
 	});
 
+	serverRef = server;
 	server.listen(HTTP_PORT, () => {
 		logMsg(`[HttpServer] Agent HTTP API 开始监听 http://localhost:${HTTP_PORT}`);
 		const loaded = reloadPlugins();
@@ -630,6 +634,37 @@ export function startHttpServer(options: { channel?: string } = {}) {
 	});
 	return server;
 }
+
+// #region 停止和退出
+
+/**
+ * 掐掉所有还在飞的 run（含挂在 ask_user 上的），返回被掐掉的个数。
+ * ⚠️ 只 cancel 不 await：退场不等 LLM 收尾，runner 内部有自己的 abort 与收尾流程。
+ */
+export function cancelAllRunners(): number {
+	let n = 0;
+	for (const [id, runner] of activeRunners) {
+		try {
+			runner.cancel();
+			n++;
+		} catch (e) {
+			logMsg(`[HttpServer] 取消会话 ${id} 失败: ${(e as Error).message}`);
+		}
+	}
+	activeRunners.clear();
+	if (n > 0) logMsg(`[HttpServer] 已停止 ${n} 个进行中的会话`);
+	return n;
+}
+
+/** 关掉 HTTP 端口监听（SSE 长连接随之断开） */
+export function stopHttpServer(): void {
+	if (!serverRef) return;
+	serverRef.closeAllConnections?.();
+	serverRef.close(() => logMsg('[HttpServer] Agent HTTP API 已停止监听'));
+	serverRef = null;
+}
+
+// #endregion
 
 /** 从 settings 里读 requestLog 配置（带默认值兜底） */
 function getRequestLogOptionsFromSettings() {

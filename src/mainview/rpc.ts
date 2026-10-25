@@ -7,6 +7,7 @@
 
 import type { AppRPC, RpcResult } from '../shared/rpc';
 import { Electroview } from 'electrobun/view';
+import { beginExitSequence } from './App/ExitOverlay';
 
 // #region 环境检测
 
@@ -44,6 +45,12 @@ const mockHandlers = {
 	windowToggleMaximize: (): RpcResult<boolean> => ({ ok: true, data: false }),
 	windowClose: (): RpcResult<void> => ({ ok: true, data: undefined }),
 	windowIsMaximized: (): RpcResult<boolean> => ({ ok: true, data: false }),
+	windowGetFrame: (): RpcResult<{ x: number; y: number; width: number; height: number }> => ({
+		ok: true,
+		data: { x: 0, y: 0, width: 1280, height: 800 },
+	}),
+	windowSetFrame: (): RpcResult<void> => ({ ok: true, data: undefined }),
+	exitFinished: (): RpcResult<void> => ({ ok: true, data: undefined }),
 };
 
 // #endregion
@@ -66,6 +73,9 @@ interface RpcApi {
 		windowToggleMaximize: RequestFn<undefined, RpcResult<boolean>>;
 		windowClose: RequestFn<undefined, RpcResult<void>>;
 		windowIsMaximized: RequestFn<undefined, RpcResult<boolean>>;
+		windowGetFrame: RequestFn<undefined, RpcResult<{ x: number; y: number; width: number; height: number }>>;
+		windowSetFrame: RequestFn<{ x: number; y: number; width: number; height: number }, RpcResult<void>>;
+		exitFinished: RequestFn<undefined, RpcResult<void>>;
 	};
 	send: {
 		log: (payload: { level: 'info' | 'warn' | 'error'; msg: string }) => void;
@@ -83,15 +93,12 @@ function initRealRpc(): RpcApi {
 	// 不能把 schema 当泛型实参——AppRPC 没有 setTransport，会报 TS2344
 	const ev = new Electroview({
 		rpc: Electroview.defineRPC<AppRPC>({
-			// electrobun 默认请求超时只有 1000ms（shared/rpc.ts 的 DEFAULT_MAX_REQUEST_TIME），
-			// 而 dialogOpen 会阻塞到用户选完路径——人手挑目录必然超过 1 秒，
-			// 于是对话框还开着请求就先超时报「RPC request timed out.」。
-			// 这里全部 RPC 都是本地能力（对话框 / shell / envInfo / 窗口），
-			// 由用户操作驱动，没有「该超时」的语义，直接关闭超时。
-			maxRequestTime: Infinity,
+			maxRequestTime: Infinity,	// electrobun 默认请求超时只有 1000ms。dialogOpen 这类请求会阻塞到用户选完路径，于是超时报「RPC request timed out.」。故设置此项为 Infinity。
 			handlers: {
 				requests: {},
-				messages: {},
+				messages: {
+					exitSequence: () => beginExitSequence(),	// 由主进程截获到关闭事件后推过来：铺退场动画 + 放音乐（bun → webview）
+				},
 			},
 		}),
 	});

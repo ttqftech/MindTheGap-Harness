@@ -16,6 +16,8 @@ import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, 
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
 import { createEmptyOverlay, type OverlayCtx } from '@mainview/projection';
+import { setExitThemeId } from '@mainview/App/ExitOverlay';
+import type { ExitThemeId } from '@mainview/App/ExitOverlay/types';
 
 // 转发共享类型（UI 侧统一从 store 引入，避免到处写相对路径）
 export type { ModelProvider, ModelProviderModel, ModeSummary, AgentStreamEvent } from '@shared/agent';
@@ -53,15 +55,9 @@ export type UIState = {
 	rightSidebarCollapsed: boolean;
 	density: Density;
 	accent: Accent;
+	exitTheme: ExitThemeId;
 	conversationSort: ConversationSort;
-	/**
-	 * 设置面板的打开进度：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置。
-	 *
-	 * ⚠️ **这是设置面板唯一的真相**：可见性（> 0）、位移（translateY）、遮罩浓度全部由它派生，
-	 * 不再有 `settingsOpen` / `settingsDragging` 这类布尔量 —— 多一个状态就多一种「布尔量与实际位置不一致」的坏状态。
-	 * 拖拽时逐帧写入（`setSettingsProgress`），松手 / 点击后由 store 用 rAF 缓动到 0 或 1。
-	 */
-	settingsProgress: number;
+	settingsProgress: number;	// 设置面板的打开进度：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置。拖拽时逐帧写入（`setSettingsProgress`），松手 / 点击后由 store 用 rAF 缓动到 0 或 1。
 	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
 	viewMode: ViewMode;
 	/**
@@ -112,6 +108,7 @@ const initialUI: UIState = {
 	rightSidebarCollapsed: false,
 	density: 'standard',
 	accent: 'amber',
+	exitTheme: 'tunnel',
 	conversationSort: 'updated',
 	settingsProgress: 0,
 	activeSettingsTab: '通用',
@@ -254,6 +251,7 @@ function saveLocalSettings() {
 		rightSidebarCollapsed: state.ui.rightSidebarCollapsed,
 		density: state.ui.density,
 		accent: state.ui.accent,
+		exitTheme: state.ui.exitTheme,
 		conversationSort: state.ui.conversationSort,
 		viewMode: state.ui.viewMode,
 		unreadConversationIds: state.ui.unreadConversationIds,
@@ -277,6 +275,8 @@ function loadLocalSettings() {
 		...ui,
 		settingsProgress: 0,
 	});
+	// 退场主题的真相在 ExitOverlay 自己那份 signal 里（那边不能反向依赖 store），这里回灌
+	setExitThemeId(state.ui.exitTheme);
 
 	// TODO 收归
 	const usage = localSettings.get<Partial<UsageStats>>('usage', {});
@@ -469,6 +469,13 @@ export const actions = {
 	/** 强调色 —— 同上 */
 	setAccent(accent: Accent) {
 		setState('ui', 'accent', accent);
+		saveLocalSettings();
+	},
+
+	/** 退场动画主题 */
+	setExitTheme(exitTheme: ExitThemeId) {
+		setState('ui', 'exitTheme', exitTheme);
+		setExitThemeId(exitTheme);
 		saveLocalSettings();
 	},
 

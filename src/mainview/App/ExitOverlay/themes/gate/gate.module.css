@@ -1,0 +1,226 @@
+/**
+ * 主题三 · 屏蔽门
+ *
+ * 玻璃质感靠三条：低透明度白色渐变、1px 亮边、门上一条竖向高光。
+ * ⚠️ 门的位移用 %（相对自身宽度），高度用 vh —— 外壳这一段只压高度，
+ *    宽度不动，所以横向尺寸可以放心用百分比。
+ */
+
+.root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background: linear-gradient(180deg, #0a1017 0%, #060a0f 55%, #03060a 100%);
+}
+
+/* ---------- 门后 ---------- */
+
+.behind {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+
+	.lightBar {
+		position: absolute;
+		left: -30%;
+		width: 160%;
+		height: 8vh;
+		background: linear-gradient(90deg, transparent, rgba(190, 225, 255, 0.16) 35%, rgba(210, 240, 255, 0.34) 50%, rgba(190, 225, 255, 0.16) 65%, transparent);
+		filter: blur(2px);
+		animation: lightPass 1.15s linear infinite;
+	}
+
+	.lightBar:nth-of-type(1) {
+		top: 44%;
+	}
+	.lightBar:nth-of-type(2) {
+		top: 54%;
+		animation-duration: 0.95s;
+		opacity: 0.7;
+	}
+	.lightBar:nth-of-type(3) {
+		top: 63%;
+		animation-duration: 1.35s;
+		opacity: 0.45;
+	}
+
+	.headlight {
+		position: absolute;
+		right: 8%;
+		top: 50%;
+		width: 26vh;
+		height: 26vh;
+		margin-top: -13vh;
+		border-radius: 50%;
+		background: radial-gradient(circle, rgba(255, 246, 214, 0.5) 0%, rgba(255, 232, 160, 0.12) 45%, transparent 70%);
+		filter: blur(6px);
+		animation: headlightIn 2.2s ease-out both;
+	}
+}
+
+@keyframes lightPass {
+	from {
+		transform: translateX(-40%);
+	}
+	to {
+		transform: translateX(40%);
+	}
+}
+
+@keyframes headlightIn {
+	from {
+		opacity: 0;
+		transform: scale(0.4);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+/* ---------- 站台设施 ---------- */
+
+.beacon {
+	position: absolute;
+	left: 50%;
+	top: 6vh;
+	width: 16px;
+	height: 16px;
+	margin-left: -8px;
+	border-radius: 50%;
+	background: #ffb020;
+	box-shadow: 0 0 18px rgba(255, 176, 32, 0.85), 0 0 46px rgba(255, 176, 32, 0.35);
+	animation: beaconBlink 0.36s steps(1, end) infinite;
+}
+
+.station {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 10vh;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	letter-spacing: 0.4em;
+	color: rgba(200, 226, 250, 0.66);
+	opacity: 0;
+	animation: fadeIn 0.8s 0.3s ease-out forwards;
+}
+
+/* ---------- 玻璃门 ---------- */
+
+.doorLeft,
+.doorRight {
+	position: absolute;
+	top: -2%;
+	bottom: -2%;
+	width: 54%;
+	background:
+		linear-gradient(90deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03) 60%, rgba(255, 255, 255, 0.08)),
+		linear-gradient(180deg, rgba(140, 190, 235, 0.06), rgba(140, 190, 235, 0.02));
+	border: 1px solid rgba(170, 214, 255, 0.22);
+	box-shadow: 0 0 60px rgba(0, 0, 0, 0.55);
+	backdrop-filter: blur(2px);
+	animation: doorClose 2.2s cubic-bezier(0.45, 0, 0.15, 1) forwards;
+}
+
+.doorLeft {
+	left: 0;
+	transform: translateX(-102%);
+
+	&::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		right: 12%;
+		width: 2px;
+		background: linear-gradient(180deg, transparent, rgba(220, 240, 255, 0.5), transparent);
+	}
+}
+
+.doorRight {
+	right: 0;
+	transform: translateX(102%);
+
+	&::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 12%;
+		width: 2px;
+		background: linear-gradient(180deg, transparent, rgba(220, 240, 255, 0.5), transparent);
+	}
+}
+
+@keyframes doorClose {
+	to {
+		transform: translateX(0);
+	}
+}
+
+/* 门缝：合拢后亮起 */
+.seam {
+	position: absolute;
+	left: 50%;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	margin-left: -1px;
+	background: linear-gradient(180deg, transparent, rgba(190, 225, 255, 0.75), transparent);
+	opacity: 0;
+	animation: seamOn 0.6s 2.2s ease-out forwards;
+}
+
+@keyframes seamOn {
+	to {
+		opacity: 0.9;
+	}
+}
+
+.sign {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 9vh;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	letter-spacing: 0.34em;
+	color: rgba(255, 176, 32, 0.82);
+	opacity: 0;
+	animation: fadeIn 0.6s 1.4s ease-out forwards;
+}
+
+/* ---------- shell 阶段：门缝被压成一条线 ---------- */
+
+.root[data-phase='shell'] .doorLeft,
+.root[data-phase='shell'] .doorRight,
+.root[data-phase='shell'] .seam {
+	animation: squeeze 2.2s cubic-bezier(0.7, 0, 0.9, 0.3) forwards;
+}
+
+@keyframes squeeze {
+	to {
+		transform: scaleY(0.015);
+		opacity: 0.35;
+	}
+}
+
+@keyframes beaconBlink {
+	0%,
+	49% {
+		opacity: 1;
+	}
+	50%,
+	100% {
+		opacity: 0.18;
+	}
+}
+
+@keyframes fadeIn {
+	to {
+		opacity: 1;
+	}
+}

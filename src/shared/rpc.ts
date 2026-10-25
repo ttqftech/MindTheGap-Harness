@@ -73,6 +73,20 @@ export interface AppRPC {
                 params: undefined;
                 response: RpcResult<boolean>;
             };
+            windowGetFrame: {
+                params: undefined;
+                response: RpcResult<{ x: number; y: number; width: number; height: number }>;
+            };
+            /** 写原生窗口外框：一次同时改位置与尺寸（避免 setSize + setPosition 两步之间闪一下），逐帧调用 */
+            windowSetFrame: {
+                params: { x: number; y: number; width: number; height: number };
+                response: RpcResult<void>;
+            };
+            /** 前端告知：退场动画 + 外壳动效都走完了，可以停后端退出了 */
+            exitFinished: {
+                params: undefined;
+                response: RpcResult<void>;
+            };
         };
         messages: {
             log: { level: 'info' | 'warn' | 'error'; msg: string };
@@ -80,6 +94,9 @@ export interface AppRPC {
     };
     webview: {
         requests: Record<string, never>;
-        messages: Record<string, never>;
+        messages: {
+            /** 主进程截获到关闭事件 → 通知前端铺开退场动画并开始播音乐 */
+            exitSequence: Record<string, never>;
+        };
     };
 }

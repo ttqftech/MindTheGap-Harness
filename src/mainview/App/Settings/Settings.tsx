@@ -20,6 +20,7 @@ import { confirmMsgbox, alertMsgbox } from '@mainview/ffboxBridge';
 import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/agentBridge';
 import { shell } from '@mainview/localBridge';
 import { startSettingsDrag, setSettingsTravelMeasure } from './useSettingsDrag';
+import { EXIT_THEME_OPTIONS, previewExitTheme, themeById } from '../ExitOverlay';
 
 /** ISO 8601（UTC）→ 本地时间；构建信息里的时间统一存 UTC，只在展示时转换 */
 function formatTime(iso: string): string {
@@ -137,6 +138,26 @@ function GeneralTab() {
 						<span class={styles['setting-row-desc']}>按钮、选中态与运行指示灯的颜色</span>
 					</div>
 					<Segmented options={ACCENT_OPTIONS} value={state.ui.accent} onChange={(v) => actions.setAccent(v)} />
+				</div>
+
+				<div class={styles['setting-row']}>
+					<div class={styles['setting-row-label']}>
+						<span class={styles['setting-row-title']}>退场动画</span>
+						<span class={styles['setting-row-desc']}>{themeById(state.ui.exitTheme).desc}</span>
+					</div>
+					<div class={styles['exit-theme']}>
+						<Segmented
+							options={EXIT_THEME_OPTIONS}
+							value={state.ui.exitTheme}
+							onChange={(v) => actions.setExitTheme(v)}
+						/>
+						<button
+							class={styles['btn-secondary']}
+							onclick={() => previewExitTheme(state.ui.exitTheme)}
+						>
+							预览
+						</button>
+					</div>
 				</div>
 
 				<div class={styles['setting-row']}>

@@ -1,0 +1,10 @@
+/* 退场层：盖住整个窗口，不接收鼠标（退场期间别再把 hover 态翻出来） */
+
+.overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 9999;
+	overflow: hidden;
+	pointer-events: none;
+	user-select: none;
+}

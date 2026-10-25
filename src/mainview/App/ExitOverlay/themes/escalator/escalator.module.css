@@ -1,0 +1,190 @@
+/**
+ * 主题九 · 扶梯
+ *
+ * 扶梯井是上窄下宽的梯形（clip-path），台阶用横向条纹 + translateY 循环向上滚，
+ * 条纹间距恒定所以透视不明显 —— 靠梯井的梯形 + 台阶从下往上「变小」的渐变遮罩补足纵深。
+ */
+
+.root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background: radial-gradient(90% 80% at 50% 12%, #1b2430 0%, #0b1017 52%, #05080c 100%);
+}
+
+/* ---------- 扶梯井 ---------- */
+
+.shaft {
+	position: absolute;
+	left: 50%;
+	bottom: 0;
+	width: 62vh;
+	height: 84vh;
+	margin-left: -31vh;
+	clip-path: polygon(30% 0, 70% 0, 100% 100%, 0 100%);
+	overflow: hidden;
+	background: linear-gradient(180deg, #1d2632 0%, #101720 100%);
+}
+
+/* 台阶：向上滚的横向条纹 */
+.steps {
+	position: absolute;
+	inset: -20% 0;
+	background:
+		repeating-linear-gradient(0deg, #2b3542 0 6px, #1b232d 6px 12px, #0e141b 12px 40px);
+	animation: roll 1.5s linear infinite;
+	-webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, #000 38%, #000 100%);
+	mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.25) 0%, #000 38%, #000 100%);
+}
+
+/* 两侧裙板 */
+.rail {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 16%;
+	background: linear-gradient(90deg, #0d1218 0%, #1a222c 100%);
+
+	&[data-side='left'] {
+		left: 0;
+		transform: skewX(6deg);
+	}
+
+	&[data-side='right'] {
+		right: 0;
+		transform: skewX(-6deg);
+	}
+}
+
+/* 扶手带：跟着一起往上走的高光条 */
+.handLeft,
+.handRight {
+	position: absolute;
+	top: -10%;
+	bottom: -10%;
+	width: 3.4%;
+	background: linear-gradient(180deg, rgba(190, 220, 255, 0.5) 0%, rgba(190, 220, 255, 0.12) 50%, rgba(190, 220, 255, 0.5) 100%);
+	animation: hand 1.5s linear infinite;
+}
+
+.handLeft {
+	left: 17%;
+	transform: skewX(6deg);
+}
+
+.handRight {
+	right: 17%;
+	transform: skewX(-6deg);
+	/* 简写里的 hand 会把 skewX 带成 +6deg，单独换一条反向的 */
+	animation-name: handR;
+}
+
+/* ---------- 上方出口 ---------- */
+
+.exit {
+	position: absolute;
+	left: 50%;
+	top: 4vh;
+	margin-left: -19vh;
+	width: 38vh;
+	height: 15vh;
+	border-radius: 8px;
+	background: radial-gradient(70% 100% at 50% 100%, rgba(190, 230, 255, 0.34) 0%, rgba(120, 170, 220, 0.06) 70%);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 4px;
+	padding-bottom: 1.4vh;
+	animation: exitGlow 7s ease-out forwards;
+}
+
+.exitArrow {
+	font-size: 30px;
+	color: #dff1ff;
+	text-shadow: 0 0 20px rgba(160, 215, 255, 0.75);
+	animation: rise 1.6s ease-in-out infinite;
+}
+
+.exitText {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	letter-spacing: 0.3em;
+	color: #cfe6ff;
+}
+
+/* ---------- 提示 ---------- */
+
+.tip {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 7vh;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	letter-spacing: 0.34em;
+	color: rgba(200, 222, 248, 0.5);
+	animation: fadeOut 0.5s 6.4s ease-in forwards;
+}
+
+/* ---------- shell 阶段：整幅画面被向上吸走（与底边向上的收窗同向） ---------- */
+
+.root[data-phase='shell'] .shaft {
+	animation: sucked 3.9s cubic-bezier(0.5, 0, 0.75, 0.4) forwards;
+}
+
+.root[data-phase='shell'] .exit {
+	animation: fadeOut 0.6s ease-in forwards;
+}
+
+/* ---------- keyframes ---------- */
+
+@keyframes roll {
+	to {
+		transform: translateY(-40px);
+	}
+}
+
+@keyframes handR {
+	to {
+		transform: translateY(-40px) skewX(-6deg);
+	}
+}
+
+@keyframes hand {
+	to {
+		transform: translateY(-40px) skewX(6deg);
+	}
+}
+
+@keyframes rise {
+	0%,
+	100% {
+		transform: translateY(0);
+		opacity: 0.75;
+	}
+	50% {
+		transform: translateY(-8px);
+		opacity: 1;
+	}
+}
+
+@keyframes exitGlow {
+	to {
+		background: radial-gradient(70% 100% at 50% 100%, rgba(220, 242, 255, 0.72) 0%, rgba(150, 200, 245, 0.18) 70%);
+	}
+}
+
+@keyframes sucked {
+	to {
+		transform: translateY(-38%) scaleY(0.35);
+		opacity: 0.2;
+	}
+}
+
+@keyframes fadeOut {
+	to {
+		opacity: 0;
+	}
+}

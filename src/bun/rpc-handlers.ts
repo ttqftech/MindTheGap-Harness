@@ -13,6 +13,7 @@ import { Utils } from "electrobun/main";
 import type { BrowserWindow } from "electrobun/main";
 import type { RpcResult } from "@shared/rpc";
 import { version } from "@shared/buildInfo";
+import { notifyExitFinished } from "./exitSequence";
 
 // #region 主窗口引用（见文件头说明）
 
@@ -123,6 +124,22 @@ export const windowHandlers = {
             mainWindow?.requestClose();
         }),
 
+    /** 读外框：退场动效的起点。最大化状态下拿到的是最大化后的实际外框 */
+    windowGetFrame: (): RpcResult<{ x: number; y: number; width: number; height: number }> =>
+        safe(() => mainWindow?.getFrame() ?? { x: 0, y: 0, width: 0, height: 0 }),
+
+    /** 写外框：退场动效逐帧调用（一次同时改位置与尺寸） */
+    windowSetFrame: (params: { x: number; y: number; width: number; height: number }): RpcResult<void> =>
+        safe(() => {
+            mainWindow?.setFrame(params.x, params.y, Math.max(1, params.width), Math.max(1, params.height));
+        }),
+
+    /** 前端退场动画 + 外壳动效都已走完 → 收尾退出 */
+    exitFinished: (): RpcResult<void> =>
+        safe(() => {
+            notifyExitFinished();
+        }),
+
     windowIsMaximized: (): RpcResult<boolean> =>
         safe(() => mainWindow?.isMaximized() ?? false),
 };
@@ -141,6 +158,9 @@ export function buildRpcHandlers() {
             windowToggleMaximize: windowHandlers.windowToggleMaximize,
             windowClose: windowHandlers.windowClose,
             windowIsMaximized: windowHandlers.windowIsMaximized,
+            windowGetFrame: windowHandlers.windowGetFrame,
+            windowSetFrame: windowHandlers.windowSetFrame,
+            exitFinished: windowHandlers.exitFinished,
         },
         messages: {
             log: ({ level, msg }: { level: string; msg: string }) => {

@@ -10,6 +10,7 @@
 import { createSignal, onCleanup, onMount, For, createMemo } from 'solid-js';
 import { isElectrobunEnv } from '@mainview/rpc';
 import { windowControls, getEnvInfo } from '@mainview/localBridge';
+import { beginExitSequence } from '../ExitOverlay';
 import { showMenu } from '@mainview/ffboxBridge';
 import { state, actions } from '@mainview/store';
 import { APP_MENUS, type AppMenuGroup } from './appMenu';
@@ -199,7 +200,12 @@ export default function TitleBar() {
 					aria-label="关闭窗口"
 					title="关闭"
 					disabled={!inNativeWindow}
-					onclick={() => void windowControls.close()}
+					onclick={() => {
+						// 先启动退场：这一下点击是页面内的用户手势，音频自动播放策略会放行；
+						// 走 Alt+F4 / 系统菜单时没有手势，只能靠主进程推来的 exitSequence（可能被拦，前端有时钟兜底）
+						beginExitSequence();
+						void windowControls.close();
+					}}
 				>
 					<CloseIcon />
 				</button>

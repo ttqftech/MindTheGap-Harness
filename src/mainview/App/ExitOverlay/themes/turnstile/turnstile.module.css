@@ -1,0 +1,316 @@
+/**
+ * 主题五 · 闸机
+ *
+ * 通道与机身全部用固定 px 居中排布：这一主题的窗口宽度不变，观感是「整体走掉」而不是「被裁掉」。
+ * 时间线（play 阶段）：投卡 → 吸卡 → 灯转绿 → 翼门开 → 门合拢。
+ */
+
+.root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background: radial-gradient(130% 100% at 50% 38%, #1b2029 0%, #0d1117 52%, #05070a 100%);
+}
+
+/* 闸机后方的站厅：一团远光 */
+.hall {
+	position: absolute;
+	left: 50%;
+	bottom: 30vh;
+	width: 1100px;
+	height: 460px;
+	margin-left: -550px;
+	background: radial-gradient(60% 70% at 50% 100%, rgba(255, 196, 96, 0.16) 0%, rgba(255, 196, 96, 0) 70%);
+	filter: blur(2px);
+}
+
+.floor {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 30vh;
+	background: linear-gradient(180deg, #14181f 0%, #0a0d12 60%, #05070a 100%);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* ---------- 机身 ---------- */
+
+.pillar {
+	position: absolute;
+	bottom: 30vh;
+	width: 186px;
+	height: 236px;
+
+	&[data-side='left'] {
+		right: calc(50% + 280px);
+	}
+
+	&[data-side='right'] {
+		left: calc(50% + 280px);
+	}
+}
+
+.pillarBody {
+	position: absolute;
+	inset: 46px 0 0 0;
+	border-radius: 14px 14px 4px 4px;
+	background: linear-gradient(160deg, #2c333d 0%, #1a1f27 55%, #12161c 100%);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.1),
+		0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.pillarTop {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 0;
+	height: 46px;
+	border-radius: 16px 16px 3px 3px;
+	background: linear-gradient(180deg, #3a434f 0%, #232932 100%);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+/* ---------- 通道：回收口 / 车票 / 翼门 ---------- */
+
+.lane {
+	position: absolute;
+	left: 50%;
+	bottom: 30vh;
+	width: 560px;
+	height: 236px;
+	margin-left: -280px;
+}
+
+/* 车票回收口 */
+.slot {
+	position: absolute;
+	left: 50%;
+	top: 62px;
+	width: 156px;
+	height: 14px;
+	margin-left: -78px;
+	border-radius: 7px;
+	background: #06090d;
+	box-shadow:
+		inset 0 2px 5px rgba(0, 0, 0, 0.9),
+		0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* 车票：落下 → 停顿 → 被吸入 */
+.ticket {
+	position: absolute;
+	left: 50%;
+	top: 62px;
+	width: 92px;
+	height: 156px;
+	margin-left: -46px;
+	border-radius: 6px;
+	background: linear-gradient(150deg, #ffd479 0%, #e0a13c 60%, #b9822c 100%);
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+	transform-origin: 50% 0;
+	opacity: 0;
+	animation:
+		ticketDrop 0.42s 0.12s cubic-bezier(0.3, 0.7, 0.4, 1) forwards,
+		ticketSwallow 0.34s 0.86s ease-in forwards;
+}
+
+/* 两片翼门：闭合时拼在中间，通行时向两侧缩回机身 */
+.wing {
+	position: absolute;
+	top: 40px;
+	width: 268px;
+	height: 150px;
+	background: linear-gradient(180deg, rgba(150, 200, 255, 0.2) 0%, rgba(120, 170, 230, 0.1) 100%);
+	border: 1px solid rgba(180, 220, 255, 0.26);
+	backdrop-filter: blur(2px);
+
+	&[data-side='left'] {
+		right: 280px;
+		border-radius: 12px 2px 2px 12px;
+		border-right: none;
+		animation: wingOpenLeft 0.7s 1.5s cubic-bezier(0.5, 0, 0.2, 1) forwards;
+	}
+
+	&[data-side='right'] {
+		left: 280px;
+		border-radius: 2px 12px 12px 2px;
+		border-left: none;
+		animation: wingOpenRight 0.7s 1.5s cubic-bezier(0.5, 0, 0.2, 1) forwards;
+	}
+}
+
+/* shell 阶段：翼门重新合拢 */
+.root[data-phase='shell'] .wing[data-side='left'] {
+	animation: wingShutLeft 0.5s ease-in forwards;
+}
+
+.root[data-phase='shell'] .wing[data-side='right'] {
+	animation: wingShutRight 0.5s ease-in forwards;
+}
+
+/* ---------- 通行指示灯 ---------- */
+
+.lamp {
+	position: absolute;
+	left: calc(50% + 280px + 93px);
+	bottom: calc(30vh + 236px + 26px);
+	width: 34px;
+	height: 34px;
+	margin-left: -17px;
+	border-radius: 50%;
+	background: #0b0f14;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 17px;
+	line-height: 1;
+}
+
+.cross {
+	color: #ff6b6b;
+	text-shadow: 0 0 12px rgba(255, 90, 90, 0.8);
+	animation: lampOff 0.3s 1.34s ease-out forwards;
+}
+
+.arrow {
+	position: absolute;
+	color: #56e39f;
+	text-shadow: 0 0 14px rgba(70, 230, 150, 0.85);
+	opacity: 0;
+	animation: lampOn 0.3s 1.4s ease-out forwards;
+}
+
+.root[data-phase='shell'] .arrow {
+	animation:
+		lampOn 0.3s 0s ease-out forwards,
+		lampOff 0.4s 0.5s ease-out forwards;
+}
+
+/* ---------- 文字 ---------- */
+
+.caption {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 14vh;
+	text-align: center;
+	font-family: var(--font-mono);
+	letter-spacing: 0.34em;
+}
+
+.capA,
+.capB {
+	position: absolute;
+	left: 0;
+	right: 0;
+	font-size: var(--fs-sm);
+}
+
+.capA {
+	color: rgba(226, 236, 250, 0.72);
+	animation: fadeOut 0.35s 1.5s ease-in forwards;
+}
+
+.capB {
+	color: #7ef0b6;
+	text-shadow: 0 0 20px rgba(90, 235, 165, 0.45);
+	opacity: 0;
+	animation:
+		fadeIn 0.4s 1.55s ease-out forwards,
+		fadeOut 0.4s 2.6s ease-in forwards;
+}
+
+/* ---------- shell 阶段：整幅画面轻微视差左移，配合窗口滑出 ---------- */
+
+.root[data-phase='shell'] .hall,
+.root[data-phase='shell'] .floor,
+.root[data-phase='shell'] .pillar,
+.root[data-phase='shell'] .lane,
+.root[data-phase='shell'] .lamp,
+.root[data-phase='shell'] .caption {
+	animation: parallax 1.5s cubic-bezier(0.4, 0, 0.7, 0.3) forwards;
+}
+
+/* ---------- keyframes ---------- */
+
+@keyframes ticketDrop {
+	0% {
+		opacity: 0;
+		transform: translateY(-230px) rotate(-8deg);
+	}
+	100% {
+		opacity: 1;
+		transform: translateY(-24px) rotate(0deg);
+	}
+}
+
+@keyframes ticketSwallow {
+	to {
+		transform: translateY(30px) scaleY(0.04);
+		opacity: 0;
+	}
+}
+
+@keyframes wingOpenLeft {
+	to {
+		transform: translateX(-262px);
+	}
+}
+
+@keyframes wingOpenRight {
+	to {
+		transform: translateX(262px);
+	}
+}
+
+@keyframes wingShutLeft {
+	from {
+		transform: translateX(-262px);
+	}
+	to {
+		transform: translateX(0);
+	}
+}
+
+@keyframes wingShutRight {
+	from {
+		transform: translateX(262px);
+	}
+	to {
+		transform: translateX(0);
+	}
+}
+
+@keyframes lampOff {
+	to {
+		opacity: 0;
+	}
+}
+
+@keyframes lampOn {
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes fadeIn {
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes fadeOut {
+	to {
+		opacity: 0;
+	}
+}
+
+@keyframes parallax {
+	to {
+		transform: translateX(-14%);
+		opacity: 0.25;
+	}
+}

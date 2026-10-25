@@ -1,0 +1,201 @@
+/**
+ * 主题十 · 尾灯
+ *
+ * 全黑的画面只有两盏灯：尺寸全程用 vh / 固定 px 居中，收窗时是被裁掉而不是被压扁。
+ * 尾灯的「远去」= 整体 scale 从 1 收到 0.16，配合光晕抖动。
+ */
+
+.root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background: #030507;
+}
+
+/* ---------- 隧道 ---------- */
+
+.tunnel {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 96vh;
+	height: 96vh;
+	margin: -48vh 0 0 -48vh;
+	opacity: 0.5;
+}
+
+/* 一圈圈向后退的隧道肋 */
+.rib {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 30vh;
+	height: 30vh;
+	margin: -15vh 0 0 -15vh;
+	border-radius: 50%;
+	border: 1px solid rgba(120, 160, 210, 0.22);
+	animation: recede 5.4s linear infinite;
+}
+
+.rib:nth-child(1) {
+	animation-delay: 0s;
+}
+.rib:nth-child(2) {
+	animation-delay: 1.8s;
+}
+.rib:nth-child(3) {
+	animation-delay: 3.6s;
+}
+
+/* 隧道壁上掠过的一点反光 */
+.wall {
+	position: absolute;
+	inset: 0;
+	background: repeating-linear-gradient(90deg, rgba(120, 160, 210, 0.05) 0 2px, transparent 2px 120px);
+	animation: drift 0.9s linear infinite;
+	opacity: 0.6;
+}
+
+/* ---------- 尾灯 ---------- */
+
+.lamps {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	display: flex;
+	gap: 7vh;
+	margin-left: -9vh;
+	margin-top: -3vh;
+	animation: away 7s cubic-bezier(0.4, 0, 0.75, 0.5) forwards;
+}
+
+.lamp {
+	position: relative;
+	width: 5vh;
+	height: 5vh;
+}
+
+.dot {
+	position: absolute;
+	inset: 30%;
+	border-radius: 50%;
+	background: #ff4646;
+	box-shadow:
+		0 0 14px 4px rgba(255, 60, 60, 0.85),
+		0 0 40px 16px rgba(255, 40, 40, 0.35);
+	animation: flicker 0.22s steps(2, end) infinite;
+}
+
+.halo {
+	position: absolute;
+	inset: -40%;
+	border-radius: 50%;
+	background: radial-gradient(circle, rgba(255, 70, 70, 0.42) 0%, rgba(255, 50, 50, 0) 70%);
+	animation: breathe 1.3s ease-in-out infinite;
+}
+
+/* ---------- 文字 ---------- */
+
+.sign {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 12vh;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	letter-spacing: 0.4em;
+	color: rgba(255, 190, 190, 0.42);
+	opacity: 0;
+	animation: fadeIn 1.6s 5.2s ease-out forwards;
+}
+
+/* ---------- shell 阶段：灯先闪灭，再连画面一起没 ---------- */
+
+.root[data-phase='shell'] .lamps {
+	animation: blinkOut 1.1s ease-out forwards;
+}
+
+.root[data-phase='shell'] .sign {
+	animation: fadeOut 0.7s ease-in forwards;
+}
+
+/* ---------- keyframes ---------- */
+
+@keyframes recede {
+	0% {
+		transform: scale(2.6);
+		opacity: 0;
+	}
+	20% {
+		opacity: 0.7;
+	}
+	100% {
+		transform: scale(0.2);
+		opacity: 0;
+	}
+}
+
+@keyframes drift {
+	to {
+		transform: translateX(-120px);
+	}
+}
+
+/* 列车远去 */
+@keyframes away {
+	to {
+		transform: scale(0.16);
+		opacity: 0.85;
+	}
+}
+
+@keyframes flicker {
+	0% {
+		opacity: 1;
+	}
+	100% {
+		opacity: 0.82;
+	}
+}
+
+@keyframes breathe {
+	0%,
+	100% {
+		opacity: 0.75;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1.18);
+	}
+}
+
+@keyframes blinkOut {
+	0% {
+		transform: scale(0.16);
+		opacity: 0.85;
+	}
+	30% {
+		opacity: 0.25;
+	}
+	45% {
+		opacity: 0.8;
+	}
+	100% {
+		transform: scale(0.02);
+		opacity: 0;
+	}
+}
+
+@keyframes fadeIn {
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes fadeOut {
+	to {
+		opacity: 0;
+	}
+}

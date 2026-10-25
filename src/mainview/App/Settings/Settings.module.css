@@ -424,6 +424,22 @@
 				}
 			}
 
+			/* 退场动画：分段控件 + 预览按钮并排（主题较多时分段控件自己换行） */
+			.exit-theme {
+				display: flex;
+				align-items: center;
+				justify-content: flex-end;
+				flex-wrap: wrap;
+				gap: 10px;
+				max-width: 62%;
+
+				.segmented {
+					flex-wrap: wrap;
+					row-gap: 3px;
+					justify-content: flex-end;
+				}
+			}
+
 			.btn-danger {
 				padding: 6px 12px;
 				border-radius: 6px;

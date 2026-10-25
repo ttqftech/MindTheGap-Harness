@@ -1,0 +1,310 @@
+/**
+ * 主题一 · 隧道穿行
+ *
+ * 节奏变量集中在 .root 上，shell 阶段只改这两个变量：
+ *   --rush        隧道环一圈的周期（越小 = 车速越快）
+ *   --lineSpeed   站台安全线一格的流动周期
+ * 切变量而不是切整套 keyframes，避免离站瞬间画面重排。
+ *
+ * ⚠️ 尺寸一律取 vh / 固定 px，**不用 vw**：后 4 秒外壳在把宽度收到 0，
+ *    用 vw 整幅画面会跟着被压扁；固定尺寸则是「被两侧裁掉」，正是要的效果。
+ */
+
+.root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background:
+		radial-gradient(120% 90% at 50% 52%, color-mix(in srgb, var(--accent) 14%, #04060a) 0%, #04060a 62%, #010203 100%);
+
+	--rush: 2.4s;
+	--lineSpeed: 0.6s;
+}
+
+.root[data-phase='shell'] {
+	--rush: 0.5s;
+	--lineSpeed: 0.16s;
+}
+
+/* ---------- 隧道 ---------- */
+
+.tunnel {
+	position: absolute;
+	inset: 0;
+
+	.ring {
+		position: absolute;
+		left: 50%;
+		top: 52%;
+		width: 46vh;
+		height: 46vh;
+		margin: -23vh 0 0 -23vh;
+		border: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+		border-radius: 14px;
+		box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 18%, transparent);
+		opacity: 0;
+		animation: ringRush var(--rush) linear infinite;
+	}
+}
+
+@keyframes ringRush {
+	0% {
+		transform: scale(0.08) rotate(0deg);
+		opacity: 0;
+	}
+	18% {
+		opacity: 0.85;
+	}
+	100% {
+		transform: scale(2.9) rotate(2deg);
+		opacity: 0;
+	}
+}
+
+/* ---------- 线路图 ---------- */
+
+.lineMap {
+	position: absolute;
+	top: 13%;
+	left: 8%;
+	right: 8%;
+	height: 34px;
+
+	.lineTrack {
+		position: absolute;
+		top: 6px;
+		left: 0;
+		right: 0;
+		height: 2px;
+		background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 55%, transparent));
+	}
+
+	.station {
+		position: absolute;
+		top: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 6px;
+		opacity: 0;
+		transform: translateY(-4px);
+		animation: stationIn 0.5s ease-out forwards;
+	}
+
+	.stationDot {
+		width: 10px;
+		height: 10px;
+		margin-top: 2px;
+		border-radius: 50%;
+		background: #1b2028;
+		box-shadow: 0 0 0 2px #04060a;
+		animation: dotOn 0.45s ease-out forwards;
+		animation-delay: inherit;
+	}
+
+	.stationName {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xxs);
+		letter-spacing: 0.08em;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+}
+
+@keyframes stationIn {
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes dotOn {
+	0% {
+		background: #1b2028;
+	}
+	60% {
+		background: var(--accent);
+		box-shadow: 0 0 0 2px #04060a, 0 0 14px color-mix(in srgb, var(--accent) 70%, transparent);
+	}
+	100% {
+		background: var(--accent);
+		box-shadow: 0 0 0 2px #04060a, 0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
+	}
+}
+
+/* ---------- 列车 ---------- */
+
+.train {
+	position: absolute;
+	bottom: 24%;
+	left: 50%;
+	width: 72vh;
+	margin-left: -36vh;
+	height: auto;
+	filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.55));
+	animation: trainArrive 2.6s cubic-bezier(0.16, 0.84, 0.2, 1) forwards;
+
+	.body {
+		fill: #e6ebf2;
+	}
+	.stripe {
+		fill: var(--accent);
+	}
+	.window {
+		fill: #0b1017;
+		stroke: color-mix(in srgb, var(--accent) 40%, transparent);
+		stroke-width: 2;
+	}
+	.cabWindow {
+		fill: #0b1017;
+		opacity: 0.9;
+	}
+	.wheel {
+		fill: #2a3038;
+	}
+	.headlight {
+		fill: #fff6d8;
+		filter: drop-shadow(0 0 10px #ffe58f);
+	}
+	.taillight {
+		fill: #ff4d4f;
+	}
+}
+
+.root[data-phase='shell'] .train {
+	animation: trainDepart 4s cubic-bezier(0.72, 0, 0.88, 0.32) forwards;
+}
+
+@keyframes trainArrive {
+	from {
+		transform: translateX(115vw);
+	}
+	to {
+		transform: translateX(0);
+	}
+}
+
+/* 离站：百分比相对自身宽度（固定尺寸），窗口再窄也不会变形 */
+@keyframes trainDepart {
+	from {
+		transform: translateX(0);
+	}
+	to {
+		transform: translateX(-165%);
+	}
+}
+
+/* ---------- 报站 ---------- */
+
+.announce {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 30%;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	text-align: center;
+
+	.nextStation {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		letter-spacing: 0.42em;
+		color: color-mix(in srgb, var(--accent) 75%, #ffffff);
+		opacity: 0;
+		animation: fadeUp 0.7s 0.15s ease-out forwards;
+	}
+
+	.terminus {
+		font-family: var(--font-brand);
+		font-size: clamp(34px, 9vh, 82px);
+		font-weight: 800;
+		letter-spacing: 0.14em;
+		line-height: 1;
+		color: #f2f6fb;
+		text-shadow: 0 0 32px color-mix(in srgb, var(--accent) 45%, transparent);
+		opacity: 0;
+		animation: fadeUp 0.9s 0.35s ease-out forwards;
+	}
+
+	.subtitle {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xxs);
+		letter-spacing: 0.2em;
+		color: var(--text-tertiary);
+		opacity: 0;
+		animation: fadeUp 0.9s 0.7s ease-out forwards;
+	}
+}
+
+.root[data-phase='shell'] .announce {
+	animation: announceRush 4s ease-in forwards;
+}
+
+/* 线路图靠 left 百分比排布，窗口一收窄站点会挤成一坨 —— 离站阶段让位给列车 */
+.root[data-phase='shell'] .lineMap {
+	animation: lineMapOut 0.5s ease-in forwards;
+}
+
+@keyframes lineMapOut {
+	to {
+		opacity: 0;
+		transform: scale(0.94);
+	}
+}
+
+@keyframes fadeUp {
+	from {
+		opacity: 0;
+		transform: translateY(14px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+/* 离站阶段报站整体向左被带走（固定 px，不随窗口宽度变） */
+@keyframes announceRush {
+	to {
+		transform: translateX(-320px);
+		opacity: 0.15;
+	}
+}
+
+/* ---------- 站台 / 安全线 ---------- */
+
+.platform {
+	position: absolute;
+	left: -10%;
+	right: -10%;
+	bottom: 0;
+	height: 22%;
+
+	.safetyLine {
+		position: absolute;
+		left: 0;
+		right: 0;
+		top: 34%;
+		height: 22px;
+		background: repeating-linear-gradient(115deg, #ffd400 0 16px, #14181e 16px 32px);
+		opacity: 0.85;
+		animation: lineFlow var(--lineSpeed) linear infinite;
+	}
+
+	.platformEdge {
+		position: absolute;
+		left: 0;
+		right: 0;
+		top: calc(34% + 22px);
+		height: 1px;
+		background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 40%, transparent), transparent);
+	}
+}
+
+@keyframes lineFlow {
+	to {
+		background-position: -64px 0;
+	}
+}

@@ -1,0 +1,196 @@
+/**
+ * 主题四 · 线路蓝图
+ *
+ * 蓝图风：细网格 + 一条折线 + 会跑的光点，全部是描边，没有面。
+ * 光点沿折点移动用 CSS transform（SVG 元素上的 px = 用户坐标），不依赖 offset-path。
+ */
+
+.root {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background: radial-gradient(120% 100% at 30% 20%, #0a1e30 0%, #04101c 55%, #01070d 100%);
+}
+
+.grid {
+	position: absolute;
+	inset: -60px;
+	background:
+		repeating-linear-gradient(0deg, rgba(110, 180, 255, 0.075) 0 1px, transparent 1px 46px),
+		repeating-linear-gradient(90deg, rgba(110, 180, 255, 0.075) 0 1px, transparent 1px 46px);
+	animation: gridDrift 9s linear infinite;
+}
+
+.map {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.track {
+	fill: none;
+	stroke: rgba(120, 190, 255, 0.2);
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
+}
+
+/* 已被光点走过的那一段：靠 dashoffset 一段段画出来 */
+.trace {
+	fill: none;
+	stroke: #7fd8ff;
+	stroke-width: 2.5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
+	stroke-dasharray: 1300;
+	stroke-dashoffset: 1300;
+	filter: drop-shadow(0 0 6px rgba(127, 216, 255, 0.75));
+	animation: trace 3.2s 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.stop {
+	opacity: 0;
+	animation: fadeIn 0.5s ease-out forwards;
+}
+
+.stopDot {
+	fill: #061420;
+	stroke: rgba(140, 200, 255, 0.55);
+	stroke-width: 2;
+	vector-effect: non-scaling-stroke;
+	animation: dotOn 0.5s ease-out forwards;
+	animation-delay: inherit;
+}
+
+.stopName {
+	fill: rgba(186, 224, 255, 0.68);
+	font-family: var(--font-mono);
+	font-size: 17px;
+	letter-spacing: 0.12em;
+	text-anchor: middle;
+}
+
+.rider {
+	fill: #ffffff;
+	filter: drop-shadow(0 0 8px rgba(160, 220, 255, 0.95));
+	animation: ride 3.2s 0.6s cubic-bezier(0.45, 0, 0.3, 1) forwards;
+}
+
+.riderHalo {
+	fill: rgba(140, 210, 255, 0.16);
+	animation:
+		ride 3.2s 0.6s cubic-bezier(0.45, 0, 0.3, 1) forwards,
+		haloPulse 0.9s ease-in-out infinite;
+}
+
+.title,
+.terminus {
+	position: absolute;
+	font-family: var(--font-mono);
+	letter-spacing: 0.3em;
+	opacity: 0;
+	animation: fadeIn 0.7s 0.4s ease-out forwards;
+}
+
+.title {
+	left: 5vh;
+	top: 5vh;
+	font-size: var(--fs-xs);
+	color: rgba(160, 210, 255, 0.62);
+}
+
+.terminus {
+	right: 5vh;
+	bottom: 5vh;
+	font-size: var(--fs-sm);
+	color: #bfe6ff;
+	text-shadow: 0 0 22px rgba(127, 216, 255, 0.5);
+}
+
+/* ---------- shell 阶段：整张图被吸进终点（与窗口一起收向右上角） ---------- */
+
+.root[data-phase='shell'] .map {
+	transform-origin: 100% 0;
+	animation: collapse 3s cubic-bezier(0.6, 0, 0.9, 0.35) forwards;
+}
+
+.root[data-phase='shell'] .title,
+.root[data-phase='shell'] .terminus {
+	animation: fadeOut 0.5s ease-in forwards;
+}
+
+/* 沿折点走一遍：位移量 = 各站点相对起点的坐标差（SVG 用户单位） */
+@keyframes ride {
+	0% {
+		transform: translate(0, 0);
+	}
+	18% {
+		transform: translate(190px, 0);
+	}
+	36% {
+		transform: translate(300px, -140px);
+	}
+	56% {
+		transform: translate(570px, -140px);
+	}
+	76% {
+		transform: translate(680px, -265px);
+	}
+	100% {
+		transform: translate(1030px, -265px);
+	}
+}
+
+@keyframes trace {
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+@keyframes dotOn {
+	0% {
+		fill: #061420;
+	}
+	100% {
+		fill: #8fdcff;
+		stroke: #d6f2ff;
+	}
+}
+
+@keyframes haloPulse {
+	0%,
+	100% {
+		opacity: 0.5;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+@keyframes gridDrift {
+	to {
+		transform: translate(46px, 46px);
+	}
+}
+
+@keyframes collapse {
+	to {
+		transform: scale(0.015);
+		opacity: 0;
+	}
+}
+
+@keyframes fadeIn {
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes fadeOut {
+	to {
+		opacity: 0;
+	}
+}

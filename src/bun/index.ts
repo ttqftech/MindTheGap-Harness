@@ -1,6 +1,7 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
 import { buildRpcHandlers, setMainWindow } from './rpc-handlers';
-import { startHttpServer } from './http-server';
+import { startHttpServer, cancelAllRunners, stopHttpServer } from './http-server';
+import { installExitSequence } from './exitSequence';
 import { mcpManager } from './mcp/manager';
 import { patchFramelessWindowFrame } from './windowsPatch';
 import { settings, snapshot, loadSettings } from './storage';
@@ -81,6 +82,17 @@ async function createMainWindow() {
 	
 	// 窗口控制类 RPC 需要实例，创建后再注入（详见 rpc-handlers.ts 文件头）
 	setMainWindow(mainWindow);
+
+	// 关闭拦截：所有关闭路径（右上角 / Alt+F4 / 系统菜单 / 任务栏）都先走退场序列
+	installExitSequence({
+		getWindow: () => mainWindow,
+		notifyFrontend: () => {
+			rpc.send.exitSequence({});	// 通过 RPC 通知前端退出序列
+			mainWindow?.webview.executeJavascript('window.__mtgExitSequence?.()');	// 直接往页面打脚本 —— dev 下 HMR 换掉模块后 Electroview 不会重建，message handler 可能还是旧的（没注册 exitSequence），需要手动调用
+		},
+		stopAllRuns: () => cancelAllRunners(),
+		stopServer: () => stopHttpServer(),
+	});
 
 	// Windows：给无边框窗口补回系统窗口样式位，拿回投影 / 圆角 / snap（详见 windowsPatch.ts 文件头）
 	await patchFramelessWindowFrame('MindTheGap-Harness');

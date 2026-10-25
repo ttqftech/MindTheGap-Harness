@@ -6,6 +6,7 @@ import Sidebar from './SideBar/Sidebar';
 import ChatView from './ChatView/ChatView';
 import RightSidebar from './RightSidebar/RightSidebar';
 import Settings from './Settings/Settings';
+import ExitOverlay from './ExitOverlay/ExitOverlay';
 import { setFFBoxContainer } from '../ffboxBridge';
 import { state, setState, actions, initApp, getActiveConversation, isConversationAlive } from '../store';
 import { newConversation } from '../appCommands';
@@ -139,6 +140,8 @@ export default function App() {
 					</Show>
 					<RightSidebar />
 					<Settings />
+					{/* 退场动画：主进程截获关闭事件后推 RPC 消息过来，盖在所有界面之上 */}
+					<ExitOverlay />
 				</div>
 			</div>
 		</ffbox-theme-provider>
