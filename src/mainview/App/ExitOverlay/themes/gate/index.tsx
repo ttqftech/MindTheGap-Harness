@@ -6,7 +6,7 @@
  * 外壳：宽度不动，**上下同时压扁**到 0 —— 门缝被压成一条水平线。
  */
 
-import { exitPhase } from '../../phase';
+import { createSignal } from 'solid-js';
 import { EASE } from '../../shell';
 import { playSynth, type SynthEvent } from '../../audio';
 import styles from './gate.module.css';
@@ -26,9 +26,13 @@ const SOUNDS: SynthEvent[] = [
 	{ at: CLOSE_MS, kind: 'whoosh', freq: 3600, durationMs: 900 },
 ];
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'open' | 'closing';
+const [stage, setStage] = createSignal<Stage>('open');
+
 function Gate() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			{/* 门后：掠过的车厢灯 */}
 			<div class={styles.behind}>
 				<div class={styles.lightBar} />
@@ -57,14 +61,17 @@ const theme: ExitTheme = {
 	desc: '站台屏蔽门合拢，窗口上下同时压成一条线',
 	Component: Gate,
 
-	sound: (onCue) => playSynth(SOUNDS, CUE_MS, onCue),
+	async run({ shell }) {
+		setStage('open');
+		await playSynth(SOUNDS, CUE_MS);
 
-	// 上下同时压：高度每少 2px，top 就下移 1px，宽度自始至终不动
-	shell: (shell) =>
-		shell.run((t, f) => {
+		setStage('closing');
+		// 上下同时压：高度每少 2px，top 就下移 1px，宽度自始至终不动
+		await shell.run((t, f) => {
 			const height = f.height * (1 - EASE.easeInOutCubic(t));
 			return { x: f.x, y: f.y + (f.height - height) / 2, width: f.width, height };
-		}, 2200),
+		}, 2200);
+	},
 };
 
 export default theme;

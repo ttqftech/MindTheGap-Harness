@@ -142,11 +142,11 @@
 }
 
 /* shell 阶段：翼门重新合拢 */
-.root[data-phase='shell'] .wing[data-side='left'] {
+.root[data-stage='leave'] .wing[data-side='left'] {
 	animation: wingShutLeft 0.5s ease-in forwards;
 }
 
-.root[data-phase='shell'] .wing[data-side='right'] {
+.root[data-stage='leave'] .wing[data-side='right'] {
 	animation: wingShutRight 0.5s ease-in forwards;
 }
 
@@ -183,7 +183,7 @@
 	animation: lampOn 0.3s 1.4s ease-out forwards;
 }
 
-.root[data-phase='shell'] .arrow {
+.root[data-stage='leave'] .arrow {
 	animation:
 		lampOn 0.3s 0s ease-out forwards,
 		lampOff 0.4s 0.5s ease-out forwards;
@@ -225,12 +225,12 @@
 
 /* ---------- shell 阶段：整幅画面轻微视差左移，配合窗口滑出 ---------- */
 
-.root[data-phase='shell'] .hall,
-.root[data-phase='shell'] .floor,
-.root[data-phase='shell'] .pillar,
-.root[data-phase='shell'] .lane,
-.root[data-phase='shell'] .lamp,
-.root[data-phase='shell'] .caption {
+.root[data-stage='leave'] .hall,
+.root[data-stage='leave'] .floor,
+.root[data-stage='leave'] .pillar,
+.root[data-stage='leave'] .lane,
+.root[data-stage='leave'] .lamp,
+.root[data-stage='leave'] .caption {
 	animation: parallax 1.5s cubic-bezier(0.4, 0, 0.7, 0.3) forwards;
 }
 

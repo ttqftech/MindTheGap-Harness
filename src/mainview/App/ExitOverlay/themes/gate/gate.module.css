@@ -195,9 +195,9 @@
 
 /* ---------- shell 阶段：门缝被压成一条线 ---------- */
 
-.root[data-phase='shell'] .doorLeft,
-.root[data-phase='shell'] .doorRight,
-.root[data-phase='shell'] .seam {
+.root[data-stage='closing'] .doorLeft,
+.root[data-stage='closing'] .doorRight,
+.root[data-stage='closing'] .seam {
 	animation: squeeze 2.2s cubic-bezier(0.7, 0, 0.9, 0.3) forwards;
 }
 

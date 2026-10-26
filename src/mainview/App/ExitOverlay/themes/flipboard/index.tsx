@@ -6,8 +6,7 @@
  * 外壳：两段式 —— 先左右收成「一块牌」的宽度，停顿，再上下同时压扁到 0。
  */
 
-import { For } from 'solid-js';
-import { exitPhase } from '../../phase';
+import { createSignal, For } from 'solid-js';
 import { EASE, sleep } from '../../shell';
 import { playSynth, type SynthEvent } from '../../audio';
 import styles from './flipboard.module.css';
@@ -38,9 +37,13 @@ const BOARD_WIDTH = 560;
 /** 翻完牌到开始收外壳的间隔 */
 const CUE_MS = 3200;
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'flip' | 'collapse';
+const [stage, setStage] = createSignal<Stage>('flip');
+
 function Flipboard() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.rail} />
 			<div class={styles.rail} />
 
@@ -74,9 +77,11 @@ const theme: ExitTheme = {
 	desc: '机械翻牌翻出终点站，窗口先收成一块牌再压扁',
 	Component: Flipboard,
 
-	sound: (onCue) => playSynth(SOUNDS, CUE_MS, onCue),
+	async run({ shell }) {
+		setStage('flip');
+		await playSynth(SOUNDS, CUE_MS);
 
-	shell: async (shell) => {
+		setStage('collapse');
 		// 一段：左右同时收到「一块牌」的宽度
 		await shell.run((t, f) => {
 			const target = Math.min(BOARD_WIDTH, f.width);

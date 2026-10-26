@@ -130,11 +130,11 @@
 
 /* ---------- shell 阶段：整幅画面被向上吸走（与底边向上的收窗同向） ---------- */
 
-.root[data-phase='shell'] .shaft {
+.root[data-stage='rise'] .shaft {
 	animation: sucked 3.9s cubic-bezier(0.5, 0, 0.75, 0.4) forwards;
 }
 
-.root[data-phase='shell'] .exit {
+.root[data-stage='rise'] .exit {
 	animation: fadeOut 0.6s ease-in forwards;
 }
 

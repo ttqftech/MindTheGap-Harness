@@ -8,7 +8,6 @@
 
 import { createSignal } from 'solid-js';
 import { rpc } from '../../rpc';
-import { setExitPhase } from './phase';
 import { createShellAnimator, sleep } from './shell';
 import type { ExitTheme, ExitThemeId } from './types';
 import tunnel from './themes/tunnel';
@@ -61,13 +60,15 @@ const [activeTheme, setActiveTheme] = createSignal<ExitTheme | null>(null);
 
 export { activeTheme };
 
-/** 主题始终没给 cue 时的兜底：宁可动画没放完，也不能关不掉应用 */
-const CUE_FALLBACK_MS = 12000;
+/**
+ * 整段退场的总时长兜底：主题的时间轴卡住时也能收尾（真实退场还有主进程 20s 看门狗；
+ * 预览没有，这里是唯一能把窗口还原回来的路）。
+ */
+const EXIT_TIMEOUT_MS = 15000;
 
 async function runExit(theme: ExitTheme, preview: boolean) {
 	if (activeTheme()) return;	// 关闭事件可能连着来好几次（Alt+F4 长按等），只接第一次
 	setActiveTheme(theme);
-	setExitPhase('play');
 
 	// 预览时窗口可能是最大化的（真实退场由主进程先 unmaximize），先还原，否则 setFrame 不生效
 	if (preview) {
@@ -80,29 +81,20 @@ async function runExit(theme: ExitTheme, preview: boolean) {
 
 	const shell = await createShellAnimator(preview);
 
-	let cued = false;
-	const cue = () => {
-		if (cued) return;
-		cued = true;
-		setExitPhase('shell');
-		void (async () => {
-			try {
-				await theme.shell(shell);
-			} catch (e) {
-				console.warn('[Exit] 外壳动效异常，直接收尾:', e);
-			}
-			if (preview) {
-				await shell.restore();
-				setExitPhase(null);
-				setActiveTheme(null);
-				return;
-			}
-			void rpc.request.exitFinished();
-		})();
-	};
+	try {
+		// 声音、画面阶段、什么时候收窗口，全是主题 run() 内部的事，这里只等它放完
+		await Promise.race([theme.run({ preview, shell }), sleep(EXIT_TIMEOUT_MS)]);
+	} catch (e) {
+		console.warn('[Exit] 退场异常，直接收尾:', e);
+	}
 
-	theme.sound(cue);
-	setTimeout(cue, CUE_FALLBACK_MS);
+	if (preview) {
+		await shell.restore();
+		setActiveTheme(null);
+		return;
+	}
+	console.log('[Exit] 退场完成');
+	void rpc.request.exitFinished();
 }
 
 /** 真实退场：主进程截获关闭事件后推过来 */

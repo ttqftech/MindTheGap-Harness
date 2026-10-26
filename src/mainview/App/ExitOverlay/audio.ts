@@ -3,35 +3,36 @@
  *
  * 有音频文件的主题播文件（在自己的 cue 秒数上触发外壳动效）；
  * 没有文件的用 WebAudio 现场合成，免得为了几秒钟退场再背一个二进制资源。
- *
- * ⚠️ 声音响不响**不影响退场节奏**：自动播放被拦 / 合成失败时一律按时钟走到 cue，
- *    否则「没声音就关不掉应用」。
  */
 
 // #region 音乐
 
-export function playMusic(
-	src: string,
-	opts: { cueSeconds: number; volume?: number },
-	onCue: () => void,
-) {
-	const audio = new Audio(src);
-	audio.volume = opts.volume ?? 0.85;
+/**
+ * 播一段音乐，**在 cueSeconds 处 resolve**（音乐本身继续放到结束）。
+ * 主题通常这样用：`await playMusic(...)` 之后才开始收窗口 —— 于是「什么时候开始收」落在音乐时间轴上。
+ *
+ * ⚠️ 没用户手势时 play() 被拒、currentTime 根本不走，所以另有按时钟的兜底；
+ *    声音响不响都不影响节奏，否则「没声音就关不掉应用」。
+ */
+export function playMusic(src: string, opts: { cueSeconds: number; volume?: number }): Promise<void> {
+	return new Promise((resolve) => {
+		const audio = new Audio(src);
+		audio.volume = opts.volume ?? 0.85;
 
-	let cued = false;
-	const cue = () => {
-		if (cued) return;
-		cued = true;
-		onCue();
-	};
+		let cued = false;
+		const cue = () => {
+			if (cued) return;
+			cued = true;
+			resolve();
+		};
 
-	audio.addEventListener('timeupdate', () => {
-		if (audio.currentTime >= opts.cueSeconds) cue();
+		audio.addEventListener('timeupdate', () => {
+			if (audio.currentTime >= opts.cueSeconds) cue();
+		});
+		setTimeout(cue, opts.cueSeconds * 1000);
+
+		void audio.play().catch((e) => console.warn('[Exit] 退场音乐被浏览器策略拦截，退场按时钟进行:', e));
 	});
-	// 没用户手势时 play() 被拒、currentTime 根本不走，纯靠这个兜底
-	setTimeout(cue, opts.cueSeconds * 1000);
-
-	void audio.play().catch((e) => console.warn('[Exit] 退场音乐被浏览器策略拦截，退场按时钟进行:', e));
 }
 
 // #endregion
@@ -156,25 +157,20 @@ function blip(ctx: AudioContext, e: SynthEvent) {
 	}
 }
 
-/** 按事件表合成；cueAtMs 到点调 onCue（合成失败也照调） */
-export function playSynth(events: SynthEvent[], cueAtMs: number, onCue: () => void) {
-	let fired = false;
-	const cue = () => {
-		if (fired) return;
-		fired = true;
-		onCue();
-	};
+/** 按事件表合成；返回的 Promise 在 cueAtMs 处 resolve（合成失败也照 resolve） */
+export function playSynth(events: SynthEvent[], cueAtMs: number): Promise<void> {
+	return new Promise((resolve) => {
+		try {
+			const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+			const ctx = new Ctor();
+			void ctx.resume();
+			for (const e of events) blip(ctx, e);
+		} catch (e) {
+			console.warn('[Exit] 合成音不可用，退场按时钟进行:', e);
+		}
 
-	try {
-		const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-		const ctx = new Ctor();
-		void ctx.resume();
-		for (const e of events) blip(ctx, e);
-	} catch (e) {
-		console.warn('[Exit] 合成音不可用，退场按时钟进行:', e);
-	}
-
-	setTimeout(cue, cueAtMs);
+		setTimeout(resolve, cueAtMs);
+	});
 }
 
 // #endregion

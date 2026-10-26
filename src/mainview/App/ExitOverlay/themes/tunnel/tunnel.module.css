@@ -21,7 +21,7 @@
 	--lineSpeed: 0.6s;
 }
 
-.root[data-phase='shell'] {
+.root[data-stage='depart'] {
 	--rush: 0.5s;
 	--lineSpeed: 0.16s;
 }
@@ -76,7 +76,7 @@
 		left: 0;
 		right: 0;
 		height: 2px;
-		background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 55%, transparent));
+		background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), color-mix(in srgb, var(--accent) 55%, transparent), color-mix(in srgb, var(--accent) 10%, transparent));
 	}
 
 	.station {
@@ -171,7 +171,7 @@
 	}
 }
 
-.root[data-phase='shell'] .train {
+.root[data-stage='depart'] .train {
 	animation: trainDepart 4s cubic-bezier(0.72, 0, 0.88, 0.32) forwards;
 }
 
@@ -209,19 +209,20 @@
 
 	.nextStation {
 		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
+		font-size: 24px;
 		letter-spacing: 0.42em;
+		white-space: nowrap;
 		color: color-mix(in srgb, var(--accent) 75%, #ffffff);
 		opacity: 0;
 		animation: fadeUp 0.7s 0.15s ease-out forwards;
 	}
 
 	.terminus {
-		font-family: var(--font-brand);
+		font-family: DiamanteEF, var(--font-mono);
 		font-size: clamp(34px, 9vh, 82px);
 		font-weight: 800;
-		letter-spacing: 0.14em;
 		line-height: 1;
+		white-space: nowrap;
 		color: #f2f6fb;
 		text-shadow: 0 0 32px color-mix(in srgb, var(--accent) 45%, transparent);
 		opacity: 0;
@@ -230,20 +231,21 @@
 
 	.subtitle {
 		font-family: var(--font-mono);
-		font-size: var(--fs-xxs);
+		font-size: 14px;
 		letter-spacing: 0.2em;
+		white-space: nowrap;
 		color: var(--text-tertiary);
 		opacity: 0;
 		animation: fadeUp 0.9s 0.7s ease-out forwards;
 	}
 }
 
-.root[data-phase='shell'] .announce {
+.root[data-stage='depart'] .announce {
 	animation: announceRush 4s ease-in forwards;
 }
 
 /* 线路图靠 left 百分比排布，窗口一收窄站点会挤成一坨 —— 离站阶段让位给列车 */
-.root[data-phase='shell'] .lineMap {
+.root[data-stage='depart'] .lineMap {
 	animation: lineMapOut 0.5s ease-in forwards;
 }
 
@@ -305,6 +307,6 @@
 
 @keyframes lineFlow {
 	to {
-		background-position: -64px 0;
+		background-position: -72px 0;
 	}
 }

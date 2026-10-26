@@ -6,7 +6,7 @@
  * 外壳：**螺旋收缩** —— 窗口一边缩小一边绕着屏幕中心转圈，最后一圈拧成一个点。
  */
 
-import { exitPhase } from '../../phase';
+import { createSignal } from 'solid-js';
 import { EASE } from '../../shell';
 import { playSynth, type SynthEvent } from '../../audio';
 import styles from './loop.module.css';
@@ -42,9 +42,13 @@ const STOPS: readonly { x: number; y: number; lx: number; ly: number; anchor: 's
 	{ x: 127, y: 200, lx: 95, ly: 205, anchor: 'end', name: 'MIND THE GAP' },
 ];
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'run' | 'spiral';
+const [stage, setStage] = createSignal<Stage>('run');
+
 function Loop() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			<svg class={styles.map} viewBox="0 0 600 600" preserveAspectRatio="xMidYMid meet">
 				{/* 环线本身 */}
 				<circle class={styles.ring} cx="300" cy="300" r="200" />
@@ -82,11 +86,13 @@ const theme: ExitTheme = {
 	desc: '列车绕环线一圈，窗口边转边收成一个点',
 	Component: Loop,
 
-	sound: (onCue) => playSynth(SOUNDS, CUE_MS, onCue),
+	async run({ shell }) {
+		setStage('run');
+		await playSynth(SOUNDS, CUE_MS);
 
-	// 螺旋：尺寸按 easeInOutCubic 收到中心，同时 x/y 沿一个逐渐归零的圆偏移 —— 像末班车绕完最后一圈被吸进车库
-	shell: (shell) =>
-		shell.run((t, f) => {
+		setStage('spiral');
+		// 螺旋：尺寸按 easeInOutCubic 收到中心，同时 x/y 沿一个逐渐归零的圆偏移 —— 像末班车绕完最后一圈被吸进车库
+		await shell.run((t, f) => {
 			const k = 1 - EASE.easeInOutCubic(t);
 			const width = f.width * k;
 			const height = f.height * k;
@@ -100,7 +106,8 @@ const theme: ExitTheme = {
 				width,
 				height,
 			};
-		}, SPIRAL_MS),
+		}, SPIRAL_MS);
+	},
 };
 
 export default theme;

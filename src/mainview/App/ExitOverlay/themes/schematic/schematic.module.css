@@ -112,13 +112,13 @@
 
 /* ---------- shell 阶段：整张图被吸进终点（与窗口一起收向右上角） ---------- */
 
-.root[data-phase='shell'] .map {
+.root[data-stage='collapse'] .map {
 	transform-origin: 100% 0;
 	animation: collapse 3s cubic-bezier(0.6, 0, 0.9, 0.35) forwards;
 }
 
-.root[data-phase='shell'] .title,
-.root[data-phase='shell'] .terminus {
+.root[data-stage='collapse'] .title,
+.root[data-stage='collapse'] .terminus {
 	animation: fadeOut 0.5s ease-in forwards;
 }
 

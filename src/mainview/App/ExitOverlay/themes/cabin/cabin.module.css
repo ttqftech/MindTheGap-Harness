@@ -152,16 +152,16 @@
 
 /* ---------- shell 阶段：冲出隧道口，白光铺满 ---------- */
 
-.root[data-phase='shell'] .end {
+.root[data-stage='burst'] .end {
 	animation: blowout 1s cubic-bezier(0.3, 0, 0.6, 1) forwards;
 }
 
-.root[data-phase='shell'] .speed,
-.root[data-phase='shell'] .lamp {
+.root[data-stage='burst'] .speed,
+.root[data-stage='burst'] .lamp {
 	animation: fadeOut 0.4s ease-in forwards;
 }
 
-.root[data-phase='shell'] .window {
+.root[data-stage='burst'] .window {
 	animation: zoom 1.1s cubic-bezier(0.2, 0, 0.4, 1) forwards;
 }
 

@@ -6,8 +6,7 @@
  * 外壳：先**撑大扑面**（1.1 倍，像冲出隧道口那一刻），再急速收成中心一点。
  */
 
-import { For } from 'solid-js';
-import { exitPhase } from '../../phase';
+import { createSignal, For } from 'solid-js';
 import { EASE } from '../../shell';
 import { playMusic } from '../../audio';
 import exitMusicUrl from '../../assets/港铁关门提示音.mp3';
@@ -20,9 +19,13 @@ const LAMP_COUNT = 7;
 const PUSH_MS = 1100;
 const COLLAPSE_MS = 2700;
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'ride' | 'burst';
+const [stage, setStage] = createSignal<Stage>('ride');
+
 function Cabin() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			{/* 车窗：窗外的一切都发生在这一个框里 */}
 			<div class={styles.window}>
 				<div class={styles.outside}>
@@ -53,10 +56,12 @@ const theme: ExitTheme = {
 	desc: '车厢内向外看，冲出隧道口后窗口先撑大再收成一点',
 	Component: Cabin,
 
-	sound: (onCue) => playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 }, onCue),
+	async run({ shell }) {
+		setStage('ride');
+		await playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 });
 
-	// 两段：先原地撑大 10%（画面扑面而来，窗口略微超出屏幕），再从撑大态急速收成中心一点
-	shell: async (shell) => {
+		setStage('burst');
+		// 两段：先原地撑大 10%（画面扑面而来，窗口略微超出屏幕），再从撑大态急速收成中心一点
 		await shell.run((t, f) => {
 			const k = 1 + 0.1 * EASE.easeOutExpo(t);
 			const width = f.width * k;

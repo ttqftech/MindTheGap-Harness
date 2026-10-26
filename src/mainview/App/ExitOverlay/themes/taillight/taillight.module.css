@@ -112,11 +112,11 @@
 
 /* ---------- shell 阶段：灯先闪灭，再连画面一起没 ---------- */
 
-.root[data-phase='shell'] .lamps {
+.root[data-stage='depart'] .lamps {
 	animation: blinkOut 1.1s ease-out forwards;
 }
 
-.root[data-phase='shell'] .sign {
+.root[data-stage='depart'] .sign {
 	animation: fadeOut 0.7s ease-in forwards;
 }
 

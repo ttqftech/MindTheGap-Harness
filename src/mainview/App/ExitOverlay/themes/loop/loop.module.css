@@ -136,15 +136,15 @@
 
 /* ---------- shell 阶段：整张图跟着窗口一起拧向中心 ---------- */
 
-.root[data-phase='shell'] .map {
+.root[data-stage='spiral'] .map {
 	animation: spiral 4.2s cubic-bezier(0.5, 0, 0.7, 0.4) forwards;
 }
 
-.root[data-phase='shell'] .train {
+.root[data-stage='spiral'] .train {
 	animation: orbitFast 4.2s cubic-bezier(0.3, 0, 0.6, 1) forwards;
 }
 
-.root[data-phase='shell'] .caption {
+.root[data-stage='spiral'] .caption {
 	animation: fadeOut 0.7s ease-in forwards;
 }
 

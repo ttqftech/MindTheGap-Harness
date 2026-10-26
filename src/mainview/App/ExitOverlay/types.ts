@@ -45,20 +45,20 @@ export type ExitThemeId =
 	| 'taillight';
 
 /**
- * 一个退场主题 = 一段画面 + 一段声音 + 一段外壳动效。
- *
- * ⚠️ 时间与曲线**全在主题里**：加新主题不需要动 electrobun 那边（bun/exitSequence.ts
- * 只负责拦截关闭、停会话、等「放完了」、退出）。
+ * 主题跑退场时拿到的东西。编排层（index.ts）只给这两个，其余全不干预。
+ */
+export interface ExitRunContext {
+	readonly preview: boolean;	// 预览模式下，不退出进程，结束后把窗口还原
+	readonly shell: ShellAnimator;	// 外壳驱动，主题自己在这上面编排
+}
+
+/**
+ * 退场主题
  */
 export interface ExitTheme {
 	id: ExitThemeId;
-	/** 设置页分段控件上的短名 */
-	label: string;
-	/** 设置页里的一句说明 */
-	desc: string;
+	label: string;	// 设置页分段控件上的短名
+	desc: string;	// 设置页里的一句说明
 	Component: Component;
-	/** 主题的声音：到点了调 onCue()，「什么算到点」由主题自己定（音乐时间轴 / 合成音长度） */
-	sound: (onCue: () => void) => void;
-	/** 外壳动效：窗口怎么消失，每个主题各一份 */
-	shell: (shell: ShellAnimator) => Promise<void>;
+	run: (ctx: ExitRunContext) => Promise<void>;
 }

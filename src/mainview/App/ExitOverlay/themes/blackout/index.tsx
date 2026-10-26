@@ -6,8 +6,7 @@
  * 外壳：**阶梯式收窄** —— 分 5 档从两侧同时收，档间有停顿，像卷帘一档档落下。
  */
 
-import { For } from 'solid-js';
-import { exitPhase } from '../../phase';
+import { createSignal, For } from 'solid-js';
 import { EASE, sleep } from '../../shell';
 import { playSynth, type SynthEvent } from '../../audio';
 import styles from './blackout.module.css';
@@ -35,9 +34,13 @@ const SOUNDS: SynthEvent[] = [
 
 const LAMPS = [0, 1, 2, 3, 4];
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'dim' | 'out';
+const [stage, setStage] = createSignal<Stage>('dim');
+
 function Blackout() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.tunnel} />
 
 			{/* 顶部灯带：一盏盏熄 */}
@@ -73,11 +76,13 @@ const theme: ExitTheme = {
 	desc: '站台逐盏熄灯，窗口一档档收窄',
 	Component: Blackout,
 
-	sound: (onCue) => playSynth(SOUNDS, CUE_MS, onCue),
+	async run({ shell }) {
+		setStage('dim');
+		await playSynth(SOUNDS, CUE_MS);
 
-	// 阶梯式：每档收掉 1/STEPS，档内用 easeOutExpo（「咔」一下到位），档间停一下。
-	// 与隧道那种连续收窄的区别是离散感 —— 一档一声继电器。
-	shell: async (shell) => {
+		setStage('out');
+		// 阶梯式：每档收掉 1/STEPS，档内用 easeOutExpo（「咔」一下到位），档间停一下。
+		// 与隧道那种连续收窄的区别是离散感 —— 一档一声继电器。
 		for (let step = 1; step <= STEPS; step++) {
 			const from = (step - 1) / STEPS;
 			await shell.run((t, f) => {

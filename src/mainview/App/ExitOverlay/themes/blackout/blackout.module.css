@@ -175,7 +175,7 @@
 }
 
 /* shell 阶段：字先被抽走，剩下的全黑 */
-.root[data-phase='shell'] .closed {
+.root[data-stage='out'] .closed {
 	animation: fade 0.6s ease-in forwards;
 }
 

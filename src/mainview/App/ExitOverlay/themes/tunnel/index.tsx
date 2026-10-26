@@ -6,8 +6,7 @@
  * 外壳：7s 后 4s 内左右同时收窄到 0 —— 宽度归零 = 列车驶进隧道尽头。
  */
 
-import { For } from 'solid-js';
-import { exitPhase } from '../../phase';
+import { createSignal, For } from 'solid-js';
 import { EASE } from '../../shell';
 import { playMusic } from '../../audio';
 import exitMusicUrl from '../../assets/港铁关门提示音.mp3';
@@ -17,11 +16,14 @@ import type { ExitTheme } from '../../types';
 /** 隧道环（由小放大淡出，模拟一节节穿过的照明环） */
 const RING_COUNT = 9;
 /** 线路图上的站点（最后一个是本次终点） */
-const STATIONS = ['Code', 'Daily', 'Storage', 'Review', 'MindTheGap'];
+const STATIONS = ['小学', '高中', '大学', '硕士', '博士', '失业', '离世'];
+
+type Stage = 'arrive' | 'depart';
+const [stage, setStage] = createSignal<Stage>('arrive');
 
 function Tunnel() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			{/* 隧道 */}
 			<div class={styles.tunnel}>
 				<For each={Array.from({ length: RING_COUNT })}>
@@ -36,7 +38,7 @@ function Tunnel() {
 				<div class={styles.lineTrack} />
 				<For each={STATIONS}>
 					{(name, i) => (
-						<div class={styles.station} style={{ 'animation-delay': `${i() * 0.55}s`, left: `${8 + i() * 21}%` }}>
+						<div class={styles.station} style={{ 'animation-delay': `${i() * 0.55}s`, left: `${8 + i() * 14}%` }}>
 							<span class={styles.stationDot} />
 							<span class={styles.stationName}>{name}</span>
 						</div>
@@ -62,9 +64,9 @@ function Tunnel() {
 
 			{/* 报站 */}
 			<div class={styles.announce}>
-				<div class={styles.nextStation}>下一站 · NEXT STATION</div>
-				<div class={styles.terminus}>MindTheGap</div>
-				<div class={styles.subtitle}>本次列车终点站 MindTheGap · GAPPERS SAVE THE WORLD</div>
+				<div class={styles.nextStation}>车门即将关闭</div>
+				<div class={styles.terminus}>PLEASE MIND THE GAP!</div>
+				<div class={styles.subtitle}>GAPPERS SAVE THE WORLD!</div>
 			</div>
 
 			{/* 站台：安全线（黄黑警示带）向后流动 */}
@@ -82,14 +84,18 @@ const theme: ExitTheme = {
 	desc: '列车进站报站，窗口左右同时收成一条缝',
 	Component: Tunnel,
 
-	sound: (onCue) => playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 }, onCue),
+	async run({ shell }) {
+		setStage('arrive');
+		// 这首曲子的第 7 秒进「离站」段，到那儿才开始收窗口（全曲 11.2s，收 4s 正好赶在结束前）
+		await playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 });
 
-	// 左右同时收窄：宽度每少 2px，left 就右移 1px，高度不动
-	shell: (shell) =>
-		shell.run((t, f) => {
-			const width = f.width * (1 - EASE.easeInOutCubic(t));
-			return { x: f.x + (f.width - width) / 2, y: f.y, width, height: f.height };
-		}, 4000),
+		setStage('depart');
+		// 左右同时收窄：宽度每少 2px，left 就右移 1px，高度不动
+		await shell.run((t, f0) => {
+			const width = f0.width * (1 - EASE.easeInOutCubic(t));
+			return { x: f0.x + (f0.width - width) / 2, y: f0.y, width, height: f0.height };
+		}, 4000);
+	},
 };
 
 export default theme;

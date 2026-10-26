@@ -6,7 +6,7 @@
  * 外壳：**宽高全程不变，整个窗口匀速向左滑出屏幕** —— 唯一一个「位移型」主题。
  */
 
-import { exitPhase } from '../../phase';
+import { createSignal } from 'solid-js';
 import { EASE } from '../../shell';
 import { playSynth, type SynthEvent } from '../../audio';
 import styles from './turnstile.module.css';
@@ -30,9 +30,13 @@ const SOUNDS: SynthEvent[] = [
 	{ at: CUE_MS, kind: 'hum', freq: 84, durationMs: 900 },
 ];
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'check' | 'leave';
+const [stage, setStage] = createSignal<Stage>('check');
+
 function Turnstile() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.hall} />
 			<div class={styles.floor} />
 
@@ -74,11 +78,13 @@ const theme: ExitTheme = {
 	desc: '刷卡出站，窗口整体向左滑出屏幕',
 	Component: Turnstile,
 
-	sound: (onCue) => playSynth(SOUNDS, CUE_MS, onCue),
+	async run({ shell }) {
+		setStage('check');
+		await playSynth(SOUNDS, CUE_MS);
 
-	// 两段：先原地顿一下（像闸机犹豫了半拍），再匀速向左滑出屏幕。
-	// 宽高全程不变，所以这一主题的画面不会被两侧裁掉，是整体「走掉」的观感。
-	shell: async (shell) => {
+		setStage('leave');
+		// 两段：先原地顿一下（像闸机犹豫了半拍），再匀速向左滑出屏幕。
+		// 宽高全程不变，所以这一主题的画面不会被两侧裁掉，是整体「走掉」的观感。
 		await shell.run((t, f) => ({
 			x: f.x + Math.sin(t * Math.PI * 4) * 5 * (1 - EASE.linear(t)),
 			y: f.y,

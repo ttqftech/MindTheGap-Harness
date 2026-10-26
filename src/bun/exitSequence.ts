@@ -36,11 +36,16 @@ let options: ExitOptions | null = null;
 // #endregion
 
 /** 装到主窗口上：所有 WM_CLOSE 路径（右上角 / Alt+F4 / 系统菜单 / 任务栏）都会先过这里 */
-export function installExitSequence(options: ExitOptions) {
-	options = options;
-	const win = options.getWindow();
+export function installExitSequence(opts: ExitOptions) {
+	options = opts;
+	const win = opts.getWindow();
 	if (!win) return;
 	win.on('will-close', (event: any) => {
+		// 收尾阶段是我们自己发起的 close —— 放行，别再走一遍序列
+		if (state === 'closing') {
+			event.response = { allow: true };
+			return;
+		}
 		if (state === 'idle') {
 			// 同步拦截：不放行，等前端把动画放完自己来收
 			event.response = { allow: false };
@@ -49,14 +54,14 @@ export function installExitSequence(options: ExitOptions) {
 		}
 		// 已经在退场还要再关一次 = 用户想立刻走（动画卡死时的唯一出路），直接收尾
 		logMsg('[Exit] 退场中又收到关闭事件，立即退出');
+		event.response = { allow: false };
 		finish();
 	});
 }
 
 /** 前端上报：动画与外壳动效都已结束 */
 export function notifyExitFinished() {
-	if (state !== 'exiting') return;
-	logMsg('[Exit] 前端退场结束，收尾');
+	logMsg(`[Exit] 前端退场结束（当前状态 ${state}），收尾`);
 	finish();
 }
 

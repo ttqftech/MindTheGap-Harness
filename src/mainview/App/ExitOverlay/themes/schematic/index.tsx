@@ -6,8 +6,7 @@
  * 外壳：**向右上角**收 —— x 增大、y 不动、宽高同时归零，像整张图被吸进终点那个点。
  */
 
-import { For } from 'solid-js';
-import { exitPhase } from '../../phase';
+import { createSignal, For } from 'solid-js';
 import { EASE } from '../../shell';
 import { playSynth, type SynthEvent } from '../../audio';
 import styles from './schematic.module.css';
@@ -38,9 +37,13 @@ const SOUNDS: SynthEvent[] = [
 	{ at: 3260, kind: 'ping', freq: 1760, durationMs: 520 },
 ];
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'trace' | 'collapse';
+const [stage, setStage] = createSignal<Stage>('trace');
+
 function Schematic() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.grid} />
 
 			<svg class={styles.map} viewBox="0 0 1200 600" xmlns="http://www.w3.org/2000/svg">
@@ -72,16 +75,19 @@ const theme: ExitTheme = {
 	desc: '光点跑到线路终点，窗口向右上角收成一点',
 	Component: Schematic,
 
-	sound: (onCue) => playSynth(SOUNDS, CUE_MS, onCue),
+	async run({ shell }) {
+		setStage('trace');
+		await playSynth(SOUNDS, CUE_MS);
 
-	// 右上角锚定：x 一路右移、y 不动，宽高同时收缩 → 收进右上角那个点
-	shell: (shell) =>
-		shell.run((t, f) => {
+		setStage('collapse');
+		// 右上角锚定：x 一路右移、y 不动，宽高同时收缩 → 收进右上角那个点
+		await shell.run((t, f) => {
 			const e = EASE.easeInOutQuint(t);
 			const width = f.width * (1 - e);
 			const height = f.height * (1 - e);
 			return { x: f.x + (f.width - width), y: f.y, width, height };
-		}, 3000),
+		}, 3000);
+	},
 };
 
 export default theme;

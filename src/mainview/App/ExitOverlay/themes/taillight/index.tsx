@@ -6,16 +6,20 @@
  * 外壳：**右下角钉死**收成一点，且高度比宽度收得快 —— 先被压扁，再没掉。
  */
 
-import { exitPhase } from '../../phase';
+import { createSignal } from 'solid-js';
 import { EASE } from '../../shell';
 import { playMusic } from '../../audio';
 import exitMusicUrl from '../../assets/港铁关门提示音.mp3';
 import styles from './taillight.module.css';
 import type { ExitTheme } from '../../types';
 
+/** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
+type Stage = 'fade' | 'depart';
+const [stage, setStage] = createSignal<Stage>('fade');
+
 function Taillight() {
 	return (
-		<div class={styles.root} data-phase={exitPhase() ?? 'play'}>
+		<div class={styles.root} data-stage={stage()}>
 			{/* 隧道轮廓与掠过的壁灯 */}
 			<div class={styles.tunnel}>
 				<div class={styles.rib} />
@@ -47,16 +51,19 @@ const theme: ExitTheme = {
 	desc: '末班车尾灯远去熄灭，窗口向右下角压扁着收没',
 	Component: Taillight,
 
-	sound: (onCue) => playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 }, onCue),
+	async run({ shell }) {
+		setStage('fade');
+		await playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 });
 
-	// 右下角钉死：右下两条边不动，左上两条边往这边追。
-	// 高度用更陡的曲线，于是先被压成一条扁片，再被抽掉 —— 像尾灯沉进轨道尽头
-	shell: (shell) =>
-		shell.run((t, f) => {
+		setStage('depart');
+		// 右下角钉死：右下两条边不动，左上两条边往这边追。
+		// 高度用更陡的曲线，于是先被压成一条扁片，再被抽掉 —— 像尾灯沉进轨道尽头
+		await shell.run((t, f) => {
 			const width = f.width * (1 - EASE.easeInOutCubic(t));
 			const height = f.height * (1 - EASE.easeInOutQuint(t));
 			return { x: f.x + f.width - width, y: f.y + f.height - height, width, height };
-		}, 3800),
+		}, 3800);
+	},
 };
 
 export default theme;
