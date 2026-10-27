@@ -145,6 +145,14 @@ abstract class BaseMcpClient {
 		}));
 	}
 
+	/**
+	 * 探测服务器是否还通着（保活用，见 manager 的 ensureAlive）。
+	 * 任何网络层失败（连不上、超时）都会抛，由调用方当「不通」处理。
+	 */
+	async ping(timeoutMs = 3000): Promise<void> {
+		await this.requestJsonrpcWithTimeout('ping', {}, timeoutMs);
+	}
+
 	async callTool(name: string, args: Record<string, unknown>, timeoutMs = 60000): Promise<McpCallToolResult> {
 		const result = await this.requestJsonrpcWithTimeout('tools/call', { name, arguments: args ?? {} }, timeoutMs) as any;
 		return {
@@ -165,7 +173,7 @@ abstract class BaseMcpClient {
  */
 const WIN_CMD_SHIMS = ['npx', 'npm', 'yarn', 'pnpm', 'bun', 'deno'];
 
-function resolveCommand(command: string): string {
+export function resolveCommand(command: string): string {
 	if (process.platform !== 'win32') return command;
 	const lower = command.toLowerCase();
 	if (WIN_CMD_SHIMS.includes(lower) && !/\.(cmd|bat|exe)$/i.test(command)) {
@@ -349,6 +357,7 @@ export interface McpClientLike {
 	initialize(): Promise<void>;
 	listTools(): Promise<McpTool[]>;
 	callTool(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<McpCallToolResult>;
+	ping(timeoutMs?: number): Promise<void>;
 	getServerInfo(): { name?: string; version?: string };
 	close(): void;
 }

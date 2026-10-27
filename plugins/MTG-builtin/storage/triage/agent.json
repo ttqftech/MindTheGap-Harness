@@ -7,7 +7,7 @@
 	"delegatable": ["scan", "analyze", "clean"],
 	"model": "standard",
 	"ability": {
-		"mcp": "none",
+		"mcpDisabled": true,
 		"tools": {
 			"allow": ["delegate", "finish", "ask_user", "task_list_read", "task_list_write"]
 		}

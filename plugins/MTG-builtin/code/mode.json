@@ -5,7 +5,7 @@
 	"rootAgent": "intent",
 	"maxDepth": 3,
 	"taskList": { "enabled": true, "writable": true },
-	"mcp": "none",
+	"mcpDisabled": false,
 	"limits": { "totalRounds": 45, "agentInstanceRounds": 15, "warnAtRemaining": 3 },
 	"ui": { "icon": "🧭", "accent": "blue" }
 }

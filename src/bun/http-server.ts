@@ -18,7 +18,7 @@ import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
-import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot } from './storage';
+import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers } from './storage';
 import { logMsg } from './utils';
 
 export const HTTP_PORT = 18999;
@@ -525,8 +525,19 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				settings.mcpServers = servers;
 				// 配置变了立即同步连接（内部串行化，UI 连续保存也安全）
 				// 传裸数据而不是 settings.mcpServers 代理：manager 会长期持有 config 做新旧比对
-				void mcpManager.syncAll(servers);
+				// ⚠️ 必须 await：PUT 返回即代表连接已同步完，前端紧跟着读 /api/mcp/status 才是新状态。
+				//    （带 launch 的 http 服务器要拉进程 + 探活，可能要几秒，这正是以前状态点不更新的原因）
+				await mcpManager.syncAll(servers);
 				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 重置为默认：整份写回内置示例配置（用户自己加的服务器不保留）
+			if (req.method === 'POST' && path === '/api/settings/mcp-servers/reset') {
+				const defaults = snapshot(defaultMcpServers());
+				settings.mcpServers = defaults;
+				await mcpManager.syncAll(snapshot(settings.mcpServers));
+				sendJson(res, 200, { ok: true, servers: defaults });
 				return;
 			}
 

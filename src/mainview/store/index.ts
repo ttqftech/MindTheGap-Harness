@@ -813,9 +813,15 @@ export const actions = {
 		await agentBridge.setMcpServers(state.mcpServers);
 		await actions.refreshMcpStatus();
 	},
+	/** 重置为默认：后端整份写回内置示例配置，前端跟着换成后端返回的列表 */
+	async resetMcpServers() {
+		const servers = await agentBridge.resetMcpServers();
+		setState('mcpServers', servers);
+		await actions.refreshMcpStatus();
+		return servers;
+	},
 	async refreshMcpStatus() {
-		// 后端是异步连接的，稍等一下再取状态，避免刚点完「连接」就读到旧值
-		await new Promise((r) => setTimeout(r, 300));
+		// 后端 PUT / connect 都会 await syncAll 完成后才返回，所以这里读到的一定是同步后的状态
 		const status = await agentBridge.getMcpStatus();
 		setState('mcpStatus', status);
 		return status;

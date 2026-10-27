@@ -36,8 +36,8 @@ export interface PluginManifest {
 export interface AbilityPolicy {
 	/** 工具白名单：不写 allow = 全部内置工具（再减去 deny）；写了 = 只保留 allow 内且不在 deny 内的 */
 	tools?: { allow?: string[]; deny?: string[] };
-	/** MCP 工具可见性：none / all / 服务器 id 白名单 */
-	mcp?: 'none' | 'all' | string[];
+	/** 显式关闭 MCP 工具（默认 false = 跟随 mode 级策略） */
+	mcpDisabled?: boolean;
 	/** 该 Agent 的工具调用是否必填 reason（默认跟随全局 true） */
 	requireReason?: boolean;
 }
@@ -89,8 +89,8 @@ export interface ModeDefinition {
 	maxDepth: number;
 	/** 任务清单：功能开关 + 是否可写（工具层面）。提示词里要不要内嵌，由该 Agent 的 prompt.md 自己决定 */
 	taskList?: { enabled: boolean; writable: boolean };
-	/** 该模式默认的 MCP 策略（可被 agent 级 ability.mcp 覆盖） */
-	mcp?: 'none' | 'all' | string[];
+	/** 该模式是否关闭 MCP 工具（默认 false = 开放） */
+	mcpDisabled?: boolean;
 	/** 循环预算（缺省时用 runner 里的默认值） */
 	limits?: ModeLimits;
 	ui?: { icon?: string; accent?: string };
@@ -608,6 +608,14 @@ export interface Folder {
 /** MCP 传输方式 */
 export type McpTransport = 'stdio' | 'http';
 
+/** HTTP 传输时由本应用代拉的进程（保活用，见 mcp/manager.ts 的 ensureAlive） */
+export interface McpLaunchConfig {
+	command: string;	// 可执行文件（node / python 等），Windows 上会自动补 .cmd 后缀
+	args?: string[];
+	env?: Record<string, string>;	// 与 process.env 合并，优先级更高
+	cwd?: string;
+}
+
 /** MCP 服务器配置（持久化） */
 export interface McpServerConfig {
 	id: string;
@@ -620,6 +628,7 @@ export interface McpServerConfig {
 	cwd?: string;	// stdio: 子进程工作目录
 	url?: string;	// http: MCP 端点地址（Streamable HTTP）
 	headers?: Record<string, string>;	// http: 附加请求头
+	launch?: McpLaunchConfig;	// http: 探测不到时由本应用拉起该进程
 }
 
 /** 一个 MCP 工具 */

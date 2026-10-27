@@ -251,7 +251,7 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 		agents,
 		maxDepth: raw.maxDepth ?? 0,
 		taskList: raw.taskList ?? { enabled: false, writable: false },
-		mcp: raw.mcp ?? 'none',
+		mcpDisabled: raw.mcpDisabled ?? false,
 		limits: raw.limits,
 		ui: raw.ui,
 		// 反思提示词按 agent 级 > 模式级 解析（agent 级在 def.reflectionPrompt 里）

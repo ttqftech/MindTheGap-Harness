@@ -5,7 +5,7 @@
 	"reflectionCount": 0,
 	"model": "standard",
 	"ability": {
-		"mcp": "none",
+		"mcpDisabled": true,
 		"tools": {
 			"allow": ["bash", "file_list", "file_read", "file_search", "file_write", "file_create", "finish"]
 		}

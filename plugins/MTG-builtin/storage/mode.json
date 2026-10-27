@@ -5,7 +5,7 @@
 	"rootAgent": "triage",
 	"maxDepth": 3,
 	"taskList": { "enabled": true, "writable": true },
-	"mcp": "none",
+	"mcpDisabled": true,
 	"limits": { "totalRounds": 150, "agentInstanceRounds": 50, "warnAtRemaining": 3 },
 	"ui": { "icon": "🧹", "accent": "teal" }
 }

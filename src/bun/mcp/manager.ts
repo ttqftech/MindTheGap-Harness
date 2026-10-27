@@ -18,9 +18,14 @@ import type {
 	ToolResult,
 } from '@shared/agent';
 import { createMcpClient, type McpClientLike, type McpCallToolResult } from './client';
+import { ensureStarted, kill as killProcess, killAll as killAllProcesses, getStderrTail } from './processes';
 import { setDynamicTools, clearDynamicTools } from '../agent/tools';
 import type { AgentTool } from '../agent/tools';
 import { logMsg } from '../utils';
+
+const PROBE_TIMEOUT_MS = 2000;	// 保活：单次探测的超时
+const READY_TIMEOUT_MS = 5000;	// 保活：拉起进程后等它就绪的上限
+const READY_INTERVAL_MS = 200;	// 保活：就绪探测的间隔
 
 /** 工具名里允许的字符（多数 LLM 供应商要求 ^[a-zA-Z0-9_-]+$） */
 function sanitizePrefix(raw: string): string {
@@ -42,15 +47,31 @@ class McpManager {
 	private connections = new Map<string, Connection>();
 	/** serverId → 最近一次错误 */
 	private lastErrors = new Map<string, string>();
+	/** serverId → 连不上的那次的配置（界面要显示「未连通」，光有错误串不够） */
+	private failedConfigs = new Map<string, McpServerConfig>();
 	/** 同步锁，避免 UI 连续保存设置时并发连接 */
 	private syncing: Promise<void> | null = null;
 
 	/* ---------- 状态查询 ---------- */
 
 	getStatus(): McpServerStatus[] {
-		return this.connections.size === 0 && this.lastErrors.size === 0
-			? []
-			: Array.from(this.connections.values()).map((c) => this.toStatus(c));
+		const out = Array.from(this.connections.values()).map((c) => this.toStatus(c));
+		// 连不上的也要进列表，否则界面上只看得到一个「没连上」的红点，看不到原因
+		for (const [id, error] of this.lastErrors) {
+			if (this.connections.has(id)) continue;
+			const cfg = this.failedConfigs.get(id);
+			if (!cfg) continue;
+			out.push({
+				id,
+				name: cfg.name,
+				enabled: cfg.enabled,
+				connected: false,
+				transport: cfg.transport,
+				error,
+				tools: [],
+			});
+		}
+		return out;
 	}
 
 	private toStatus(c: Connection): McpServerStatus {
@@ -125,8 +146,12 @@ class McpManager {
 
 	private async connect(config: McpServerConfig): Promise<McpToolInfo[]> {
 		this.lastErrors.delete(config.id);
+		this.failedConfigs.delete(config.id);
 		const client = createMcpClient(config);
 		try {
+			// 保活：连接前先探一次，探不到就按 launch 把进程拉起来
+			const alive = await this.ensureAlive(config, client);
+			if (!alive.ok) throw new Error(alive.error ?? 'MCP 未连通');
 			await client.initialize();
 			const rawTools = await client.listTools();
 			const tools = this.registerTools(config, rawTools);
@@ -137,18 +162,84 @@ class McpManager {
 		} catch (err) {
 			client.close();
 			this.lastErrors.set(config.id, (err as Error).message);
+			this.failedConfigs.set(config.id, config);
 			throw err;
 		}
 	}
 
 	disconnect(id: string): void {
 		const conn = this.connections.get(id);
+		// HTTP 服务器不会自己退出，断开/禁用时把托管进程一起收掉
+		killProcess(id);
+		this.lastErrors.delete(id);
+		this.failedConfigs.delete(id);
 		if (!conn) return;
 		conn.client.close();
 		this.connections.delete(id);
 		clearDynamicTools(this.sourceId(id));
 		logMsg(`[MCP] 已断开 "${conn.config.name}"`);
 	}
+
+	// #region 保活
+
+	/**
+	 * 确认这台服务器现在打得通 —— 后端启动时（connect）和每次调用前（callTool）都走一遍。
+	 *
+	 * 1. 先发一次探测请求，通得过就过
+	 * 2. 通不过且填了启动命令 → 拉起进程，再重试探测直到就绪
+	 * 3. 依然没回应 → 判定未连通
+	 *
+	 * @returns restarted 表示这次把进程拉起来了：服务端会话已经丢了，调用方要重新握手
+	 */
+	private async ensureAlive(config: McpServerConfig, client: McpClientLike): Promise<{ ok: boolean; restarted: boolean; error?: string }> {
+		// stdio 的进程由客户端自己持有，没有可以独立探测的端点
+		if (config.transport !== 'http') return { ok: true, restarted: false };
+
+		if (await this.probe(client)) return { ok: true, restarted: false };
+
+		if (!config.launch?.command) {
+			return { ok: false, restarted: false, error: 'MCP 未连通：探测无响应，且未配置启动命令' };
+		}
+
+		await ensureStarted(config);
+		if (await this.waitReady(client)) return { ok: true, restarted: true };
+
+		const tail = getStderrTail(config.id).trim();
+		const detail = tail ? `（stderr: ${tail.slice(-300)}）` : '';
+		return {
+			ok: false,
+			restarted: true,
+			error: `MCP 未连通：已尝试拉起 ${config.launch.command} 但仍无响应${detail}`,
+		};
+	}
+
+	/** 一次探测：能应答就算通 */
+	private async probe(client: McpClientLike): Promise<boolean> {
+		try {
+			await client.ping(PROBE_TIMEOUT_MS);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** 刚拉起的进程还没监听端口，轮询到它就绪为止 */
+	private async waitReady(client: McpClientLike): Promise<boolean> {
+		const deadline = Date.now() + READY_TIMEOUT_MS;
+		while (Date.now() < deadline) {
+			if (await this.probe(client)) return true;
+			await new Promise((r) => setTimeout(r, READY_INTERVAL_MS));
+		}
+		return false;
+	}
+
+	/** 退场：断开全部连接并收掉托管进程 */
+	stopAll(): void {
+		for (const id of Array.from(this.connections.keys())) this.disconnect(id);
+		killAllProcesses();
+	}
+
+	// #endregion
 
 	/**
 	 * 测试一个配置是否可用（不修改当前连接状态）。
@@ -182,6 +273,28 @@ class McpManager {
 		const tool = conn.tools.find((t) => t.name === fullName);
 		if (!tool) {
 			return { success: false, content: `MCP 工具 "${fullName}" 未找到`, error: 'MCP_TOOL_NOT_FOUND' };
+		}
+
+		// 保活：调用前先探一次，探不到就拉起进程；仍无响应即判定未连通
+		const alive = await this.ensureAlive(conn.config, conn.client);
+		if (!alive.ok) {
+			return {
+				success: false,
+				content: `调用 MCP 工具 "${fullName}" 失败：${alive.error ?? 'MCP 未连通'}`,
+				error: 'MCP_UNREACHABLE',
+			};
+		}
+		// 进程被重新拉起过 → 服务端会话已丢失，必须重新握手，否则旧 session-id 回带会被拒
+		if (alive.restarted) {
+			try {
+				await conn.client.initialize();
+			} catch (err) {
+				return {
+					success: false,
+					content: `调用 MCP 工具 "${fullName}" 失败：重新握手失败 ${(err as Error).message}`,
+					error: 'MCP_UNREACHABLE',
+				};
+			}
 		}
 
 		try {

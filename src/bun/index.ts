@@ -91,7 +91,11 @@ async function createMainWindow() {
 			mainWindow?.webview.executeJavascript('window.__mtgExitSequence?.()');	// 直接往页面打脚本 —— dev 下 HMR 换掉模块后 Electroview 不会重建，message handler 可能还是旧的（没注册 exitSequence），需要手动调用
 		},
 		stopAllRuns: () => cancelAllRunners(),
-		stopServer: () => stopHttpServer(),
+		stopServer: () => {
+			stopHttpServer();
+			// 收掉托管的 MCP 进程：HTTP 服务器没有 stdin 关闭信号，不 kill 会成孤儿并占着端口
+			mcpManager.stopAll();
+		},
 	});
 
 	// Windows：给无边框窗口补回系统窗口样式位，拿回投影 / 圆角 / snap（详见 windowsPatch.ts 文件头）

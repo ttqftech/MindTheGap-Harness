@@ -6,7 +6,6 @@
 	"reflectionCount": 1,
 	"delegatable": ["explore", "websearch"],
 	"ability": {
-		"mcp": "none",
 		"tools": {
 			"allow": [
 				"file_read", "file_list", "file_search", "file_write",

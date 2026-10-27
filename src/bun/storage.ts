@@ -156,12 +156,12 @@ export function snapshot<T>(value: T): T {
 // #region 设置（settings.json）
 
 /**
- * 定位内置示例 MCP 服务器（求正弦）的入口文件。
+ * 定位内置示例 MCP 服务器的入口文件（mcp-servers/<name>/index.js）。
  * 主进程的 cwd 在 dev（项目根）和打包后（应用目录）下并不一致，
  * 而 MCP 服务器是 spawn 出来的独立子进程，必须拿到绝对路径才可靠。
  */
-function resolveBuiltinSineServerPath(): string | null {
-	const rel = join('mcp-servers', 'sine', 'index.js');
+function resolveBuiltinServerPath(name: string): string | null {
+	const rel = join('mcp-servers', name, 'index.js');
 	let dir = process.cwd();
 	for (let i = 0; i < 6; i++) {
 		const candidate = join(dir, rel);
@@ -179,7 +179,7 @@ function resolveBuiltinSineServerPath(): string | null {
  * 因为多数 LLM 供应商限制工具名只能由字母数字和下划线组成。
  */
 function builtinSineServer(): McpServerConfig {
-	const path = resolveBuiltinSineServerPath();
+	const path = resolveBuiltinServerPath('sine');
 	return {
 		id: 'builtin-sine',
 		name: 'sine 正弦函数（内置示例）',
@@ -191,6 +191,28 @@ function builtinSineServer(): McpServerConfig {
 	};
 }
 
+/**
+ * 内置示例服务器：求正切（HTTP）。
+ * 与 sine 的差别是传输走 Streamable HTTP，进程由后端按 launch 拉起 —— 顺带把保活链路跑通。
+ * 端口见 mcp-servers/tangent/index.js（默认 3927，可用 TANGENT_MCP_PORT 覆盖）。
+ */
+function builtinTangentServer(): McpServerConfig {
+	const path = resolveBuiltinServerPath('tangent');
+	return {
+		id: 'builtin-tangent',
+		name: 'tangent 正切函数（内置示例）',
+		enabled: path !== null,
+		transport: 'http',
+		url: 'http://127.0.0.1:3927/mcp',
+		launch: { command: 'node', args: path ? [path] : [] },
+	};
+}
+
+/** 内置示例配置。「重置为默认」就是把这份整份写回 settings.mcpServers */
+export function defaultMcpServers(): McpServerConfig[] {
+	return [builtinSineServer(), builtinTangentServer()];
+}
+
 const defaultSettings: ServiceSettings = {
 	providers: [],
 	currentStandardModel: null,
@@ -199,7 +221,7 @@ const defaultSettings: ServiceSettings = {
 	// 这里列出来只是为了让缺字段的老 settings.json 补上一个空键，免得读侧到处判 undefined。
 	basePrompt: '',
 	folders: [{ id: 'local', isLocal: true }],
-	mcpServers: [builtinSineServer()],
+	mcpServers: defaultMcpServers(),
 	debug: {
 		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false },
 		// 内置 mock 默认关。⚠️ 老 settings.json 里的 `debug` 只有 requestLog，而这里是**整对象覆盖**，

@@ -1236,6 +1236,15 @@ function McpTab() {
 		setEditing(null);
 	};
 
+	const handleReset = async () => {
+		const ok = await confirmMsgbox(
+			'重置 MCP 服务器',
+			'将恢复为内置的示例配置，你自己添加的服务器会被移除。确定继续吗？',
+			'重置',
+		);
+		if (ok) await actions.resetMcpServers();
+	};
+
 	const handleDelete = async (s: McpServerConfig) => {
 		const ok = await confirmMsgbox('删除 MCP 服务器', `确定要删除「${s.name}」吗？`, '删除');
 		if (ok) {
@@ -1267,12 +1276,14 @@ function McpTab() {
 					<div class={styles['setting-group-label']}>已接入的 MCP 服务器</div>
 					<div style={{ display: 'flex', gap: "8px" }}>
 						<ffbox-button onclick={() => void actions.refreshMcpStatus()}>刷新状态</ffbox-button>
+						<ffbox-button onclick={() => void handleReset()}>重置为默认</ffbox-button>
 						<ffbox-button type="primary" onclick={startAdd}>+ 添加服务器</ffbox-button>
 					</div>
 				</div>
 
 				<div class={styles['setting-group-desc']}>
 					接入后，服务器提供的工具会以 <code class={styles.mono}>mcp__服务器名__工具名</code> 的形式出现在 Agent 的工具列表里，模型可像内置工具一样调用。
+					模型能不能看到它们由模式的 <code class={styles.mono}>mcp</code> 策略决定（<code class={styles.mono}>mode.json</code> 顶层字段：<code class={styles.mono}>none</code> / <code class={styles.mono}>all</code> / 工具名数组）；内置的编码、日常模式是 <code class={styles.mono}>all</code>。
 				</div>
 
 				<div class={styles['provider-list']}>
@@ -1366,14 +1377,18 @@ function McpEditor(props: {
 	const [local, setLocal] = createStore<{ server: McpServerConfig }>({
 		server: JSON.parse(JSON.stringify(props.server)),
 	});
-	// args / env 用文本编辑（数组结构在输入框里不方便），失焦时解析回填
+	// args / env / launch.args 用文本编辑（数组结构在输入框里不方便），失焦时解析回填
 	const [argsText, setArgsText] = createSignal((props.server.args ?? []).join('\n'));
+	const [launchArgsText, setLaunchArgsText] = createSignal((props.server.launch?.args ?? []).join('\n'));
 	const [envText, setEnvText] = createSignal(
 		Object.entries(props.server.env ?? {}).map(([k, v]) => `${k}=${v}`).join('\n'),
 	);
 
 	const applyArgs = () => {
 		setLocal('server', 'args', argsText().split('\n').map((l) => l.trim()).filter(Boolean));
+	};
+	const applyLaunchArgs = () => {
+		setLocal('server', 'launch', 'args', launchArgsText().split('\n').map((l) => l.trim()).filter(Boolean));
 	};
 	const applyEnv = () => {
 		const env: Record<string, string> = {};
@@ -1385,7 +1400,7 @@ function McpEditor(props: {
 		setLocal('server', 'env', env);
 	};
 	// 保存/测试前确保文本里的改动已同步进对象
-	const flush = () => { applyArgs(); applyEnv(); };
+	const flush = () => { applyArgs(); applyEnv(); applyLaunchArgs(); };
 
 	return (
 		<div>
@@ -1466,6 +1481,41 @@ function McpEditor(props: {
 						onchange={(e) => setLocal('server', 'url', e.detail)}
 					/>
 				</div>
+
+				<div class={styles['setting-group']}>
+					<div class={styles['setting-group-label']}>由本应用启动进程</div>
+					<div class={styles['setting-group-desc']}>
+						开启后，后端在启动时和每次调用前都会探测上面的地址；探测不到就按下面的命令拉起进程，仍无响应则标记为未连通。
+					</div>
+					<ffbox-switch
+						prop:checked={!!local.server.launch}
+						onchange={(e) => setLocal('server', 'launch', e.detail ? { command: 'node', args: [] } : undefined)}
+					/>
+				</div>
+
+				<Show when={local.server.launch}>
+					<div class={styles['setting-group']}>
+						<div class={styles['setting-group-label']}>启动命令</div>
+						<ffbox-normal-input
+							class={styles['ffbox-input']}
+							prop:value={local.server.launch?.command ?? ''}
+							placeholder="node"
+							onchange={(e) => setLocal('server', 'launch', 'command', e.detail)}
+						/>
+					</div>
+
+					<div class={styles['setting-group']}>
+						<div class={styles['setting-group-label']}>参数（每行一个）</div>
+						<textarea
+							class={styles['json-textarea']}
+							rows={2}
+							value={launchArgsText()}
+							oninput={(e) => setLaunchArgsText(e.currentTarget.value)}
+							onblur={applyLaunchArgs}
+							placeholder={'D:\\mcp-servers\\tangent\\index.js'}
+						/>
+					</div>
+				</Show>
 			</Show>
 
 			<div class={styles['setting-group']}>

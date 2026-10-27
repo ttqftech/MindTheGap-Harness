@@ -5,7 +5,7 @@
 	"rootAgent": "router",
 	"maxDepth": 1,
 	"taskList": { "enabled": false, "writable": false },
-	"mcp": "none",
+	"mcpDisabled": false,
 	"limits": { "totalRounds": 14, "agentInstanceRounds": 6, "warnAtRemaining": 2 },
 	"ui": { "icon": "🌤️", "accent": "green" }
 }

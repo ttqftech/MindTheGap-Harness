@@ -276,8 +276,8 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 		}
 
 		// 1.7) 内置正弦 MCP：mcp__sine__sine（30° → 0.5），再 finish 汇总，验 MCP 工具链路
-		// ⚠️ mode.json 的 mcp 策略**只管「能不能被看见」**：它过滤的是发给 LLM 的 tools[] 和提示词里的工具清单（getToolsForAgentInstance → mcpToolsFor）。执行层 getTool() 查的是全量动态源，**不过滤能力**。而 mock 是硬编码输出、压根不看 tools 参数
-		// 所以这个剧本在 mcp:'none' 下照样跑得通，但那是 mock 的假象：换真模型就看不到这个工具。
+		// ⚠️ mode.json 的 mcpDisabled **只管「能不能被看见」**：它过滤的是发给 LLM 的 tools[] 和提示词里的工具清单（getToolsForAgentInstance）。执行层 getTool() 查的是全量动态源，**不过滤能力**。而 mock 是硬编码输出、压根不看 tools 参数
+		// 所以这个剧本在 mcpDisabled:true 下照样跑得通，但那是 mock 的假象：换真模型就看不到这个工具。
 		// ⚠️ 工具名前缀来自 settings.mcpServers 里的 **name**（sanitize 后取首个片段），默认 "sine" → mcp__sine__sine；
 		// 改过服务器显示名的话前缀会跟着变，剧本里这个硬编码名字也要一起改。
 		if (currentScenario === 'sine') {

@@ -7,7 +7,6 @@
 	"delegatable": ["env", "weather"],
 	"model": "standard",
 	"ability": {
-		"mcp": "none",
 		"tools": {
 			"allow": ["delegate", "finish", "ask_user"]
 		}

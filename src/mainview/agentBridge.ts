@@ -386,6 +386,18 @@ export async function setMcpServers(servers: McpServerConfig[]): Promise<boolean
 	}
 }
 
+/** 重置为默认：整份写回内置示例配置，返回重置后的列表 */
+export async function resetMcpServers(): Promise<McpServerConfig[]> {
+	try {
+		const res = await httpFetch<{ ok: boolean; servers: McpServerConfig[] }>('/api/settings/mcp-servers/reset', {
+			method: 'POST',
+		});
+		return res.servers ?? [];
+	} catch {
+		return [];
+	}
+}
+
 /** 运行态：哪些服务器已连上、各自有哪些工具 */
 export async function getMcpStatus(): Promise<McpServerStatus[]> {
 	try {

@@ -7,7 +7,6 @@
 	"delegatable": ["explore", "plan", "engineer", "verify", "review", "websearch"],
 	"model": "standard",
 	"ability": {
-		"mcp": "none",
 		"tools": {
 			"allow": [
 				"file_read", "file_list", "file_search",

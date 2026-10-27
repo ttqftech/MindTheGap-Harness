@@ -5,6 +5,6 @@
 	"rootAgent": "plain",
 	"maxDepth": 0,
 	"taskList": { "enabled": false, "writable": false },
-	"mcp": "none",
+	"mcpDisabled": true,
 	"ui": { "icon": "⬜", "accent": "gray" }
 }

@@ -5,7 +5,7 @@
  * - 编排类工具（delegate / finish / resume_* / ask_child / ask_user / task_list_*）的实现就是调用 Runner 注入的编排原语，自己不碰 ctx 的状态机。
  * - `reason` 由工具层统一注入 JSON Schema 的 required，执行前再从 args 里剥离。
  *
- * 能力过滤：AgentDefinition.ability.tools 白名单 + ability.mcp 策略（见 getToolsForAgentInstance）。
+ * 能力过滤：AgentDefinition.ability.tools 白名单 + mcpDisabled 策略（见 getToolsForAgentInstance）。
  *
  * 注意：主进程运行时是 Cottontail（JSC），不是 Bun。所以必须用 node:* 系列 API，不能用 Bun.xxx。
  */
@@ -131,35 +131,11 @@ export function clearDynamicTools(sourceId: string): void {
 
 // #region 能力过滤
 
-/** 某个 Agent 实际可见的 MCP 工具 */
-function mcpToolsFor(policy: 'none' | 'all' | string[]): AgentTool[] {
-	if (policy === 'none') return [];
-	const out: AgentTool[] = [];
-	for (const [sourceId, list] of dynamicToolSources) {
-		if (!sourceId.startsWith('mcp:')) continue;
-		const serverId = sourceId.slice('mcp:'.length);
-		if (policy === 'all' || policy.includes(serverId)) out.push(...list);
-	}
-	return out;
-}
-
-/**
- * MCP 策略解析优先级：
- * agent.ability.mcp（最具体）> mode.mcp > none
- *
- * （曾经中间还有一层 modeConfig.includeMcp，那是「settings 覆盖 mode.json」时代的产物；
- *   现在模式配置就是 mode.json 本身，includeMcp 的语义等价于 mode.mcp: 'all' | 'none'。）
- */
-export function resolveMcpPolicy(agentDefinition: AgentDefinition, mode: ModeDefinition): 'none' | 'all' | string[] {
-	if (agentDefinition.ability.mcp) return agentDefinition.ability.mcp;
-	return mode.mcp ?? 'none';
-}
-
 /**
  * 某个实例可见的工具集合。
  * - 不写 allow = 全部内置（减去 deny）；写了 = 只保留 allow 内且不在 deny 内的
  * - 编排类工具（delegate）在达到 maxDepth 时被移除
- * - MCP 工具按策略过滤
+ * - MCP 工具按 mcpDisabled 过滤（agent 级优先，否则回退 mode 级，默认开放）
  */
 export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefinition: AgentDefinition, mode: ModeDefinition): AgentTool[] {
 	const allow = agentDefinition.ability.tools?.allow;
@@ -176,8 +152,9 @@ export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefi
 		return true;
 	});
 
-	const mcpPolicy = resolveMcpPolicy(agentDefinition, mode);
-	return [...builtin, ...mcpToolsFor(mcpPolicy)];
+	const mcpDisabled = agentDefinition.ability.mcpDisabled ?? (mode.mcpDisabled ?? false);
+	const mcpTools = mcpDisabled ? [] : Array.from(dynamicToolSources.values()).flat().filter((t) => t.name.startsWith('mcp__'));
+	return [...builtin, ...mcpTools];
 }
 
 // #endregion
