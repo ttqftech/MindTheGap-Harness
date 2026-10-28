@@ -1,4 +1,21 @@
 {
+	// VS Code 调试配置 —— Service（dist/MTGService/MTGService.mjs）
+	//
+	// 调试工作流（F5 = "Debug Service (:18999)"）：
+	//   1) F5 起服务：preLaunchTask 先重打 bundle，node 带 inspector 启动；
+	//      断点直接打在 src/service/** 的 TS 源码上（vite 构建带 sourcemap + sourcesContent）
+	//   2) 零成本驱动：curl -X PUT localhost:18999/api/settings/mock -H "Content-Type: application/json" -d "{\"enabled\":true}"
+	//      （内置 mock，LLM 走假模型、工具照旧真执行，不花 token；跑完记得关）
+	//   3) 桌面端这时再启动会自动 adopt 本服务（探活到就不 spawn，不杀不重启你的调试进程）
+	//
+	// 桌面端已经在跑（占着 18999）时：用 ":18990，与桌面端并存" 那个配置，curl 改打 18990；
+	//   注意这个端口桌面端不会 adopt（它只认 18999），适合「不影响前端、单调后端」。
+	//
+	// 手动在终端起服务想补刀 attach：node --inspect dist/MTGService/MTGService.mjs，再用 ":9229" 那个配置。
+	//
+	// "Hutch Dev" 是整套桌面端启动器（hutch 构建 + spawn launcher.exe），
+	// 注意主进程壳跑在 Cottontail(JSC) 上、断点不可用（见 docs/调试排查经验-*.md）——
+	// 要下断点就调 Service，别调壳。
 	"version": "0.2.0",
 	"configurations": [
 		{
@@ -6,6 +23,36 @@
 			"type": "node",
 			"request": "launch",
 			"program": "${workspaceFolder}/scripts/devWindows.cjs",
+			"console": "integratedTerminal"
+		},
+		{
+			"name": "Debug Service (:18999，代码中指定的默认端口)",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/dist/MTGService/MTGService.mjs",
+			"args": ["--channel=debug"],
+			"cwd": "${workspaceFolder}",
+			"env": { "MTG_HTTP_PORT": "18999" },
+			"preLaunchTask": "build:service",
+			"sourceMaps": true,
+			"outFiles": ["${workspaceFolder}/dist/MTGService/**/*.mjs"],
+			"resolveSourceMapLocations": ["${workspaceFolder}/dist/MTGService/**/*.mjs"],
+			"skipFiles": ["<node_internals>/**"],
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen"
+		},
+		{
+			"name": "Attach to Service (:9229，node 的默认端口)",
+			"type": "node",
+			"request": "attach",
+			"address": "127.0.0.1",
+			"port": 9229,
+			"localRoot": "${workspaceFolder}",
+			"remoteRoot": "${workspaceFolder}",
+			"sourceMaps": true,
+			"outFiles": ["${workspaceFolder}/dist/MTGService/**/*.mjs"],
+			"resolveSourceMapLocations": ["${workspaceFolder}/dist/MTGService/**/*.mjs"],
+			"skipFiles": ["<node_internals>/**"],
 			"console": "integratedTerminal"
 		}
 	]

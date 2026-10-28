@@ -1,0 +1,20 @@
+{
+	// Service（src/service）
+	//
+	// 注意 baseUrl 在本文件里显式声明（相对 config/）：继承来的 baseUrl 相对根 tsconfig 解析，不重写的话 paths 会以 repo 根为基准，两边差一级。
+	"extends": "./tsconfig.base.json",
+	"include": [
+		"../src/service/**/*",
+		"../src/shared/**/*"
+	],
+	"compilerOptions": {
+		"types": ["node"],
+		"baseUrl": ".",
+		"paths": {
+			"@shared/*": ["../src/shared/*"]
+		},
+		// composite 项目需显式 rootDir（覆盖到项目根，shared 在 src/ 下），emit 隔离到 build/
+		"rootDir": "..",
+		"outDir": "../build/tsc-agent"
+	}
+}

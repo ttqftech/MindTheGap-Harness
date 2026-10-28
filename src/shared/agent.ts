@@ -678,7 +678,7 @@ export interface ModelProviderModel {
 export interface MockSettings {
 	/** 打开后，**下一次** LLM 请求就发往内置 mock；运行期间禁止切换（见 http-server 的守卫） */
 	enabled: boolean;
-	/** 剧本名，见 `src/bun/llm/mock.ts` 的 MOCK_SCENARIOS */
+	/** 剧本名，见 `src/service/llm/mock.ts` 的 MOCK_SCENARIOS */
 	scenario: string;
 }
 

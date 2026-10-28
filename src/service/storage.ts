@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Agent Service Storage — MindTheGap-Harness
+   Service Storage — MindTheGap-Harness
 
    持久化层。访问方式全部是 Proxy，读写像操作普通 js object。
 

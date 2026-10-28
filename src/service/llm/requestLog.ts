@@ -5,7 +5,7 @@
    的 HTTP 请求发生了什么、花了多少」。正文不进来（正文在 ctx.json 里），只有形状与用量。
 
    设计要点（docs/Agent架构-v2设计.md §8）：
-   - 唯一埋点在 src/bun/llm/model.ts 的 callLlm()，agent / runner / 工具都不主动写日志
+   - 唯一埋点在 src/service/llm/model.ts 的 callLlm()，agent / runner / 工具都不主动写日志
    - 串行写队列 + 单次 appendFile，避免并发子 Agent 把一行写花
    - 超过 maxBytes 轮转为 requestLog.1.jsonl（只留 1 份历史）
    - **日志是旁路**：写失败只 warn，绝不影响 callLlm 的返回值

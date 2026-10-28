@@ -10,7 +10,7 @@
    逐个 URL 起一个进程会把 5 秒拖成 30 秒。这里一次启动、多页复用、输出 JSON。
 
    用法：
-     node scripts/web-render.mjs [选项] <url> [url...]
+     node runtime/web-render.mjs [选项] <url> [url...]
    选项：
      --format markdown|text|html   正文 extraction 方式（默认 markdown）
      --wait <ms>                   网络空闲后额外等待（默认 0）
@@ -31,7 +31,7 @@ const argv = process.argv.slice(2);
 if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
 	process.stdout.write(
 		[
-			'Usage: node scripts/web-render.mjs [options] <url> [url...]',
+			'Usage: node runtime/web-render.mjs [options] <url> [url...]',
 			'  --format markdown|text|html   (default markdown)',
 			'  --wait <ms>                   extra wait after load (default 0)',
 			'  --selector <css>              wait for selector before extracting',

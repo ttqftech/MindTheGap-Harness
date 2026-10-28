@@ -1,8 +1,8 @@
 /**
- * Agent HTTP Server — MindTheGap-Harness
+ * Service HTTP Server — MindTheGap-Harness
  *
  * 所有 Agent 相关操作走 HTTP（对齐 FFBox 的 serviceBridge）。
- * Agent Service 可脱离 electrobun 独立运行。
+ * Service 可脱离 electrobun 独立运行。
  *
  * v2 的接口见 docs/Agent架构-v2设计.md §12：
  * modes / agent/answer / plugins/reload / requests / tasklist
@@ -11,17 +11,19 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, McpServerConfig, ModeDefinition, ModeSummary } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
-import * as agentRunner from './agent/runner';
-import { getBuiltinToolNames } from './agent/tools';
+import * as agentRunner from './runner';
+import { getBuiltinToolNames } from './tools';
 import { setMockResolver } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
-import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers } from './storage';
-import { logMsg } from './utils';
+import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers, flushAll } from './storage';
+import { logMsg } from '../shared/utils';
 
-export const HTTP_PORT = 18999;
+// 端口可用 MTG_HTTP_PORT 覆盖：调试时想起第二个实例（不杀正在跑的那个）就走它。
+// 主进程（src/desktop/service.ts）与前端都固定用 18999，不受影响。
+export const HTTP_PORT = Number(process.env.MTG_HTTP_PORT) || 18999;
 
 const SERVICE_STARTED_AT = new Date().toISOString();
 
@@ -42,7 +44,7 @@ let serverRef: Server | null = null;
 function healthInfo(): ServiceHealth {
 	return {
 		ok: true,
-		service: 'mindthegap-agent',
+		service: 'mindthegap-service',
 		port: HTTP_PORT,
 		pid: process.pid,
 		channel: serviceChannel,
@@ -189,7 +191,7 @@ async function handleAgentAnswer(params: AgentAnswerRequest) {
 // #endregion
 
 /**
- * 启动 Agent HTTP 服务。
+ * 启动 Service HTTP 服务。
  * @param options.channel electrobun 发布通道（dev / canary / stable），仅用于 health 自报，默认 'unknown'
  */
 export function startHttpServer(options: { channel?: string } = {}) {
@@ -212,6 +214,20 @@ export function startHttpServer(options: { channel?: string } = {}) {
 			// 端口被旧进程占着时，旧进程同样会回 ok，只有 gitCommit / buildTime / pid 能拆穿它
 			if (req.method === 'GET' && path === '/api/health') {
 				sendJson(res, 200, healthInfo());
+				return;
+			}
+
+			// 优雅停机（仅 loopback）：主进程退场 / 父进程死亡时调。
+			// 先回响应再收尾，别让调用方干等一个不会到的响应。
+			if (req.method === 'POST' && path === '/api/shutdown') {
+				const remote = req.socket.remoteAddress ?? '';
+				const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+				if (!isLoopback) {
+					sendJson(res, 403, { ok: false, error: '仅允许本机调用' });
+					return;
+				}
+				sendJson(res, 200, { ok: true });
+				gracefulShutdown('api');
 				return;
 			}
 
@@ -627,6 +643,16 @@ export function startHttpServer(options: { channel?: string } = {}) {
 	});
 
 	serverRef = server;
+	// 端口被占要说人话：独立进程化后最常见的启动失败就是「已经有一个 Service 在跑」
+	// （旧进程 / 开发者手动起的调试服务），裸崩一个 EADDRINUSE 没法定位。
+	server.on('error', (err: NodeJS.ErrnoException) => {
+		if (err.code === 'EADDRINUSE') {
+			logMsg.error(`[HttpServer] 端口 ${HTTP_PORT} 已被占用 —— 已有一个 Service 在跑（旧进程或调试服务）。若要独占，请先结束它；若只是想复用，什么都不用做。`);
+		} else {
+			logMsg.error(`[HttpServer] 监听 ${HTTP_PORT} 失败: ${err.message}`);
+		}
+		process.exit(1);
+	});
 	server.listen(HTTP_PORT, () => {
 		logMsg(`[HttpServer] Agent HTTP API 开始监听 http://localhost:${HTTP_PORT}`);
 		const loaded = reloadPlugins();
@@ -647,6 +673,30 @@ export function startHttpServer(options: { channel?: string } = {}) {
 }
 
 // #region 停止和退出
+
+/**
+ * 优雅停机。两条调用路：`POST /api/shutdown`（主进程退场，主路径）与
+ * 独立入口 `src/service/index.ts` 的 SIGINT/SIGTERM/父进程死亡（兜底）。
+ *
+ * 顺序有讲究：
+ *   ① cancelAllRunners —— 先停会话，runner 收尾会写 ctx
+ *   ② stopHttpServer  —— 再关监听：让「重启后的新主进程」探活时立刻失败而不是 adopt 到将死服务
+ *   ③ flushAll        —— 补落 storage 700ms 防抖窗内的待写（硬杀会丢）
+ *   ④ mcpManager.stopAll —— 收托管进程（HTTP 传输的 MCP 不会随 stdin 关闭自杀，会成孤儿占端口）
+ */
+export function gracefulShutdown(reason: string) {
+	logMsg(`[HttpServer] 优雅停机（${reason}）`);
+	cancelAllRunners();
+	stopHttpServer();
+	flushAll();
+	try {
+		mcpManager.stopAll();
+	} catch (e) {
+		logMsg.error(`[HttpServer] 停止 MCP 托管进程失败: ${(e as Error).message}`);
+	}
+	// 给 close 回调（日志）一点时间，之后无论如何强制退
+	setTimeout(() => process.exit(0), 150).unref();
+}
 
 /**
  * 掐掉所有还在飞的 run（含挂在 ask_user 上的），返回被掐掉的个数。

@@ -20,7 +20,7 @@
    ========================================================================== */
 
 import { createServer, type Server } from 'node:http';
-import { logMsg } from '../utils';
+import { logMsg } from '../../shared/utils';
 
 /** loopback 端口，沿用命令行版 mock 的习惯值 */
 const MOCK_PORT = 18998;
@@ -337,7 +337,7 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 				}, '先派个子 Agent 摸清结构。');
 				return;
 			}
-			await streamToolCall(res, 'finish', { reason: '任务已完成', summary: '【explore 子 Agent 总结】仓库分三块：src/bun（主进程）、src/mainview（渲染进程）、plugins（插件数据）。' }, '整理成总结返回。');
+			await streamToolCall(res, 'finish', { reason: '任务已完成', summary: '【explore 子 Agent 总结】仓库分三块：src/desktop（主进程壳）、src/service（Service）、src/mainview（渲染进程）、plugins（插件数据）。' }, '整理成总结返回。');
 			return;
 		}
 

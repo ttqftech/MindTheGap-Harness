@@ -590,7 +590,7 @@ registerTool({
  * - web/fetch.ts   统一抓取（先 HTTP，必要时无头浏览器渲染）
  * - web/engines.ts 多引擎搜索结果页抓取与合并
  * - web/rank.ts    候选相关性打分（动态 Schema + 一次独立 LLM 请求）
- * - web/render.ts  桥接到 scripts/web-render.mjs（Node 子进程，负责真正的浏览器渲染）
+ * - web/render.ts  桥接到 runtime/web-render.mjs（Node 子进程，负责真正的浏览器渲染）
  * 这里只负责「工具长什么样、参数怎么校验、结果怎么拼成给模型看的文本」。
  */
 

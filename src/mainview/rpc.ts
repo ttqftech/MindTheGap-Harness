@@ -6,6 +6,7 @@
  */
 
 import type { AppRPC, RpcResult } from '../shared/rpc';
+import type { BuildInfo } from '../shared/buildInfo';
 import { Electroview } from 'electrobun/view';
 import { beginExitSequence } from './App/ExitOverlay';
 
@@ -29,16 +30,18 @@ const mockHandlers = {
 		({ ok: false, error: 'Shell 操作仅在 electrobun 环境中可用' }),
 	shellOpenExternal: (_p: { url: string }): RpcResult<void> =>
 		({ ok: false, error: 'Shell 操作仅在 electrobun 环境中可用' }),
-	envInfo: (): RpcResult<any> => ({
-		ok: true,
-		data: {
-			platform: 'browser',
-			arch: navigator.userAgent.includes('Win64') ? 'x64' : 'unknown',
-			osVersion: navigator.platform,
-			userDataPath: '/',
-			appVersion: '0.1.0',
-		},
-	}),
+		envInfo: (): RpcResult<any> => ({
+			ok: true,
+			data: {
+				platform: 'browser',
+				arch: navigator.userAgent.includes('Win64') ? 'x64' : 'unknown',
+				osVersion: navigator.platform,
+				userDataPath: '/',
+				appVersion: '0.1.0',
+				// 浏览器里没有构建信息，给个明显的占位（真值走 /api/health）
+				build: { gitCommit: 'unknown', isDev: true, buildTime: new Date().toISOString() },
+			},
+		}),
 	// 浏览器里读不到本地 git：面包屑的 extraInfo 由后端经 HTTP 给，这里无需实现
 	// 浏览器里没有原生窗口，标题栏也不会渲染，这里只需不报错即可
 	windowMinimize: (): RpcResult<void> => ({ ok: true, data: undefined }),
@@ -68,7 +71,7 @@ interface RpcApi {
 		dialogSave: RequestFn<any, RpcResult<string | null>>;
 		shellOpenPath: RequestFn<{ path: string }, RpcResult<void>>;
 		shellOpenExternal: RequestFn<{ url: string }, RpcResult<void>>;
-		envInfo: RequestFn<undefined, RpcResult<{ platform: string; arch: string; osVersion: string; userDataPath: string; appVersion: string }>>;
+		envInfo: RequestFn<undefined, RpcResult<{ platform: string; arch: string; osVersion: string; userDataPath: string; appVersion: string; build: BuildInfo }>>;
 		windowMinimize: RequestFn<undefined, RpcResult<void>>;
 		windowToggleMaximize: RequestFn<undefined, RpcResult<boolean>>;
 		windowClose: RequestFn<undefined, RpcResult<void>>;

@@ -17,7 +17,7 @@ export type BuildInfo = {
 /** `GET /api/health` 的返回体：构建信息 + 运行时信息，用来判断「18999 上跑的是哪个进程」 */
 export type ServiceHealth = {
 	ok: boolean;
-	service: 'mindthegap-agent';
+	service: 'mindthegap-service';
 	port: number;
 	pid: number;
 	channel: string;	// electrobun 发布通道（dev / canary / stable）；脱离 electrobun 独立运行时为 'unknown'

@@ -8,11 +8,11 @@
    callLlm() 内部 begin / end，用 finally 保证异常或 abort 也落一条终态记录。
    调用方（runner / 工具）拿到返回值时，日志已经写完了。
 
-   从 src/bun/agent/model.ts 迁入本目录（本次重构唯一的目录结构变化）。
+   从 agent 目录迁入本目录（本次重构唯一的目录结构变化）。
    ========================================================================== */
 
 import type { LlmMessage, LlmTool, LlmToolCall, ModelConfig, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
-import { logMsg, safeParseJson } from '../utils';
+import { logMsg, safeParseJson } from '../../shared/utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 
 // #region 类型
@@ -55,6 +55,12 @@ export interface LlmCallResult {
 	durationMs: number;
 	modelId: string;
 }
+
+/**
+ * 解析层的产出：`logId` / `seq` / `durationMs` / `modelId` 由 `callLlm` 在返回处统一补齐
+ * （只有它才知道这些元信息），三个 `stream*` 与两个 `parse*` 都不碰。
+ */
+export type ParsedLlmResult = Omit<LlmCallResult, 'logId' | 'seq' | 'durationMs' | 'modelId'>;
 
 export interface LlmRequest {
 	config: ModelConfig;
@@ -133,7 +139,7 @@ async function streamOpenAiChat(
 	onChunk: (chunk: LlmResponseChunk) => void,
 	signal?: AbortSignal,
 	responseFormat?: Record<string, unknown>,
-): Promise<LlmCallResult> {
+): Promise<ParsedLlmResult> {
 	/**
 	 * 内部 LlmMessage → OpenAI Chat Completions wire 格式。
 	 * 关键：内部用 toolCalls/toolCallId，协议要求 tool_calls/tool_call_id，
@@ -218,8 +224,8 @@ async function streamOpenAiChat(
  * 一次性 JSON 响应的解析（非流式兜底路径）。
  * 与流式路径产出同样的 LlmCallResult，调用方无感。
  */
-function parseOpenAiChatFullResponse(json: any, onChunk: (chunk: LlmResponseChunk) => void): LlmCallResult {
-	const result: LlmCallResult = { text: '', reasoningContent: '', toolCalls: [], usage: {} };
+function parseOpenAiChatFullResponse(json: any, onChunk: (chunk: LlmResponseChunk) => void): ParsedLlmResult {
+	const result: ParsedLlmResult = { text: '', reasoningContent: '', toolCalls: [], usage: {} };
 
 	const choice = json.choices?.[0];
 	if (choice) {
@@ -324,7 +330,7 @@ async function streamOpenAiResponses(
 	tools: LlmTool[],
 	onChunk: (chunk: LlmResponseChunk) => void,
 	signal?: AbortSignal,
-): Promise<LlmCallResult> {
+): Promise<ParsedLlmResult> {
 	const url = genStreamUrl(config.baseUrl, 'responses');
 	// Responses API 需要把 system message 抽出来
 	const systemMsg = messages.find((m) => m.role === 'system');
@@ -403,7 +409,7 @@ async function streamAnthropic(
 	tools: LlmTool[],
 	onChunk: (chunk: LlmResponseChunk) => void,
 	signal?: AbortSignal,
-): Promise<LlmCallResult> {
+): Promise<ParsedLlmResult> {
 	const url = genStreamUrl(config.baseUrl, 'v1/messages');
 	const systemMsg = messages.find((m) => m.role === 'system');
 	const convMsgs = messages
@@ -511,12 +517,12 @@ async function parseSseStream(
 	body: ReadableStream<Uint8Array>,
 	deltaParser: (line: string) => LlmResponseChunk | null,
 	onChunk: (chunk: LlmResponseChunk) => void,
-): Promise<LlmCallResult> {
+): Promise<ParsedLlmResult> {
 	const reader = body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = '';
 
-	const result: LlmCallResult = { text: '', reasoningContent: '', toolCalls: [], usage: {} };
+	const result: ParsedLlmResult = { text: '', reasoningContent: '', toolCalls: [], usage: {} };
 
 	// 用于累积 tool call 的 arguments
 	const toolCallAccum: Record<number, { id?: string; name?: string; args: string }> = {};

@@ -7,7 +7,9 @@
 	"scripts": {
 		"build:fe": "vite build --config config/vite.mainview.ts",
 		"dev:fe": "vite --port 5173 --config config/vite.mainview.ts",
-		"typecheck": "tsc -b config/tsconfig.bun.json config/tsconfig.mainview.json",
+		"build:service": "vite build --config config/vite.service.ts",
+		"dev:service": "vite build --watch --config config/vite.service.ts",
+		"typecheck": "tsc -b config/tsconfig.service.json config/tsconfig.desktop.json config/tsconfig.mainview.json",
 		"test": "playwright test --config config/playwright.config.ts"
 	},
 	"devDependencies": {

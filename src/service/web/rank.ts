@@ -18,7 +18,7 @@
    并把这个事实写进工具结果里，让上游知道「顺序没经过相关性筛选」。
    ========================================================================== */
 
-import { safeParseJson } from '../../utils';
+import { safeParseJson } from '../../shared/utils';
 
 // #region 类型
 

@@ -9,7 +9,7 @@
      · 不能拖边缘缩放，也不触发 Windows snap（分屏）
 
    解法分两步，本模块负责第二步：
-     1) 改用 `titleBarStyle: 'hiddenInset'`（在 src/bun/index.ts）。
+     1) 改用 `titleBarStyle: 'hiddenInset'`（在 src/desktop/index.ts）。
         electrobun 会给窗口加上 WS_CAPTION|WS_THICKFRAME，并且**正确处理了 WM_NCCALCSIZE**，
 		实测客户区上偏移仍是 0 —— 也就是原生标题栏不占地方，内容依然铺满窗口。这一步拿回了投影、圆角、边缘缩放。
      2) 但 hiddenInset 仍缺 WS_SYSMENU / WS_MINIMIZEBOX / WS_MAXIMIZEBOX（实测 GWL_STYLE = 0x16C40000）。
@@ -20,7 +20,7 @@
    `titleBarStyle` 若改回 'hidden'，本补丁仍会执行，但那时窗口是 WS_POPUP，补 THICKFRAME 之外的位意义不大 —— 详见下方 isPopup 判断。
    ========================================================================== */
 
-import { logMsg } from './utils';
+import { logMsg } from '../shared/utils';
 
 /** GWL_STYLE / GWL_EXSTYLE 索引 */
 const GWL_STYLE = -16;

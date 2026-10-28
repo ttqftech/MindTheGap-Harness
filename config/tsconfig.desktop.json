@@ -1,8 +1,13 @@
 {
-	// 后端（Cottontail 主进程 + Agent Service）类型检查
+	// 主进程壳（Cottontail + electrobun）
+	// 只收 src/desktop 的 5 个壳文件（窗口 / RPC / 退场 / Win32 补丁 / Service 托管）；
 	"extends": "./tsconfig.base.json",
 	"include": [
-		"../src/bun/**/*",
+		"../src/desktop/index.ts",
+		"../src/desktop/rpc-handlers.ts",
+		"../src/desktop/exitSequence.ts",
+		"../src/desktop/windowsPatch.ts",
+		"../src/desktop/service.ts",
 		"../src/shared/**/*",
 		// electrobun paths 指向 .hutch/devkit 源码；composite 项目要求 program 内所有文件都在文件列表里，必须把实际可达的 devkit 文件纳入 include（否则 TS6059/TS6307）：
 		//   · sdks/main + config：主 SDK 及其配置类型
@@ -21,11 +26,11 @@
 		"../.hutch/devkit/**/__tests__/**"
 	],
 	"compilerOptions": {
-		// Cottontail 同时提供 node 与部分 bun 能力（win32.ts 用 bun:ffi），两者类型都要
+		// Cottontail 同时提供 node 与部分 bun 能力（windowsPatch.ts 用 bun:ffi），两者类型都要
 		"types": ["node", "bun"],
 		// composite 项目需显式 rootDir，且要覆盖到 .hutch（devkit 在项目根下），否则 devkit 文件报 TS6059
 		"rootDir": "..",
 		// tsc -b 的 emit 产物隔离到 build/（已被 gitignore），避免污染 src/
-		"outDir": "../build/tsc-bun"
+		"outDir": "../build/tsc-desktop"
 	}
 }

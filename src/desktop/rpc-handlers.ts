@@ -47,14 +47,14 @@ function getUserDataDir(): string {
 }
 
 export const systemHandlers = {
-    envInfo: (): RpcResult<{ platform: string; arch: string; osVersion: string; appVersion: string, build: typeof buildInfo }> =>
+    envInfo: (): RpcResult<{ platform: string; arch: string; osVersion: string; userDataPath: string; appVersion: string, build: typeof buildInfo }> =>
         safe(() => ({
             platform: platform(),
             arch: arch(),
             osVersion: execSync("ver 2>nul || sw_vers 2>/dev/null || echo unknown").toString().trim(),
-            // userDataPath: getUserDataDir().replace(/\\/g, "/"),
+            userDataPath: getUserDataDir().replace(/\\/g, "/"),
             appVersion: version,
-		    build: buildInfo,
+	    build: buildInfo,
         })),
 
     async dialogOpen(params?: { filters?: any; multiple?: boolean; pickFolder?: boolean }): Promise<RpcResult<string[]>> {

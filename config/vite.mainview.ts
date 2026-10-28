@@ -27,7 +27,8 @@ export default defineConfig(({ command }) => ({
 	},
 	root: "src/mainview",
 	build: {
-		outDir: "../../dist",
+		// 产物统一收在 dist/ 下，与 Service 的 dist/MTGService/ 并列（各层一个名字）
+		outDir: "../../dist/mainview",
 		emptyOutDir: true,
 	},
 	server: {

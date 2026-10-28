@@ -19,9 +19,9 @@ import type {
 } from '@shared/agent';
 import { createMcpClient, type McpClientLike, type McpCallToolResult } from './client';
 import { ensureStarted, kill as killProcess, killAll as killAllProcesses, getStderrTail } from './processes';
-import { setDynamicTools, clearDynamicTools } from '../agent/tools';
-import type { AgentTool } from '../agent/tools';
-import { logMsg } from '../utils';
+import { setDynamicTools, clearDynamicTools } from '../tools';
+import type { AgentTool } from '../tools';
+import { logMsg } from '../../shared/utils';
 
 const PROBE_TIMEOUT_MS = 2000;	// 保活：单次探测的超时
 const READY_TIMEOUT_MS = 5000;	// 保活：拉起进程后等它就绪的上限

@@ -5,7 +5,7 @@
 
    1. **轻量 HTTP**（默认先走）：几十毫秒，够应付静态页、API、JSON、纯文本。
    2. **无头浏览器渲染**（兜底）：页面是空壳（SPA / 懒加载 / 反爬）或 HTTP 直接失败时
-      交给 scripts/web-render.mjs，能拿到 JS 渲染后的 DOM。
+      交给 runtime/web-render.mjs，能拿到 JS 渲染后的 DOM。
 
    为什么要「先 HTTP 后浏览器」而不是一律渲染：
    起一次浏览器 1~3 秒，而大多数页面 HTTP 就能读全。一律渲染等于给每次抓取

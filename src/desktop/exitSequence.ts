@@ -8,7 +8,7 @@
  */
 
 import type { BrowserWindow } from 'electrobun/main';
-import { logMsg } from './utils';
+import { logMsg } from '../shared/utils';
 
 // #region 常量、类型
 
@@ -18,9 +18,9 @@ export interface ExitOptions {
 	getWindow: () => BrowserWindow | null;
 	/** 通知前端开始退场（铺动画 + 放声音 + 收窗口） */
 	notifyFrontend: () => void;
-	/** 停止所有进行中的会话 */
+	/** 停止所有进行中的会话（走 HTTP，见 service.cancelAllRuns） */
 	stopAllRuns: () => void;
-	/** 停掉后端 HTTP 服务 */
+	/** 停掉 Service（仅停本进程 spawn 的那个；adopt 的调试服务不碰。走 /api/shutdown，见 service.stopService） */
 	stopServer: () => void;
 }
 

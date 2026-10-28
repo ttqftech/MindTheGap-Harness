@@ -13,6 +13,8 @@
    而不是 params? 可选——可选会被 ElectrobunRPCSchema 约束直接拒绝（TS2344）。
    ========================================================================== */
 
+import type { BuildInfo } from './buildInfo';
+
 export type RpcResult<T> =
     | { ok: true; data: T }
     | { ok: false; error: string };
@@ -53,6 +55,8 @@ export interface AppRPC {
                     osVersion: string;
                     userDataPath: string;
                     appVersion: string;
+                    /** 构建信息（与 /api/health 的 build 同源，见 buildInfo.ts） */
+                    build: BuildInfo;
                 }>;
             };
             windowMinimize: {

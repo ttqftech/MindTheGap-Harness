@@ -14,7 +14,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { McpServerConfig } from '@shared/agent';
 import { resolveCommand } from './client';
-import { logMsg } from '../utils';
+import { logMsg } from '../../shared/utils';
 
 interface ManagedProcess {
 	serverId: string;

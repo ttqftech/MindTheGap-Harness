@@ -3,7 +3,7 @@
 
    Agent Service 跑在 Cottontail（JSC）里：没有 DOM，也起不了 Playwright。
    「必须执行 JS 才有正文」的页面（SPA / 懒加载 / 反爬壳）只能交给
-   Node 子进程里的 scripts/web-render.mjs 去渲染。
+   Node 子进程里的 runtime/web-render.mjs 去渲染。
 
    设计要点：
    - **一次调用渲染多个 URL**：启动浏览器是主要开销（约 1~3s），逐 URL 起进程
@@ -17,16 +17,16 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { resolveRepoFile } from '../../plugins/loader';
+import { resolveRepoFile } from '../plugins/loader';
 
 // #region 位置解析
 
 /** 渲染脚本相对仓库根的位置（先找到存在的那个） */
-const RENDER_SCRIPT_RELPATHS = ['scripts/web-render.mjs'];
+const RENDER_SCRIPT_RELPATHS = ['runtime/web-render.mjs'];
 
 let cachedScript: string | null | undefined;
 
-/** scripts/web-render.mjs 的绝对路径；找不到返回 null */
+/** runtime/web-render.mjs 的绝对路径；找不到返回 null */
 export function resolveRenderScript(): string | null {
 	if (cachedScript !== undefined) return cachedScript;
 	const fromEnv = process.env.MTG_WEB_RENDER_SCRIPT;
@@ -104,7 +104,7 @@ export function resolveNodeBin(): string | null {
 export function renderEnvironmentHint(): string {
 	const script = resolveRenderScript();
 	const node = resolveNodeBin();
-	if (!script) return `找不到渲染脚本 scripts/web-render.mjs（cwd=${process.cwd()}）。`;
+	if (!script) return `找不到渲染脚本 runtime/web-render.mjs（cwd=${process.cwd()}）。`;
 	if (!node) return `找不到可执行的 node（PATH=${(process.env.PATH ?? '').split(delimiter).slice(0, 4).join(';')}…）。`;
 	return 'ok';
 }
@@ -150,7 +150,7 @@ export function renderUrlsViaBrowser(urls: string[], opts: RenderOptions = {}): 
 
 	const script = resolveRenderScript();
 	if (!script) {
-		return list.map((url) => ({ url, ok: false, error: '环境不具备浏览器渲染能力：找不到 scripts/web-render.mjs' }));
+		return list.map((url) => ({ url, ok: false, error: '环境不具备浏览器渲染能力：找不到 runtime/web-render.mjs' }));
 	}
 	const node = resolveNodeBin();
 	if (!node) {

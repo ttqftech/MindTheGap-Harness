@@ -1,4 +1,8 @@
 {
+	// "build:service" 是 F5（Debug Service）的 preLaunchTask：
+	// 先把 Service 重新打包（带 sourcemap），再起调试进程。
+	// 约 0.5s；改 src/service 的代码后直接按 F5 即为最新代码，不用手动跑 pnpm build:service。
+	// 构建失败会拦住 F5 并把错误显示出来 —— 这是故意的。
 	"version": "2.0.0",
 	"tasks": [
 		{
@@ -12,6 +16,17 @@
 				"reveal": "always",
 				"group": "dev-servers"
 			}
+		},
+		{
+			"label": "build:service",
+			"type": "shell",
+			"command": "pnpm build:service",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"group": "build",
+			"detail": "vite build --config config/vite.service.ts → dist/MTGService/MTGService.mjs",
+			"problemMatcher": []
 		}
 	]
 }

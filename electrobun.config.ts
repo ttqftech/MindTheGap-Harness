@@ -14,13 +14,22 @@ export default {
 	build: {
 		mainProcess: "cottontail",
 		cottontail: {
-			entrypoint: "src/bun/index.ts",
+			entrypoint: "src/desktop/index.ts",
 			define: buildDefine(isDev),
 			sourcemap: "inline",
 		},
 		copy: {
-			"dist/index.html": "views/mainview/index.html",
-			"dist/assets": "views/mainview/assets",
+			"dist/mainview/index.html": "views/mainview/index.html",
+			"dist/mainview/assets": "views/mainview/assets",
+			// Service 独立进程的产物：主进程 spawn <app>/bin/cottontail.exe 跑它（见 src/desktop/service.ts）
+			// dev 下没有这份拷贝也无妨 —— dev 走 node <repo>/dist/MTGService/MTGService.mjs
+			// ⚠️ 目标目录不能是 views/（views:// 资源根，前端可 fetch 到后端代码），也不能是 app/bun/（electrobun 写死的主进程 bundle 输出）
+			"dist/MTGService/MTGService.mjs": "service/MTGService.mjs",
+			// Service 运行时的随包资源：它靠「从 cwd 逐级向上找」定位，prod 下 cwd = Resources/app（见 service.ts）
+			"plugins": "plugins",
+			"mcp-servers": "mcp-servers",
+			// runtime/ = 运行时脚本（web-render.mjs，被 Service spawn 的无头渲染器）；
+			"runtime": "runtime",
 		},
 		watchIgnore: ["dist/**"],
 		mac: {

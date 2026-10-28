@@ -1,6 +1,6 @@
 {
 	// 根 tsconfig 双职责（参考 FFBox：根 tsconfig 仅聚合子项目）：
-	// 1. references 聚合 config/ 下的前后端两套 tsconfig，IDE 按文件自动归属正确的类型上下文
+	// 1. references 聚合 config/ 下的三套 tsconfig（agent = Service / desktop = 主进程壳 / mainview = 前端），IDE 按文件自动归属正确的类型上下文
 	// 2. compilerOptions 供 hutch 打包主进程（bun build 只读最近的 tsconfig.json = 本文件）使用，因此必须内联展开 .hutch/devkit/tsconfig.json 的 electrobun paths，并补充项目自身 alias
 	//    bun 进程直接走 hutch electrobun build，不走 vite build，因此这里的 paths 是必要的
 	"compilerOptions": {
@@ -75,7 +75,7 @@
 			// ---- 项目自身 alias（config/ 子项目经 extends 继承，不再各自声明）----
 			"@shared/*": ["./src/shared/*"],
 			"@mainview/*": ["./src/mainview/*"],
-			"@bun/*": ["./src/bun/*"],
+			"@desktop/*": ["./src/desktop/*"],
 			// FFBox-UI 未发布 npm，vite 经 vendor alias 解析；TS 不认 vite alias，必须在此给 paths 一条映射
 			// 到 vendor 构建产物的真实 .d.ts（FFBox-UI 0.7.0 起 dist 自带类型）。组件 d.ts 引用 lit/lit-html，
 			// 已加为 devDependencies（纯类型用途；运行时产物自包含 lit，不打包）。
@@ -83,7 +83,8 @@
 		}
 	},
 	"references": [
-		{ "path": "./config/tsconfig.bun.json" },
+		{ "path": "./config/tsconfig.service.json" },
+		{ "path": "./config/tsconfig.desktop.json" },
 		{ "path": "./config/tsconfig.mainview.json" }
 	],
 	"files": []

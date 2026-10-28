@@ -1,12 +1,10 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
 import { buildRpcHandlers, setMainWindow } from './rpc-handlers';
-import { startHttpServer, cancelAllRunners, stopHttpServer } from './http-server';
 import { installExitSequence } from './exitSequence';
-import { mcpManager } from './mcp/manager';
+import { ensureService, cancelAllRuns, stopService, type ServiceHandle } from './service';
 import { patchFramelessWindowFrame } from './windowsPatch';
-import { settings, snapshot, loadSettings } from './storage';
+import { logMsg } from '../shared/utils';
 import type { AppRPC } from '../shared/rpc';
-import { logMsg } from './utils';
 
 logMsg('[main] MindTheGap-Harness - GAPPERS SAVE THE WORLD!');
 
@@ -29,7 +27,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
 
 // 创建主窗口
 let mainWindow: BrowserWindow | null = null;
-async function createMainWindow() {
+async function createMainWindow(service: ServiceHandle) {
 	async function getMainViewUrl(): Promise<string> {
 		if (isDevChannel) {
 			const maxRetries = 5;
@@ -90,11 +88,13 @@ async function createMainWindow() {
 			rpc.send.exitSequence({});	// 通过 RPC 通知前端退出序列
 			mainWindow?.webview.executeJavascript('window.__mtgExitSequence?.()');	// 直接往页面打脚本 —— dev 下 HMR 换掉模块后 Electroview 不会重建，message handler 可能还是旧的（没注册 exitSequence），需要手动调用
 		},
-		stopAllRuns: () => cancelAllRunners(),
+		// 停会话 / 停服务都走 HTTP：主进程不 import 任何 service 代码（见 service.ts 文件头）
+		stopAllRuns: () => {
+			void cancelAllRuns();
+		},
 		stopServer: () => {
-			stopHttpServer();
-			// 收掉托管的 MCP 进程：HTTP 服务器没有 stdin 关闭信号，不 kill 会成孤儿并占着端口
-			mcpManager.stopAll();
+			// 只停自己 spawn 的那个；adopt 的调试服务（开发者手动起的）不碰
+			void stopService(service);
 		},
 	});
 
@@ -106,24 +106,11 @@ async function createMainWindow() {
 		mainWindow.webview.openDevTools();
 	}
 }	
-createMainWindow();
 
-logMsg('[main] 正在加载设置');
-await loadSettings();
+// 启动顺序：先确保 Service 可用（adopt 已在跑的 / spawn 新的并等就绪），再建窗口。
+// 反过来（先建窗后起服务）会让前端首波 HTTP 请求撞上一个还没监听的服务。
+// 主进程自己不读设置 —— settings 由 Service 进程自己加载（src/service/index.ts）。
+logMsg('[main] 正在启动 Service');
+const service = await ensureService({ channel: channel ?? 'unknown', isDev: isDevChannel });
 
-// 启动 Agent HTTP Server（浏览器 / WebView2 均可访问，参照 FFBox serviceBridge）
-// 流式推送通过 SSE（EventSource），不再需要 RPC send.agentStream
-// 内部会先 await loadSettings() 把设置读进内存，再开始监听端口
-logMsg('[main] 正在启动 HTTP Server');
-void startHttpServer({ channel: channel ?? 'unknown' });
-
-// 启动后自动连接所有已启用的 MCP 服务器
-void (async () => {
-	try {
-		// 传裸数据而不是代理：manager 会长期持有 config 做新旧比对，拿到活代理会导致「配置变了却检测不到」
-		logMsg('[main] 正在同步 MCP 服务器');
-		await mcpManager.syncAll(snapshot(settings.mcpServers));
-	} catch (e) {
-		logMsg(`[main] MCP 同步失败: ${(e as Error).message}`);
-	}
-})();
+await createMainWindow(service);

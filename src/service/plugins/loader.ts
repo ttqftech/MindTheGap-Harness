@@ -78,7 +78,7 @@ export function resolveUserPluginsDir(): string {
 
 /**
  * 仓库内某个资源的绝对路径（从 cwd 逐级向上找）。
- * 给「跟着仓库走的脚本 / 数据文件」用，例如 scripts/web-render.mjs。
+ * 给「跟着仓库走的脚本 / 数据文件」用，例如 runtime/web-render.mjs。
  * 路径用 `/` 分隔即可，Windows 下 join 也能正确拼接。
  */
 export function resolveRepoFile(relPath: string): string | null {

@@ -19,11 +19,11 @@
  */
 
 import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, ConversationRunStatus, LlmMessage, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, UsageEntry } from '@shared/agent';
-import { callLlm } from '../llm/model';
-import { mcpManager } from '../mcp/manager';
-import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from '../plugins/loader';
-import { conversations, ensureConversationDir, settings } from '../storage';
-import { logMsg } from '../utils';
+import { callLlm } from './llm/model';
+import { mcpManager } from './mcp/manager';
+import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
+import { conversations, ensureConversationDir, settings } from './storage';
+import { logMsg } from '../shared/utils';
 import { renderSystemPrompt, renderStatePrompt } from './prompt';
 import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
 

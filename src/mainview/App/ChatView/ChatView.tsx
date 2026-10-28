@@ -530,7 +530,8 @@ export default function ChatView() {
 						{/* 转写：根实例直接内联渲染，让 <For> 持久化以支持 reconciliation
 						    （AGENT 头插在用户发言之后，运行摘要贴在最下面） */}
 						<RenderTreeView
-							tree={renderTree()}
+							// 外层 <Show when={... && renderTree()}> 已保证非空
+							tree={renderTree()!}
 							openOverrides={openOverrides}
 							convId={appState.activeConversationId ?? ''}
 						/>
