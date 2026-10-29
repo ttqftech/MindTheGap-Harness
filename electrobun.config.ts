@@ -8,7 +8,7 @@ const isDev = process.argv.some((arg) => arg === 'dev' || arg === '--env=dev');
 export default {
 	app: {
 		name: "MindTheGap-Harness",
-		identifier: "mindthegap.electrobun.dev",
+		identifier: "mindthegap.ttqf.tech",
 		version: "0.1.0",
 	},
 	build: {
@@ -40,6 +40,7 @@ export default {
 		},
 		win: {
 			bundleCEF: false,
+			icon: "MTG-logo_带底板_256.png",
 		},
 	},
 } satisfies ElectrobunConfig;

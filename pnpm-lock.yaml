@@ -6,16 +6,16 @@ settings:
 
 dependencies:
   solid-js:
-    specifier: ^1.9.5
-    version: 1.9.15
+    specifier: ^1.9.17
+    version: 1.9.17
   zod:
     specifier: ^3.24.1
     version: 3.25.76
 
 devDependencies:
   '@playwright/test':
-    specifier: ^1.62.1
-    version: 1.62.1
+    specifier: ^1.64.1
+    version: 1.64.1
   '@types/bun':
     specifier: latest
     version: 1.4.0
@@ -38,17 +38,17 @@ devDependencies:
     specifier: ^3.3.3
     version: 3.3.3
   playwright:
-    specifier: ^1.62.1
-    version: 1.62.1
+    specifier: ^1.64.1
+    version: 1.64.1
   typescript:
-    specifier: ^5.7.2
+    specifier: ^5.9.3
     version: 5.9.3
   vite:
     specifier: ^6.0.3
     version: 6.4.3(@types/node@22.20.2)
   vite-plugin-solid:
-    specifier: ^2.11.5
-    version: 2.11.14(solid-js@1.9.15)(vite@6.4.3)
+    specifier: ^2.11.14
+    version: 2.11.14(solid-js@1.9.17)(vite@6.4.3)
 
 packages:
 
@@ -514,12 +514,12 @@ packages:
     dev: true
     optional: true
 
-  /@playwright/test@1.62.1:
-    resolution: {integrity: sha512-DTcUc8qii+cpHvtOwggMtBRMjKZHXYWdw8syRYu2vtzuq4Wxphqq4NfCs5Zt44L6mA8rfDfj+PHnxFc/FeK6mQ==}
+  /@playwright/test@1.64.1:
+    resolution: {integrity: sha512-IaYGml/nSOiZWROfPtuIL7neuu9qDOZ3TNvNljUIrhDMxiGTgPjzj/g9p9RxpS2tSepPDRY+UwAaEeiKtUvIAg==}
     engines: {node: '>=20'}
     hasBin: true
     dependencies:
-      playwright: 1.62.1
+      playwright: 1.64.1
     dev: true
 
   /@rollup/rollup-android-arm-eabi@4.63.1:
@@ -809,7 +809,7 @@ packages:
       parse5: 7.3.0
     dev: true
 
-  /babel-preset-solid@1.9.15(@babel/core@7.29.7)(solid-js@1.9.15):
+  /babel-preset-solid@1.9.15(@babel/core@7.29.7)(solid-js@1.9.17):
     resolution: {integrity: sha512-GBmg1OiPb+OwcH51XbDAKPtvrPfQW7rCJTJxcp8+yhtWwN+kqnbEJk2SgVybd+uhTxTKAvjaFyiQSr/eUZBwzg==}
     peerDependencies:
       '@babel/core': ^7.0.0
@@ -820,7 +820,7 @@ packages:
     dependencies:
       '@babel/core': 7.29.7
       babel-plugin-jsx-dom-expressions: 0.40.10(@babel/core@7.29.7)
-      solid-js: 1.9.15
+      solid-js: 1.9.17
     dev: true
 
   /baseline-browser-mapping@2.11.20:
@@ -975,14 +975,6 @@ packages:
       picomatch: 4.0.7
     dev: true
 
-  /fsevents@2.3.2:
-    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
-    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
-    os: [darwin]
-    requiresBuild: true
-    dev: true
-    optional: true
-
   /fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -1109,20 +1101,18 @@ packages:
     engines: {node: '>=12'}
     dev: true
 
-  /playwright-core@1.62.1:
-    resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
+  /playwright-core@1.64.1:
+    resolution: {integrity: sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ==}
     engines: {node: '>=20'}
     hasBin: true
     dev: true
 
-  /playwright@1.62.1:
-    resolution: {integrity: sha512-0M+L3LAD8/nm554LOla9Ayx0j0tmFZ0FBcoQ7F1VuVHpM/XpiC8RcDzBQB8W5+hA8L22THxELzeF+2WcUzvcLg==}
+  /playwright@1.64.1:
+    resolution: {integrity: sha512-HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA==}
     engines: {node: '>=20'}
     hasBin: true
     dependencies:
-      playwright-core: 1.62.1
-    optionalDependencies:
-      fsevents: 2.3.2
+      playwright-core: 1.64.1
     dev: true
 
   /postcss@8.5.26:
@@ -1186,16 +1176,16 @@ packages:
     hasBin: true
     dev: true
 
-  /seroval-plugins@1.5.6(seroval@1.5.6):
-    resolution: {integrity: sha512-HXuLAX2pu/UByPpaeo/TaMfvMIi+1QqIoPJYCcAtU8QkVNwgR6MPlGuCQTErV1JwraaMbYaWVIBX7mppzGLATQ==}
+  /seroval-plugins@1.6.12(seroval@1.6.12):
+    resolution: {integrity: sha512-+reiwp/lYxiyctSrdvX7OQ1YLrcbWYgBiZrhSFL+V43b0/DGRLNVSDyZINbQe+tWplPOI2fw2dPrdv6hcc09kQ==}
     engines: {node: '>=10'}
     peerDependencies:
       seroval: ^1.0
     dependencies:
-      seroval: 1.5.6
+      seroval: 1.6.12
 
-  /seroval@1.5.6:
-    resolution: {integrity: sha512-rVQVWjjSvlINzaQPZH5JFqsqEsIWdTxY3iJZCnTL/5gQbXIRooVZKI60tVCkOVfzcRPejboxO2t0P89dg5mQaA==}
+  /seroval@1.6.12:
+    resolution: {integrity: sha512-CqbIVfk/7GL3ITwZI55lcPbpQbjHZ2DD5cUj4iH7E9YsCfHNJV1mx7yNp86Z84w5IpmkZZS/2s5vPOWmVWSdQg==}
     engines: {node: '>=10'}
 
   /shell-quote@1.9.0:
@@ -1203,14 +1193,14 @@ packages:
     engines: {node: '>= 0.4'}
     dev: true
 
-  /solid-js@1.9.15:
-    resolution: {integrity: sha512-EeiY2xfpZJqPLjXspVEKjAII4yv8NyG//NxZ3IpOFHdUNnnTyL0uJOeS9LWGvA7cFCz5y94cjFwYlmw5Luncsg==}
+  /solid-js@1.9.17:
+    resolution: {integrity: sha512-4GAmLOWPfNV8H9Jfn2LSFTpNEG6jiOKPiwd5lnLGQtehHaX6l3TOLzJqQ7mqwB/3k1Yy3zyumFVopmc/tm34ow==}
     dependencies:
       csstype: 3.2.3
-      seroval: 1.5.6
-      seroval-plugins: 1.5.6(seroval@1.5.6)
+      seroval: 1.6.12
+      seroval-plugins: 1.6.12(seroval@1.6.12)
 
-  /solid-refresh@0.6.3(solid-js@1.9.15):
+  /solid-refresh@0.6.3(solid-js@1.9.17):
     resolution: {integrity: sha512-F3aPsX6hVw9ttm5LYlth8Q15x6MlI/J3Dn+o3EQyRTtTxidepSTwAYdozt01/YA+7ObcciagGEyXIopGZzQtbA==}
     peerDependencies:
       solid-js: ^1.3
@@ -1218,7 +1208,7 @@ packages:
       '@babel/generator': 7.29.8
       '@babel/helper-module-imports': 7.29.7
       '@babel/types': 7.29.8
-      solid-js: 1.9.15
+      solid-js: 1.9.17
     transitivePeerDependencies:
       - supports-color
     dev: true
@@ -1300,7 +1290,7 @@ packages:
       picocolors: 1.1.1
     dev: true
 
-  /vite-plugin-solid@2.11.14(solid-js@1.9.15)(vite@6.4.3):
+  /vite-plugin-solid@2.11.14(solid-js@1.9.17)(vite@6.4.3):
     resolution: {integrity: sha512-7ZVBt8rpoyqmlwin2kRIUveaHoF6/kulY7gsnD+qFh4nS29V4OPAnw+ojoAspXIjObiL9o1xh9a/nTuYHm02Rw==}
     peerDependencies:
       '@testing-library/jest-dom': ^5.16.6 || ^5.17.0 || ^6.0.0 || ^7.0.0
@@ -1312,10 +1302,10 @@ packages:
     dependencies:
       '@babel/core': 7.29.7
       '@types/babel__core': 7.20.5
-      babel-preset-solid: 1.9.15(@babel/core@7.29.7)(solid-js@1.9.15)
+      babel-preset-solid: 1.9.15(@babel/core@7.29.7)(solid-js@1.9.17)
       merge-anything: 5.1.7
-      solid-js: 1.9.15
-      solid-refresh: 0.6.3(solid-js@1.9.15)
+      solid-js: 1.9.17
+      solid-refresh: 0.6.3(solid-js@1.9.17)
       vite: 6.4.3(@types/node@22.20.2)
       vitefu: 1.1.3(vite@6.4.3)
     transitivePeerDependencies:

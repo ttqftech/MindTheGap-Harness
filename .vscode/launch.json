@@ -15,7 +15,6 @@
 	//
 	// "Hutch Dev" 是整套桌面端启动器（hutch 构建 + spawn launcher.exe），
 	// 注意主进程壳跑在 Cottontail(JSC) 上、断点不可用（见 docs/调试排查经验-*.md）——
-	// 要下断点就调 Service，别调壳。
 	"version": "0.2.0",
 	"configurations": [
 		{

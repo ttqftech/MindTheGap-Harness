@@ -7,7 +7,7 @@ import { buildDefine } from "./build-info.mjs";
  *
  * 与主进程（electrobun.config.ts 的 cottontail entry）和前端（vite.mainview.ts）
  * 共用 config/build-info.mjs 的 define 注入，漏了 define 会直接
- * `buildInfo is not defined`（故意的，见 AGENTS.md「构建信息注入」）。
+ * `buildInfo is not defined`（故意的，见 docs/踩坑-工程配置与构建.md「构建信息注入」）。
  *
  * 三层构建产物统一收在 dist/ 下、各层一个名字：
  *   dist/mainview/          前端（vite.mainview.ts）

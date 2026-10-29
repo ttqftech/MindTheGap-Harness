@@ -9,11 +9,13 @@
 		"dev:fe": "vite --port 5173 --config config/vite.mainview.ts",
 		"build:service": "vite build --config config/vite.service.ts",
 		"dev:service": "vite build --watch --config config/vite.service.ts",
-		"typecheck": "tsc -b config/tsconfig.service.json config/tsconfig.desktop.json config/tsconfig.mainview.json",
+		"postinstall": "node scripts/patch-devkit.mjs",
+		"patch:devkit": "node scripts/patch-devkit.mjs",
+		"typecheck": "node scripts/patch-devkit.mjs && tsc -b config/tsconfig.service.json config/tsconfig.desktop.json config/tsconfig.mainview.json",
 		"test": "playwright test --config config/playwright.config.ts"
 	},
 	"devDependencies": {
-		"@playwright/test": "^1.62.1",
+		"@playwright/test": "^1.64.1",
 		"@types/bun": "latest",
 		"@types/node": "^22.20.2",
 		"concurrently": "^9.1.0",
@@ -21,13 +23,13 @@
 		"json-schema-to-ts": "^3.1.1",
 		"lit": "^3.3.3",
 		"lit-html": "^3.3.3",
-		"playwright": "^1.62.1",
-		"typescript": "^5.7.2",
+		"playwright": "^1.64.1",
+		"typescript": "^5.9.3",
 		"vite": "^6.0.3",
-		"vite-plugin-solid": "^2.11.5"
+		"vite-plugin-solid": "^2.11.14"
 	},
 	"dependencies": {
-		"solid-js": "^1.9.5",
+		"solid-js": "^1.9.17",
 		"zod": "^3.24.1"
 	}
 }

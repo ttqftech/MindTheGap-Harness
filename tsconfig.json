@@ -22,7 +22,7 @@
 		"noUnusedParameters": false,
 		"noFallthroughCasesInSwitch": true,
 		// bun-types 与 @types/node 版本错位（TextEncoderEncodeIntoResult / ConnectionOptions / TLSSocket 互相引用报错），
-		// skipLibCheck 跳过第三方 .d.ts 检查兜底，项目源码仍全量严格（见 AGENTS.md 易错点）
+		// skipLibCheck 跳过第三方 .d.ts 检查兜底，项目源码仍全量严格（见 docs/踩坑-工程配置与构建.md）
 		"skipLibCheck": true,
 		"paths": {
 			// ---- 以下由 .hutch/devkit/tsconfig.json 展开（相对本文件 = 项目根）----
