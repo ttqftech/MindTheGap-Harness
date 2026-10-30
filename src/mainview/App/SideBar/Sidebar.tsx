@@ -6,12 +6,12 @@
  */
 
 import { createSignal, createMemo, createEffect, on, For, Show } from 'solid-js';
-import { state, actions, isConversationAlive, isConversationUnread } from '@mainview/store';
-import { showMenu, type MenuItem } from '@mainview/ffboxBridge';
-import { addFolderViaDialog, newConversation } from '@mainview/appCommands';
+import { state, actions, isConversationAlive, isConversationUnread } from '@mainview/stores';
+import { showMenu, type MenuItem } from '@mainview/bridges/ffboxBridge';
+import { addFolderViaDialog, newConversation } from '@mainview/logic/appCommands';
 import { useTooltip } from 'ffbox-ui';
 import { folderLabel, getTimeString } from '@shared/utils';
-import type { ConversationSort } from '@mainview/store';
+import type { ConversationSort } from '@mainview/stores';
 import styles from './Sidebar.module.css';
 
 // ⚠️ 「哪个会话还活着」由后端经 ConversationMeta.runStatus（三态）给，前端按会话自己读，

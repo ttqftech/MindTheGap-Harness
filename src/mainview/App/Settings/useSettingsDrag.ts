@@ -1,4 +1,4 @@
-import { state, actions } from '@mainview/store';
+import { state, actions } from '@mainview/stores';
 
 /* ==========================================================================
    设置面板的拖拽拉出（标题栏品牌区 / 面板上的拖拽手柄共用）

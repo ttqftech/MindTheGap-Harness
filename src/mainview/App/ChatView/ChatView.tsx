@@ -14,17 +14,17 @@
 import { createEffect, createMemo, createSignal, Show, onCleanup } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
 import type { Folder, ModelConfig } from '@shared/agent';
-import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/store';
-import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/projection';
-import type { RenderAgentNode } from '@mainview/projection';
-import * as agentBridge from '@mainview/agentBridge';
-import { requestFolderPath } from '@mainview/localBridge';
-import { startRun, stopRun } from '@mainview/runController';
+import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
+import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/logic/projection';
+import type { RenderAgentNode } from '@mainview/logic/projection';
+import * as agentBridge from '@mainview/bridges/agentBridge';
+import { requestFolderPath } from '@mainview/bridges/localBridge';
+import { startRun, stopRun } from '@mainview/logic/runController';
 import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
-import { alertMsgbox, showMenu } from '@mainview/ffboxBridge';
+import { alertMsgbox, showMenu } from '@mainview/bridges/ffboxBridge';
 import DiagramView from './DiagramView/DiagramView';
 import MTGlogo from './MTG-logo-transparent.svg';
-import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow } from './RenderTree/shared';
+import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow } from '@mainview/App/ChatView/RenderTree/shared';
 import RenderTreeView from './RenderTree/RenderTree';
 import styles from './ChatView.module.css';
 

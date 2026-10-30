@@ -5,11 +5,11 @@
  * 各自抄一份必然走岔（历史教训：选文件夹的两条路径就有一处漏了错误提示）。
  */
 
-import { actions, state } from './store';
-import { requestFolderPath, shell, getEnvInfo } from './localBridge';
-import { alertMsgbox } from './ffboxBridge';
-import { setTheme } from './theme/theme';
-import type { ThemeMode } from './theme/theme';
+import { actions, state } from '@mainview/stores';
+import { requestFolderPath, shell, getEnvInfo } from '@mainview/bridges/localBridge';
+import { alertMsgbox } from '@mainview/bridges/ffboxBridge';
+import { setTheme } from '@mainview/theme/theme';
+import type { ThemeMode } from '@mainview/theme/theme';
 import { sameFolderPath } from '@shared/utils';
 
 /**

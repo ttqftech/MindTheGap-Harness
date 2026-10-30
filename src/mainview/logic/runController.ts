@@ -19,7 +19,7 @@
    ========================================================================== */
 
 import { createEffect, createRoot } from 'solid-js';
-import * as agentBridge from '@mainview/agentBridge';
+import * as agentBridge from '@mainview/bridges/agentBridge';
 import {
 	state as appState,
 	actions,
@@ -29,8 +29,8 @@ import {
 	streamTickActions,
 	taskListActions,
 	markConversationUnread,
-} from '@mainview/store';
-import type { OverlayCtx } from '@mainview/projection';
+} from '@mainview/stores';
+import type { OverlayCtx } from '@mainview/logic/projection';
 import type { AgentInstanceMessage, AgentStreamEvent, ModelConfig, ToolResult, UsageEntry } from '@shared/agent';
 
 // #region 订阅集合

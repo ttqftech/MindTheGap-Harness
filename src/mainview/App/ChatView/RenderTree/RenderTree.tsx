@@ -1,8 +1,8 @@
 import { For, Show } from 'solid-js';
-import type { RenderAgentNode, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/projection';
+import type { RenderAgentNode, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/logic/projection';
 import type { UsageEntry } from '@shared/agent';
-import { answerAskUser } from '@mainview/runController';
-import AskUserCard from '../AskUserCard/AskUserCard';
+import { answerAskUser } from '@mainview/logic/runController';
+import AskUserCard from '@mainview/App/ChatView/AskUserCard/AskUserCard';
 import {
 	ReflectionIcon, McpIcon,
 	TOOL_ARGS_LIMIT, TOOL_OUTPUT_LIMIT, PURPOSE_LABEL, STATUS_LABEL,

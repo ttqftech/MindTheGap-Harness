@@ -1,8 +1,8 @@
 import { render } from 'solid-js/web';
-import App from './App/App';
-import { state, actions } from './store';
-import './styles/global.css';
-import './theme/theme.css';
+import App from '@mainview/App/App';
+import { state, actions } from '@mainview/stores';
+import '@mainview/styles/global.css';
+import '@mainview/theme/theme.css';
 
 // dev-only debug exposure
 (window as any).__store = { state, actions };

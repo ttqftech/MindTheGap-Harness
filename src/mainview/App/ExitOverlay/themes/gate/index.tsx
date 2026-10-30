@@ -7,10 +7,10 @@
  */
 
 import { createSignal } from 'solid-js';
-import { EASE } from '../../shell';
-import { playSynth, type SynthEvent } from '../../audio';
+import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './gate.module.css';
-import type { ExitTheme } from '../../types';
+import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
 
 /** 玻璃门合拢 */
 const CLOSE_MS = 2200;

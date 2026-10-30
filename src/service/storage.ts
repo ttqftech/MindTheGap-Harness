@@ -12,7 +12,7 @@
          requestLog.jsonl                        # LLM 层账本（诊断日志，可删）
          workspace/{docs,backups,tmp/llm}/       # AI 工作产出
 
-   ⚠️ ctx.json 里**没有 UI 消息**（2026-09-14 起）：界面内容由 `mainview/projection.ts`
+   ⚠️ ctx.json 里**没有 UI 消息**（2026-09-14 起）：界面内容由 `mainview/logic/projection.ts`
    从 agentCtx 现算，不再持久化一份投影。
 
    - settings：进程启动时通过 loadSettings() **异步读盘一次**（在 HTTP 服务监听前完成），

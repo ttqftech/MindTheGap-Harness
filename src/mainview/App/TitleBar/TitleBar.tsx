@@ -8,13 +8,13 @@
  */
 
 import { createSignal, onCleanup, onMount, For, createMemo } from 'solid-js';
-import { isElectrobunEnv } from '@mainview/rpc';
-import { windowControls, getEnvInfo } from '@mainview/localBridge';
-import { beginExitSequence } from '../ExitOverlay';
-import { showMenu } from '@mainview/ffboxBridge';
-import { state, actions } from '@mainview/store';
+import { isElectrobunEnv } from '@mainview/bridges/rpc';
+import { windowControls, getEnvInfo } from '@mainview/bridges/localBridge';
+import { beginExitSequence } from '@mainview/App/ExitOverlay';
+import { showMenu } from '@mainview/bridges/ffboxBridge';
+import { state, actions } from '@mainview/stores';
 import { APP_MENUS, type AppMenuGroup } from './appMenu';
-import { startSettingsDrag } from '../Settings/useSettingsDrag';
+import { startSettingsDrag } from '@mainview/App/Settings/useSettingsDrag';
 import { useTooltip } from 'ffbox-ui';
 import { getTimeString } from '@shared/utils';
 import styles from './TitleBar.module.css';

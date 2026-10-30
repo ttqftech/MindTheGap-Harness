@@ -1,16 +1,16 @@
 import { onMount, onCleanup, createEffect, Show } from 'solid-js';
 import type { FFBoxThemeProvider } from 'ffbox-ui';
-import { initTheme, resolvedTheme, applyDensity, applyAccent } from '../theme/theme';
+import { initTheme, resolvedTheme, applyDensity, applyAccent } from '@mainview/theme/theme';
 import TitleBar from './TitleBar/TitleBar';
 import Sidebar from './SideBar/Sidebar';
 import ChatView from './ChatView/ChatView';
 import RightSidebar from './RightSidebar/RightSidebar';
 import Settings from './Settings/Settings';
 import ExitOverlay from './ExitOverlay/ExitOverlay';
-import { setFFBoxContainer } from '../ffboxBridge';
-import { state, setState, actions, initApp, getActiveConversation, isConversationAlive } from '../store';
-import { newConversation } from '../appCommands';
-import { stopRun, initRunController } from '../runController';
+import { setFFBoxContainer } from '@mainview/bridges/ffboxBridge';
+import { state, setState, actions, initApp, getActiveConversation, isConversationAlive } from '@mainview/stores';
+import { newConversation } from '@mainview/logic/appCommands';
+import { stopRun, initRunController } from '@mainview/logic/runController';
 import styles from './App.module.css';
 
 export default function App() {

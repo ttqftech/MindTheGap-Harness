@@ -7,10 +7,10 @@
  */
 
 import { createSignal } from 'solid-js';
-import { EASE } from '../../shell';
-import { playSynth, type SynthEvent } from '../../audio';
+import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './loop.module.css';
-import type { ExitTheme } from '../../types';
+import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
 
 /** 列车绕行一圈 */
 const ORBIT_MS = 3800;

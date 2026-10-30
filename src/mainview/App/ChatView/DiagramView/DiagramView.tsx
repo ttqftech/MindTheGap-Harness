@@ -9,7 +9,7 @@
    ========================================================================== */
 
 import { For, Show } from "solid-js";
-import { getActiveConversation } from "@mainview/store";
+import { getActiveConversation } from "@mainview/stores";
 import styles from './DiagramView.module.css';
 import type { AgentCtx, AgentEvent, AgentInstance } from "@shared/agent";
 

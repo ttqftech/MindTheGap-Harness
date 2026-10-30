@@ -10,12 +10,12 @@
    ========================================================================== */
 
 import { createStore, produce } from 'solid-js/store';
-import { localSettings, isElectrobunEnv } from '@mainview/localBridge';
-import * as agentBridge from '@mainview/agentBridge';
+import { localSettings, isElectrobunEnv } from '@mainview/bridges/localBridge';
+import * as agentBridge from '@mainview/bridges/agentBridge';
 import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
-import { createEmptyOverlay, type OverlayCtx } from '@mainview/projection';
+import { createEmptyOverlay, type OverlayCtx } from '@mainview/logic/projection';
 import { setExitThemeId } from '@mainview/App/ExitOverlay';
 import type { ExitThemeId } from '@mainview/App/ExitOverlay/types';
 

@@ -7,7 +7,7 @@
  */
 
 import { createSignal, createEffect, on, For, Show } from 'solid-js';
-import { state, getTaskList } from '@mainview/store';
+import { state, getTaskList } from '@mainview/stores';
 import styles from './RightSidebar.module.css';
 
 // #region 图标

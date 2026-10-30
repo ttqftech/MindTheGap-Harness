@@ -7,10 +7,10 @@
  */
 
 import { createSignal, For } from 'solid-js';
-import { EASE, sleep } from '../../shell';
-import { playSynth, type SynthEvent } from '../../audio';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
+import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './blackout.module.css';
-import type { ExitTheme } from '../../types';
+import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
 
 /** 收窄的档数（与灯熄灭的盏数一致，一档一声继电器） */
 const STEPS = 5;

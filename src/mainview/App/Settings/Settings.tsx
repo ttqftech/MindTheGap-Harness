@@ -8,19 +8,19 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show }
 import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
-import { state, actions } from '@mainview/store';
+import { state, actions } from '@mainview/stores';
 import { getCurrentThemeMode } from '@mainview/theme/theme';
-import { setAppTheme } from '@mainview/appCommands';
+import { setAppTheme } from '@mainview/logic/appCommands';
 import { z } from 'zod';
-import type { ModelProvider } from '@mainview/store';
+import type { ModelProvider } from '@mainview/stores';
 import type {
 	ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition,
 } from '@shared/agent';
-import { confirmMsgbox, alertMsgbox } from '@mainview/ffboxBridge';
-import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/agentBridge';
-import { shell } from '@mainview/localBridge';
+import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
+import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/bridges/agentBridge';
+import { shell } from '@mainview/bridges/localBridge';
 import { startSettingsDrag, setSettingsTravelMeasure } from './useSettingsDrag';
-import { EXIT_THEME_OPTIONS, previewExitTheme, themeById } from '../ExitOverlay';
+import { EXIT_THEME_OPTIONS, previewExitTheme, themeById } from '@mainview/App/ExitOverlay';
 
 /** ISO 8601（UTC）→ 本地时间；构建信息里的时间统一存 UTC，只在展示时转换 */
 function formatTime(iso: string): string {

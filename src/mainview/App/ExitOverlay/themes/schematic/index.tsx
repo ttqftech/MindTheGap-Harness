@@ -7,10 +7,10 @@
  */
 
 import { createSignal, For } from 'solid-js';
-import { EASE } from '../../shell';
-import { playSynth, type SynthEvent } from '../../audio';
+import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './schematic.module.css';
-import type { ExitTheme } from '../../types';
+import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
 
 /** 线路折点（SVG 用户坐标，viewBox 1200×600） */
 const STOPS = [

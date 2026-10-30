@@ -9,7 +9,7 @@
  * 合成器忙起来，rAF 有被拖慢甚至停摆的风险，而退场必须保证收得完。
  */
 
-import { rpc } from '../../rpc';
+import { rpc } from '@mainview/bridges/rpc';
 import type { Frame, FrameShape, ShellAnimator } from './types';
 
 const FRAME_MS = 16;	// ≈60fps

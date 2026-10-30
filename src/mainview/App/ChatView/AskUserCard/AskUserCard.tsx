@@ -1,6 +1,6 @@
 import { createSignal, For, Show, onMount, onCleanup } from 'solid-js';
-import type { RenderAskInfo } from '@mainview/projection';
-import { fmtElapsed, clockNow } from '../RenderTree/shared';
+import type { RenderAskInfo } from '@mainview/logic/projection';
+import { fmtElapsed, clockNow } from '@mainview/App/ChatView/RenderTree/shared';
 import styles from './AskUserCard.module.css';
 
 /**

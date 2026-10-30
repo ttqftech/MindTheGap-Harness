@@ -5,10 +5,10 @@
  * Agent 相关、文件操作、AppData 全部移除。
  */
 
-import type { AppRPC, RpcResult } from '../shared/rpc';
-import type { BuildInfo } from '../shared/buildInfo';
+import type { AppRPC, RpcResult } from '@shared/rpc';
+import type { BuildInfo } from '@shared/buildInfo';
 import { Electroview } from 'electrobun/view';
-import { beginExitSequence } from './App/ExitOverlay';
+import { beginExitSequence } from '@mainview/App/ExitOverlay';
 
 // #region 环境检测
 

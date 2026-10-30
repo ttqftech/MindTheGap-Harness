@@ -7,11 +7,11 @@
  */
 
 import { createSignal, For } from 'solid-js';
-import { EASE } from '../../shell';
-import { playMusic } from '../../audio';
-import exitMusicUrl from '../../assets/港铁关门提示音.mp3';
+import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { playMusic } from '@mainview/App/ExitOverlay/audio';
+import exitMusicUrl from '@mainview/App/ExitOverlay/assets/港铁关门提示音.mp3';
 import styles from './cabin.module.css';
-import type { ExitTheme } from '../../types';
+import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
 
 /** 窗外掠过的壁灯数量 */
 const LAMP_COUNT = 7;

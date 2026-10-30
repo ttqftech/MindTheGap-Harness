@@ -7,7 +7,7 @@
  */
 
 import { createSignal } from 'solid-js';
-import { rpc } from '../../rpc';
+import { rpc } from '@mainview/bridges/rpc';
 import { createShellAnimator, sleep } from './shell';
 import type { ExitTheme, ExitThemeId } from './types';
 import tunnel from './themes/tunnel';

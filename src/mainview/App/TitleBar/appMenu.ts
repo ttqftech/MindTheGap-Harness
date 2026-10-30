@@ -6,11 +6,11 @@
  * 不要把这些数组提到模块顶层缓存，否则勾选态永远停在首次构建时的值。
  */
 
-import type { MenuItem } from '@mainview/ffboxBridge';
-import { state, actions, loadConversationCtx, refreshConversationMeta, isConversationAlive } from '@mainview/store';
-import { stopRun } from '@mainview/runController';
-import { windowControls } from '@mainview/localBridge';
-import { addFolderViaDialog, editCopy, editPaste, editSelectAll, newConversation, openUserDataDir, setAppTheme, showAbout } from '@mainview/appCommands';
+import type { MenuItem } from '@mainview/bridges/ffboxBridge';
+import { state, actions, loadConversationCtx, refreshConversationMeta, isConversationAlive } from '@mainview/stores';
+import { stopRun } from '@mainview/logic/runController';
+import { windowControls } from '@mainview/bridges/localBridge';
+import { addFolderViaDialog, editCopy, editPaste, editSelectAll, newConversation, openUserDataDir, setAppTheme, showAbout } from '@mainview/logic/appCommands';
 import type { Accent, Density, ThemeMode } from '@mainview/theme/theme';
 
 export interface AppMenuGroup {
