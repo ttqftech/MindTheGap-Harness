@@ -11,6 +11,7 @@ import { alertMsgbox } from '@mainview/bridges/ffboxBridge';
 import { setTheme } from '@mainview/theme/theme';
 import type { ThemeMode } from '@mainview/theme/theme';
 import { sameFolderPath } from '@shared/utils';
+import { version } from '@shared/buildInfo';
 
 /**
  * 切换深浅色。
@@ -82,11 +83,12 @@ export function editSelectAll() {
 export async function showAbout() {
 	const env = await getEnvInfo();
 	const lines = [
-		`版本：${env?.appVersion ?? '未知'}`,
+		// 版本是前后端共用的常量，不依赖桌面壳（浏览器里 env 为 null 也照样有值）
+		`版本：${version}${env ? '' : '（浏览器直接打开页面）'}`,
 		`构建：${buildInfo.gitCommit}${buildInfo.isDev ? '（开发构建）' : ''}`,
-		`平台：${env ? `${env.platform} ${env.arch}` : '未知'}`,
-		`系统：${env?.osVersion ?? '未知'}`,
-		`数据目录：${env?.userDataPath ?? '未知'}`,
+		`平台：${env ? `${env.platform} ${env.arch}` : '无桌面壳'}`,
+		`系统：${env?.osVersion ?? '无桌面壳'}`,
+		`数据目录：${env?.userDataPath ?? '无桌面壳'}`,
 		'',
 		'请小心间隙！Please Mind The Gap！',
 	];

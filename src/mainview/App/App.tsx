@@ -6,11 +6,13 @@ import Sidebar from './SideBar/Sidebar';
 import ChatView from './ChatView/ChatView';
 import RightSidebar from './RightSidebar/RightSidebar';
 import Settings from './Settings/Settings';
+import ServiceGate from './ServiceGate/ServiceGate';
 import ExitOverlay from './ExitOverlay/ExitOverlay';
 import { setFFBoxContainer } from '@mainview/bridges/ffboxBridge';
-import { state, setState, actions, initApp, getActiveConversation, isConversationAlive } from '@mainview/stores';
+import { state, setState, actions, initApp, getActiveConversation, isConversationAlive, isAuthed } from '@mainview/stores';
 import { newConversation } from '@mainview/logic/appCommands';
 import { stopRun, initRunController } from '@mainview/logic/runController';
+import { autoConnect, startConnectionWatch } from '@mainview/logic/authController';
 import styles from './App.module.css';
 
 export default function App() {
@@ -56,11 +58,16 @@ export default function App() {
 		};
 
 	onMount(() => {
-		// 初始化应用（加载持久化状态）
+		// 初始化应用（只加载本地设置：后端数据要登录之后才拉）
 		initApp();
 
 		// 把「刷新页面时后端仍在跑」的会话接回 SSE（订阅是应用级的，见 runController 的说明）
 		initRunController();
+
+		// 登录 / 掉线：启动时自动试一次（保存的凭据，没有就用空口令试管理员），
+		// 之后每 10s 探活一次 —— 没有 WebSocket，只能靠轮询发现服务没了
+		void autoConnect();
+		startConnectionWatch();
 
 		// 初始化主题
 		const mode = initTheme();
@@ -128,18 +135,22 @@ export default function App() {
 			<div class={styles['app-shell']}>
 				<TitleBar />
 				<div class={styles.clientArea}>
-					<Sidebar />
-					{/* 侧边栏收起时不给拖拽条，否则会留下一条 4px 的死区 */}
-					<Show when={!state.ui.leftSidebarCollapsed}>
-						<div ref={resizerRef!} class={styles.sidebarResizer} onmousedown={onLeftBarMouseDown} />
+					{/* 未登录：两个侧边栏 + 聊天区 + 设置面板整块不渲染，只留连接面板。
+					    （需求：未登录时两个侧边栏不打开且不允许打开 —— 这里连挂载都没有，自然也就点不开） */}
+					<Show when={isAuthed()} fallback={<ServiceGate />}>
+						<Sidebar />
+						{/* 侧边栏收起时不给拖拽条，否则会留下一条 4px 的死区 */}
+						<Show when={!state.ui.leftSidebarCollapsed}>
+							<div ref={resizerRef!} class={styles.sidebarResizer} onmousedown={onLeftBarMouseDown} />
+						</Show>
+						<ChatView />
+						{/* 右侧栏（任务清单）：收起时同样不给拖拽条，避免 4px 死区 */}
+						<Show when={!state.ui.rightSidebarCollapsed}>
+							<div ref={rightResizerRef!} class={styles.rightSidebarResizer} onmousedown={onRightBarMouseDown} />
+						</Show>
+						<RightSidebar />
+						<Settings />
 					</Show>
-					<ChatView />
-					{/* 右侧栏（任务清单）：收起时同样不给拖拽条，避免 4px 死区 */}
-					<Show when={!state.ui.rightSidebarCollapsed}>
-						<div ref={rightResizerRef!} class={styles.rightSidebarResizer} onmousedown={onRightBarMouseDown} />
-					</Show>
-					<RightSidebar />
-					<Settings />
 					{/* 退场动画：主进程截获关闭事件后推 RPC 消息过来，盖在所有界面之上 */}
 					<ExitOverlay />
 				</div>

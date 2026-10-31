@@ -1,0 +1,4 @@
+# 本机证书目录（自签，不入库）
+# 生成：node ../create-cert.mjs
+*
+!/.gitignore

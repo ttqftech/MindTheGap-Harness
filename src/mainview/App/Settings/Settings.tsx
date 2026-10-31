@@ -8,16 +8,16 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show }
 import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
 import { createStore, produce } from 'solid-js/store';
-import { state, actions } from '@mainview/stores';
+import { state, actions, hasPermission, serviceOriginLabel } from '@mainview/stores';
 import { getCurrentThemeMode } from '@mainview/theme/theme';
 import { setAppTheme } from '@mainview/logic/appCommands';
 import { z } from 'zod';
 import type { ModelProvider } from '@mainview/stores';
-import type {
-	ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition,
-} from '@shared/agent';
+import type { ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition, UserConfig } from '@shared/agent';
+import { PERMISSION_LABELS } from '@shared/agent';
+import { sha256Hex } from '@shared/sha256';
 import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
-import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson } from '@mainview/bridges/agentBridge';
+import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers } from '@mainview/bridges/agentBridge';
 import { shell } from '@mainview/bridges/localBridge';
 import { startSettingsDrag, setSettingsTravelMeasure } from './useSettingsDrag';
 import { EXIT_THEME_OPTIONS, previewExitTheme, themeById } from '@mainview/App/ExitOverlay';
@@ -172,9 +172,12 @@ function GeneralTab() {
 			{/* 构建信息：前端是打包时注入的常量，后端是 Agent Service 自报的（GET /api/health）。
 			    两边不一致 = 前端/后端没一起重编；后端显示旧提交 = 18999 端口上还跑着旧进程。 */}
 			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>构建信息</div>
+				<div class={styles['setting-group-label']}>服务与构建信息</div>
 				<div class={styles['setting-group-desc']}>提交号带 * 表示构建时工作区有未提交改动</div>
 				<div class={styles['info-list']}>
+					{/* MTG 独有：Service 可能是本应用 spawn 的（缀「已托管」），也可能是探活到已在跑而 adopt 的 */}
+					<InfoRow label="服务地址" value={serviceOriginLabel()} />
+					<InfoRow label="登录用户" value={state.auth.username || '（管理员）'} />
 					<InfoRow
 						label="前端"
 						value={`${buildInfo.gitCommit} · ${buildInfo.isDev ? '开发' : '生产'} · ${formatTime(buildInfo.buildTime)}`}
@@ -1551,10 +1554,196 @@ function McpEditor(props: {
 	);
 }
 
+/* ---------- 用户管理 Tab ---------- */
+
+/**
+ * 用户管理（本项目只开放这一个权限项，见 `shared/agent.ts` §11）。
+ *
+ * 规则照抄 FFBox：
+ *   · 空用户名 = 管理员账号（不可改名 / 不可删除）
+ *   · 密码只存 SHA-256；界面上既不显示明文也不显示摘要，输入新密码才会覆盖（输入框留空 = 不动）
+ *   · 新用户默认无权限
+ *   · 改了自己的权限要重新登录才生效（提示，不强制踢下线）
+ */
+function UsersTab() {
+	const [users, setUserList] = createStore<UserConfig[]>([]);
+	const [loading, setLoading] = createSignal(true);
+	const [saving, setSaving] = createSignal(false);
+	/** 行内提示（保存结果 / 校验失败），不弹窗打扰 */
+	const [notice, setNotice] = createSignal<{ level: 'ok' | 'error'; text: string } | null>(null);
+
+	const canEdit = () => hasPermission('userManagement');
+
+	onMount(async () => {
+		const list = await getUsers();
+		setUserList(list.map((u) => ({ ...u, permissions: [...u.permissions] })));
+		setLoading(false);
+	});
+
+	/** 密码输入框失焦：非空才算「改密码」，空则保持原样（要清空密码请显式点「清除」） */
+	const applyPassword = (index: number, plain: string) => {
+		if (!plain) return;
+		setUserList(index, 'passkey', sha256Hex(plain));
+	};
+
+	const addUser = () => {
+		let n = 1;
+		while (users.some((u) => u.username === `user${n}`)) n++;
+		setUserList(users.length, { username: `user${n}`, passkey: '', permissions: [] });
+	};
+
+	const removeUser = (index: number) => {
+		setUserList((list) => list.filter((_, i) => i !== index));
+	};
+
+	const togglePermission = (index: number) => {
+		const has = users[index].permissions.includes('userManagement');
+		setUserList(index, 'permissions', has ? [] : ['userManagement']);
+	};
+
+	const save = async () => {
+		// 先做本地校验：空用户名只允许一个（= 管理员），重名会让登录找到第一个而「另一个永远登不上」
+		const names = users.map((u) => u.username);
+		if (names.filter((n) => n === '').length > 1) {
+			setNotice({ level: 'error', text: '只允许一个空用户名的管理员账号' });
+			return;
+		}
+		if (new Set(names).size !== names.length) {
+			setNotice({ level: 'error', text: '用户名不能重复' });
+			return;
+		}
+		if (names.some((n) => n !== n.trim())) {
+			setNotice({ level: 'error', text: '用户名首尾不能有空格' });
+			return;
+		}
+
+		setSaving(true);
+		const result = await saveUsers(JSON.parse(JSON.stringify(users)) as UserConfig[]);
+		setSaving(false);
+		if (!result.ok) {
+			setNotice({ level: 'error', text: `保存失败：${result.error ?? '权限不足或网络错误'}` });
+			return;
+		}
+		setNotice({ level: 'ok', text: '用户配置已保存。若修改了自身权限，需重新登录才能生效。' });
+	};
+
+	return (
+		<div>
+			<div style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '12px' }}>
+				<div>
+					<div class={styles['setting-group-label']}>用户</div>
+					<div class={styles['setting-group-desc']}>
+						空用户名 = 管理员（无密码时可空账号登录）。密码只保存 SHA-256 摘要。
+					</div>
+				</div>
+				<Show when={canEdit()}>
+					<ffbox-button onclick={addUser}>+ 添加用户</ffbox-button>
+				</Show>
+			</div>
+
+			<Show when={!canEdit()}>
+				<div class={styles['setting-group-desc']} style={{ 'margin-bottom': '10px' }}>
+					当前账号没有「用户管理」权限，只能查看。
+				</div>
+			</Show>
+
+			<Show when={loading()}>
+				<div class={styles['setting-group-desc']}>正在读取用户列表…</div>
+			</Show>
+
+			<Show when={!loading()}>
+				<div class={styles['user-table']}>
+					<div class={`${styles['user-row']} ${styles['user-row-head']}`}>
+						<span>用户名</span>
+						<span>密码</span>
+						<span>权限</span>
+						<span>操作</span>
+					</div>
+					<For each={users}>
+						{(user, index) => {
+							const isAdmin = () => user.username === '';
+							return (
+								<div class={styles['user-row']}>
+									<span>
+										<Show
+											when={!isAdmin()}
+											fallback={<span class={styles['user-admin']} title="空用户名 = 管理员">（管理员）</span>}
+										>
+											<input
+												class={styles['user-input']}
+												value={user.username}
+												disabled={!canEdit()}
+												oninput={(e) => setUserList(index(), 'username', e.currentTarget.value)}
+											/>
+										</Show>
+									</span>
+									<span class={styles['user-pass']}>
+										<input
+											class={styles['user-input']}
+											type="password"
+											placeholder={user.passkey ? '已设置 · 留空不改' : '未设置'}
+											disabled={!canEdit()}
+											onblur={(e) => {
+												applyPassword(index(), e.currentTarget.value);
+												e.currentTarget.value = '';
+											}}
+										/>
+										<Show when={canEdit() && user.passkey}>
+											<button class={styles['user-link']} onclick={() => setUserList(index(), 'passkey', '')}>
+												清除
+											</button>
+										</Show>
+									</span>
+									<span class={styles['user-perm']}>
+										<label>
+											<input
+												type="checkbox"
+												checked={user.permissions.includes('userManagement')}
+												disabled={!canEdit()}
+												onchange={() => togglePermission(index())}
+											/>
+											{PERMISSION_LABELS.userManagement}
+										</label>
+									</span>
+									<span>
+										<Show when={canEdit() && !isAdmin()}>
+											<button class={styles['user-link']} onclick={() => removeUser(index())}>
+												删除
+											</button>
+										</Show>
+									</span>
+								</div>
+							);
+						}}
+					</For>
+				</div>
+
+				<Show when={notice()}>
+					<div
+						class={styles['user-notice']}
+						style={{ color: notice()!.level === 'ok' ? 'var(--success)' : 'var(--danger)' }}
+					>
+						{notice()!.text}
+					</div>
+				</Show>
+
+				<div style={{ display: 'flex', gap: '10px', 'margin-top': '14px' }}>
+					<Show when={canEdit()}>
+						<ffbox-button type="primary" onclick={() => void save()}>
+							{saving() ? '保存中…' : '保存'}
+						</ffbox-button>
+					</Show>
+				</div>
+			</Show>
+		</div>
+	);
+}
+
 /* ---------- 设置面板主体 ---------- */
 
-type TabId = '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
+type TabId = '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理';
 
+// ⚠️ 「用户管理」只有拿到 `userManagement` 权限才出现（见 UsersTab / 侧边栏状态行菜单）
 const TABS: Array<{ id: TabId; label: string }> = [
 	{ id: '通用', label: '通用' },
 	{ id: '模型', label: '模型' },
@@ -1562,6 +1751,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
 	{ id: '用量', label: '用量' },
 	{ id: '插件 / 模式', label: '插件 / 模式' },
 	{ id: 'MCP', label: 'MCP' },
+	{ id: '用户管理', label: '用户管理' },
 ];
 
 export default function Settings() {
@@ -1574,6 +1764,9 @@ export default function Settings() {
 	 * 不再单独存一个 visible / open 布尔量：那种「布尔量说开着、进度却是 0」的坏状态根本不可能出现。
 	 */
 	const visible = () => progress() > 0;
+
+	/** 可见 Tab：没有「用户管理」权限就不显示那一页（轮询刷新权限后会跟着变） */
+	const visibleTabs = () => TABS.filter((tab) => tab.id !== '用户管理' || hasPermission('userManagement'));
 
 	// 面板高度 = 一次完整开合的手指行程，交给拖拽换算 px → 进度（只是测量，不写任何样式）
 	onMount(() => setSettingsTravelMeasure(() => panelRef?.offsetHeight || window.innerHeight));
@@ -1602,7 +1795,7 @@ export default function Settings() {
 
 					{/* 分页栏（沿用原有 6 个 Tab，只换成设计稿的横排样式）+ 完成 */}
 					<div class={styles['settings-tabs']}>
-						<For each={TABS}>
+						<For each={visibleTabs()}>
 							{(tab) => (
 								<button
 									class={styles['settings-tab']}
@@ -1628,6 +1821,8 @@ export default function Settings() {
 						{state.ui.activeSettingsTab === '用量' && <UsageTab />}
 						{state.ui.activeSettingsTab === '插件 / 模式' && <PluginModeTab />}
 						{state.ui.activeSettingsTab === 'MCP' && <McpTab />}
+						{/* 权限被撤回时（Tab 已经不在列表里）也别把内容留在原地 */}
+						{state.ui.activeSettingsTab === '用户管理' && hasPermission('userManagement') && <UsersTab />}
 					</div>
 				</div>
 

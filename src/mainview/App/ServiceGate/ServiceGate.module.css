@@ -1,0 +1,339 @@
+/* ServiceGate — 未登录 / 掉线时的整屏闸门（主题令牌见 theme/theme.css） */
+
+.gate {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	background-color: var(--bg-app);
+	/* 一点点氛围：从中心往外扩散的极淡强调色，不至于是一块死板的纯色 */
+	background-image: radial-gradient(circle at 50% 45%, var(--bg-hover), transparent 60%);
+
+	.card {
+		width: 420px;
+		max-width: calc(100% - 48px);
+		padding: 28px 28px 20px;
+		border-radius: var(--r-2xl);
+		border: 1px solid var(--border);
+		background-color: var(--bg-sub1);
+		box-shadow: var(--shadow-xl);
+	}
+
+	.brand {
+		font-family: var(--font-brand);
+		font-size: var(--fs-xxs);
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-tertiary);
+	}
+
+	.title {
+		margin: 6px 0 14px;
+		font-size: var(--fs-l);
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	/* ---------- 目标服务 ---------- */
+
+	.target {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 10px;
+		margin-bottom: 18px;
+		border-radius: var(--r-md);
+		background-color: var(--bg-input);
+		border: 1px solid var(--border-input);
+		font-size: var(--fs-xs);
+		color: var(--text-secondary);
+
+		.targetAddr {
+			font-family: var(--font-mono);
+			color: var(--text-primary);
+		}
+
+		.targetSep {
+			color: var(--text-placeholder);
+		}
+
+		.targetOrigin {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.targetPid {
+			font-family: var(--font-mono);
+			font-size: var(--fs-xxs);
+			color: var(--text-tertiary);
+		}
+	}
+
+	.dot {
+		width: 7px;
+		height: 7px;
+		flex-shrink: 0;
+		border-radius: var(--r-full);
+		background-color: var(--text-placeholder);
+	}
+	.dotOk {
+		background-color: var(--success);
+	}
+	.dotBad {
+		background-color: var(--danger);
+	}
+
+	/* ---------- 表单 ---------- */
+
+	.form {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	/* 一排两个输入框：IP 占满剩余，端口固定窄宽（与 FFBox 的登录框同布局） */
+	.row {
+		display: flex;
+		gap: 8px;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 5px;
+
+		.fieldLabel {
+			font-size: var(--fs-xs);
+			color: var(--text-tertiary);
+		}
+	}
+
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.port {
+		width: 82px;
+		flex-shrink: 0;
+	}
+
+	.input {
+		height: 32px;
+		padding: 0 10px;
+		border-radius: var(--r-md);
+		border: 1px solid var(--border-input);
+		background-color: var(--bg-input);
+		color: var(--text-primary);
+		font-family: var(--font-ui);
+		font-size: var(--fs-m);
+		outline: none;
+		transition: border-color var(--dur-fast), box-shadow var(--dur-fast), background-color var(--dur-fast);
+
+		&::placeholder {
+			color: var(--text-placeholder);
+		}
+
+		&:hover {
+			border-color: var(--border-strong);
+		}
+
+		&:focus {
+			border-color: var(--accent);
+			box-shadow: var(--ring);
+		}
+	}
+
+	.primary {
+		height: 34px;
+		margin-top: 4px;
+		border: none;
+		border-radius: var(--r-md);
+		background-color: var(--accent);
+		color: var(--accent-ink);
+		font-family: var(--font-ui);
+		font-size: var(--fs-m);
+		font-weight: 600;
+		cursor: pointer;
+		transition: background-color var(--dur-fast), opacity var(--dur-fast);
+
+		&:hover:not(:disabled) {
+			background-color: var(--accent-hover);
+		}
+
+		&:disabled {
+			opacity: 0.6;
+			cursor: default;
+		}
+	}
+
+	.secondary {
+		align-self: flex-start;
+		height: 28px;
+		padding: 0 12px;
+		border-radius: var(--r-md);
+		border: 1px solid var(--border-strong);
+		background-color: var(--bg-hover);
+		color: var(--text-secondary);
+		font-family: var(--font-ui);
+		font-size: var(--fs-xs);
+		cursor: pointer;
+		transition: background-color var(--dur-fast), color var(--dur-fast);
+
+		&:hover:not(:disabled) {
+			background-color: var(--bg-active);
+			color: var(--text-primary);
+		}
+
+		&:disabled {
+			opacity: 0.6;
+			cursor: default;
+		}
+	}
+
+	/* ---------- 错误 / 重试 / 底部说明 ---------- */
+
+	.error {
+		margin-top: 12px;
+		padding: 8px 10px;
+		border-radius: var(--r-md);
+		border: 1px solid var(--danger-soft-border);
+		background-color: var(--danger-soft);
+		color: var(--danger);
+		font-size: var(--fs-xs);
+		line-height: 1.5;
+		word-break: break-word;
+	}
+
+	.retryBlock {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-top: 14px;
+
+		.retryHint {
+			font-size: var(--fs-xs);
+			color: var(--text-tip);
+			line-height: 1.5;
+		}
+	}
+
+	.footer {
+		margin-top: 18px;
+		padding-top: 12px;
+		border-top: 1px solid var(--border);
+		font-size: var(--fs-xxs);
+		line-height: 1.6;
+		color: var(--text-tip);
+
+		strong {
+			font-weight: 600;
+			color: var(--text-secondary);
+		}
+	}
+}
+
+/* ---------- 最近连接 ----------
+   点一条 = 用保存的地址 + 凭据直接连；右侧 × 删除单条，表头「清空」删全部。 */
+
+.gate .recent {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--border);
+}
+
+.gate .recentHead {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+
+.gate .recentTitle {
+	font-size: var(--fs-xxs);
+	color: var(--text-tertiary);
+}
+
+.gate .recentClear {
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--text-placeholder);
+	font-family: var(--font-ui);
+	font-size: var(--fs-xxs);
+	cursor: pointer;
+	transition: color var(--dur-fast);
+
+	&:hover {
+		color: var(--text-secondary);
+	}
+}
+
+.gate .recentRow {
+	display: grid;
+	grid-template-columns: 1fr auto auto 16px;
+	align-items: center;
+	gap: 8px;
+	margin: 0 -6px;
+	padding: 5px 6px;
+	border-radius: var(--r-sm);
+	cursor: pointer;
+	transition: background-color var(--dur-fast);
+
+	&:hover {
+		background-color: var(--bg-hover);
+	}
+}
+
+.gate .recentAddr {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xxs);
+	color: var(--text-primary);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gate .recentUser {
+	font-size: var(--fs-xxs);
+	color: var(--text-tertiary);
+	max-width: 90px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gate .recentTime {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xxxs);
+	color: var(--text-placeholder);
+}
+
+.gate .recentRemove {
+	width: 16px;
+	height: 16px;
+	padding: 0;
+	border: none;
+	border-radius: var(--r-xs);
+	background: none;
+	color: var(--text-placeholder);
+	font-size: 13px;
+	line-height: 1;
+	cursor: pointer;
+	transition: color var(--dur-fast), background-color var(--dur-fast);
+
+	&:hover {
+		color: var(--danger);
+		background-color: var(--bg-hover);
+	}
+}
+
+.gate .recentEmpty {
+	padding: 2px 0 0;
+	font-size: var(--fs-xxs);
+	color: var(--text-placeholder);
+}

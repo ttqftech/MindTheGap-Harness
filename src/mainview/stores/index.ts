@@ -12,7 +12,7 @@
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/bridges/localBridge';
 import * as agentBridge from '@mainview/bridges/agentBridge';
-import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, Permission } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
 import { createEmptyOverlay, type OverlayCtx } from '@mainview/logic/projection';
@@ -48,6 +48,43 @@ export type ViewMode = 'chat' | 'diagram';
 /** 侧边栏任务列表的排序方式 */
 export type ConversationSort = 'updated' | 'created' | 'title';
 
+/**
+ * Service 连接状态（照抄 FFBox ServiceBridgeStatus）：
+ *   idle         从未（本次运行）连上 —— 显示连接面板
+ *   connecting   正在登录
+ *   connected    已登录，界面正常
+ *   disconnected 连过但断了（服务挂掉 / 会话失效）—— 显示「掉线」覆盖层 + 重试
+ *   reconnecting 掉线后正在重连
+ */
+export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+
+/**
+ * Service 是谁起的：本应用 spawn 的 / 接入的现有服务 / 不知道。
+ * 浏览器没有主进程，页面只可能接入已有服务 → 那边一律 `adopted`；
+ * `unknown` 只留给「在壳里但 RPC 没答上来」这一种异常。
+ */
+export type ServiceOrigin = 'spawned' | 'adopted' | 'unknown';
+
+/** 登录态（真相在 Service 内存里的 session，这里只是界面需要的镜像） */
+export interface AuthState {
+	status: ConnectionStatus;
+	username: string;
+	permissions: Permission[];
+	/** 上一次连接失败的原因（登录失败 / 服务不可达 / 会话失效） */
+	error: string | null;
+	serviceOrigin: ServiceOrigin;
+	/**
+	 * 本次运行里**连上过**没有。
+	 * 用来区分两种 `disconnected`：启动时第一次就没登上（只是密码错） vs 用着用着掉线了（该给「重试」）。
+	 */
+	everConnected: boolean;
+	/**
+	 * 当前连接目标（可手动指定 IP / 端口）。
+	 * ⚠️ 这是**界面镜像**：真正的请求目标在 `agentBridge` 的 `endpoint`（由 authController 同步写两处）。
+	 */
+	endpoint: { host: string; port: number };
+}
+
 export type UIState = {
 	leftSidebarWidth: number;
 	leftSidebarCollapsed: boolean;
@@ -58,7 +95,7 @@ export type UIState = {
 	exitTheme: ExitThemeId;
 	conversationSort: ConversationSort;
 	settingsProgress: number;	// 设置面板的打开进度：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置。拖拽时逐帧写入（`setSettingsProgress`），松手 / 点击后由 store 用 rAF 缓动到 0 或 1。
-	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP';
+	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理';
 	viewMode: ViewMode;
 	/**
 	 * 「跑完了但你还没看」的会话 id（侧边栏绿点，相当于未读标记）。
@@ -85,6 +122,8 @@ export type AppState = {
 	basePrompt: string;
 	/** Agent Service 自报的构建 / 运行信息（GET /api/health）；服务不可达时为 null */
 	serviceHealth: ServiceHealth | null;
+	/** 登录态与 Service 连接（逻辑在 `logic/authController.ts`，这里只存界面要用的镜像） */
+	auth: AuthState;
 	// 插件加载错误 / 被覆盖标记（设置页展示用）
 	pluginErrors: { level: 'error' | 'warn'; pluginId?: string; modeId?: string; agentId?: string; message: string }[];
 	overriddenModes: string[];
@@ -130,6 +169,17 @@ export const defaultState: AppState = {
 	modes: [],
 	basePrompt: '',
 	serviceHealth: null,
+	auth: {
+		// 启动时默认「未连接」：authController 会自动尝试一次（保存的凭据 / 管理员无密码），
+		// 失败才停下来等用户手动填 —— 所以这里不是「一定要登录」，只是「还没连」。
+		status: 'idle',
+		username: '',
+		permissions: [],
+		error: null,
+		serviceOrigin: 'unknown',
+		everConnected: false,
+		endpoint: { ...agentBridge.LOCAL_ENDPOINT },
+	},
 	pluginErrors: [],
 	overriddenModes: [],
 	usage: {
@@ -240,6 +290,42 @@ export const taskListActions = {
 
 // #endregion
 
+// #region 登录态（写入方只有 logic/authController.ts）
+
+export const authActions = {
+	setStatus(status: ConnectionStatus) {
+		setState('auth', 'status', status);
+	},
+	setError(error: string | null) {
+		setState('auth', 'error', error);
+	},
+	/** 登录成功：记下身份与权限（sessionId 由 agentBridge 持有，不进 store） */
+	setSession(params: { username: string; permissions: Permission[] }) {
+		setState('auth', {
+			username: params.username,
+			permissions: params.permissions,
+			error: null,
+			everConnected: true,
+		});
+	},
+	setPermissions(permissions: Permission[]) {
+		setState('auth', 'permissions', permissions);
+	},
+	setServiceOrigin(origin: ServiceOrigin) {
+		setState('auth', 'serviceOrigin', origin);
+	},
+	/** 连接目标变了（手动改 IP / 端口）—— 只改界面镜像，请求目标由 authController 同步给 agentBridge */
+	setEndpoint(host: string, port: number) {
+		setState('auth', 'endpoint', { host, port });
+	},
+	/** 断开 / 重连前清身份：界面立刻回到「未登录」，别让旧权限继续显示 */
+	clearSession() {
+		setState('auth', { username: '', permissions: [] });
+	},
+};
+
+// #endregion
+
 // #region 前端设置持久化（localStorage）
 
 // TODO 我认为只有 themeMode 是需要持久化的，其他设置项（如 leftSidebarWidth、leftSidebarCollapsed、viewMode 等）都不用落盘
@@ -309,7 +395,11 @@ async function saveBackendSettings() {
 	await agentBridge.setMcpServers(state.mcpServers);
 }
 
-async function loadBackendState(): Promise<void> {
+/**
+ * 从后端拉一次全量设置 + 会话列表。
+ * **登录成功之后才调用**（`logic/authController.ts`）—— 所有 `/api/*` 都要带 sessionId。
+ */
+export async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
 	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, mock] = await Promise.all([
@@ -639,7 +729,9 @@ export const actions = {
 	setLeftSidebarWidth(width: number) {
 		setState('ui', 'leftSidebarWidth', Math.max(180, Math.min(400, width)));
 	},
+	/** ⚠️ 未登录时**不允许**打开侧边栏（需求：未登录时两个侧边栏不打开且不允许打开） */
 	toggleLeftSidebar() {
+		if (!isAuthed()) return;
 		setState('ui', 'leftSidebarCollapsed', (v) => !v);
 		saveLocalSettings();
 	},
@@ -647,6 +739,7 @@ export const actions = {
 	 setState('ui', 'rightSidebarWidth', Math.max(180, Math.min(400, width)));
 	},
 	toggleRightSidebar() {
+	 if (!isAuthed()) return;
 	 setState('ui', 'rightSidebarCollapsed', (v) => !v);
 	 saveLocalSettings();
 	},
@@ -656,6 +749,8 @@ export const actions = {
 		setState('ui', 'settingsProgress', Math.max(0, Math.min(1, progress)));
 	},
 	openSettings(tab?: AppState['ui']['activeSettingsTab']) {
+		// 未登录时设置面板也没有意义（里面的内容全在后端），直接不开
+		if (!isAuthed()) return;
 		if (tab) setState('ui', 'activeSettingsTab', tab);
 		animateSettingsProgress(1);
 	},
@@ -846,6 +941,51 @@ export const actions = {
 
 // #region Selectors
 
+/**
+ * 已登录（= 界面闸门打开）。**这是 UI 的唯一判据**：
+ * 侧边栏、聊天区、设置面板都挂在它下面；未登录时整块不渲染。
+ */
+export function isAuthed(): boolean {
+	return state.auth.status === 'connected';
+}
+
+/** 当前用户是否有某个权限（权限项只有「用户管理」，见 shared/agent.ts §11） */
+export function hasPermission(permission: Permission): boolean {
+	return state.auth.permissions.includes(permission);
+}
+
+/**
+ * 连接目标是不是**本机默认端点**（127.0.0.1:18999）。
+ *
+ * 只有它才谈得上「本应用 spawn 的 / 探活接入的」—— 连到别的机器时，那台机器上的服务
+ * 跟本应用的主进程毫无关系。`localhost` 与 `[::1]` 都算本机。
+ */
+export function isLocalEndpoint( host = state.auth.endpoint.host, port = state.auth.endpoint.port): boolean {
+	const h = host.trim().toLowerCase();
+	const local = h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
+	return local && port === agentBridge.LOCAL_ENDPOINT.port;
+}
+
+/**
+ * 服务标识（侧边栏 / 连接面板 / 设置页共用）。
+ *
+ * 展示的是**接入的地址**（IP:端口），因为这才是用户真正需要知道的事；
+ * - 本机端点且被本应用 spawn：额外缀「（已托管）」（那个进程会随应用一起退出）
+ * - 其他地址：缀「（外部服务）」—— spawn / adopt 那一套在那儿没有意义
+ */
+export function serviceOriginLabel(origin = state.auth.serviceOrigin, host = state.auth.endpoint.host, port = state.auth.endpoint.port): string {
+	const text = `${host}:${port}`;
+	if (!isLocalEndpoint(host, port)) return `${text}（外部服务）`;
+	if (origin === 'spawned') return `${text}（已托管）`;
+	// adopted / unknown 都只给地址：浏览器没有主进程，页面必然是接入现有服务
+	return text;
+}
+
+/** 服务是不是「本应用托管」的（会随应用一起退出）；连接面板用它决定是否标「已托管」 */
+export function serviceManaged(host = state.auth.endpoint.host, port = state.auth.endpoint.port): boolean {
+	return isLocalEndpoint(host, port) && state.auth.serviceOrigin === 'spawned';
+}
+
 export function getActiveConversation(): UIConversation | null {
 	if (!state.activeConversationId) return null;
 	return state.conversations.find((c) => c.id === state.activeConversationId) ?? null;
@@ -880,11 +1020,13 @@ export function currentModeName(): string {
 
 // #region Actions
 
+/**
+ * 应用启动：**只加载本地设置**（主题 / 界面 / 上次登录的凭据）。
+ * 后端数据（模型、文件夹、会话、MCP）要等 `logic/authController.ts` 登录成功后才拉 ——
+ * 现在所有 `/api/*` 都要求带 sessionId，提前拉只会拿到一片 401。
+ */
 export async function initApp() {
 	loadLocalSettings();
-	await loadBackendState();
-	// 后端在 HTTP 服务启动时就自动连了 MCP，这里拉一次运行态用于展示
-	void actions.refreshMcpStatus();
 
 	console.log(`[App] 运行环境: ${isElectrobunEnv() ? 'electrobun' : '浏览器'}`);
 }

@@ -47,7 +47,7 @@ export interface AppRPC {
                 params: { url: string };
                 response: RpcResult<void>;
             };
-            envInfo: {
+            getEnvInfo: {
                 params: undefined;
                 response: RpcResult<{
                     platform: string;
@@ -57,6 +57,18 @@ export interface AppRPC {
                     appVersion: string;
                     /** 构建信息（与 /api/health 的 build 同源，见 buildInfo.ts） */
                     build: BuildInfo;
+                }>;
+            };
+            /**
+             * Service 的来源：本应用自己 spawn 的，还是探测到已在跑而 adopt 的。
+             * 界面上要明确标出来 —— 这是**主进程**才知道的事实（Service 自己只知道自己的 pid）。
+             */
+            getServiceInfo: {
+                params: undefined;
+                response: RpcResult<{
+                    mode: 'spawned' | 'adopted';
+                    pid: number | null; // spawned 时是子进程 pid；adopted 时为 null（那是别人的进程）
+                    port: number;
                 }>;
             };
             windowMinimize: {

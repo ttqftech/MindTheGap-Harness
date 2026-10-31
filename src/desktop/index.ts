@@ -1,5 +1,5 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
-import { buildRpcHandlers, setMainWindow } from './rpc-handlers';
+import { buildRpcHandlers, setMainWindow, setServiceHandle } from './rpc-handlers';
 import { installExitSequence } from './exitSequence';
 import { ensureService, cancelAllRuns, stopService, type ServiceHandle } from './service';
 import { patchFramelessWindowFrame } from './windowsPatch';
@@ -27,7 +27,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
 
 // 创建主窗口
 let mainWindow: BrowserWindow | null = null;
-async function createMainWindow(service: ServiceHandle) {
+let MTGService: ServiceHandle | null = null;
+
+async function createMainWindow() {
 	async function getMainViewUrl(): Promise<string> {
 		if (isDevChannel) {
 			const maxRetries = 5;
@@ -94,7 +96,7 @@ async function createMainWindow(service: ServiceHandle) {
 		},
 		stopServer: () => {
 			// 只停自己 spawn 的那个；adopt 的调试服务（开发者手动起的）不碰
-			void stopService(service);
+			void stopService(MTGService);
 		},
 	});
 
@@ -111,6 +113,9 @@ async function createMainWindow(service: ServiceHandle) {
 // 反过来（先建窗后起服务）会让前端首波 HTTP 请求撞上一个还没监听的服务。
 // 主进程自己不读设置 —— settings 由 Service 进程自己加载（src/service/index.ts）。
 logMsg('[main] 正在启动 Service');
-const service = await ensureService({ channel: channel ?? 'unknown', isDev: isDevChannel });
+ensureService({ channel: channel ?? 'unknown', isDev: isDevChannel }).then((service) => {
+	MTGService = service;
+	setServiceHandle(MTGService);	// 把托管句柄交给 RPC：前端要能问「这服务是本应用起的，还是接入的现有服务」
+});
 
-await createMainWindow(service);
+await createMainWindow();

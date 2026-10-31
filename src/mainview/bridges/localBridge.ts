@@ -2,6 +2,7 @@
  * localBridge — 本地基础能力（对齐 FFBox 的 nodeBridge 职责）
  */
 
+import type { BuildInfo } from '@shared/buildInfo';
 import { rpc, isElectrobunEnv } from './rpc';
 
 // #region 文件夹选择
@@ -93,9 +94,37 @@ export const windowControls = {
 
 // #region 环境信息
 
-export async function getEnvInfo() {
-	const result = await rpc.request.envInfo();
+/**
+ * **桌面壳**的环境信息（平台 / 架构 / 系统版本 / 应用版本 / 用户数据目录）。
+ * 只有 electrobun 环境有；浏览器里没有壳，返回 null。
+ * ⚠️ 前端的版本与构建号不走这里 —— 那是打包时注入的 `buildInfo` 常量，见 `@shared/buildInfo`
+ */
+export type ShellEnvInfo = {
+	platform: string;
+	arch: string;
+	osVersion: string;
+	userDataPath: string;
+	appVersion: string;
+	build: BuildInfo;
+};
+
+export async function getEnvInfo(): Promise<ShellEnvInfo | null> {
+	const result = await rpc.request.getEnvInfo();
 	return result.ok ? result.data : null;
+}
+
+/**
+ * Service 的来源：本应用自己 spawn 的（`spawned`）还是探测到已在跑而接入的（`adopted`）。
+ * 只有主进程知道这件事 —— Service 自己只知道自己 pid。非 electrobun 环境返回 null，
+ * 由调用方判断（浏览器没有主进程，页面只能是「接入现有服务」）。
+ */
+export async function getServiceInfo(): Promise<{ mode: 'spawned' | 'adopted'; pid: number | null; port: number } | null> {
+	try {
+		const result = await rpc.request.getServiceInfo();
+		return result.ok ? result.data : null;
+	} catch {
+		return null;
+	}
 }
 
 // #endregion

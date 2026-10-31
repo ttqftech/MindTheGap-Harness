@@ -9,7 +9,7 @@
 
 import { createSignal, onCleanup, onMount, For, createMemo } from 'solid-js';
 import { isElectrobunEnv } from '@mainview/bridges/rpc';
-import { windowControls, getEnvInfo } from '@mainview/bridges/localBridge';
+import { windowControls, getEnvInfo, type ShellEnvInfo } from '@mainview/bridges/localBridge';
 import { beginExitSequence } from '@mainview/App/ExitOverlay';
 import { showMenu } from '@mainview/bridges/ffboxBridge';
 import { state, actions } from '@mainview/stores';
@@ -17,6 +17,7 @@ import { APP_MENUS, type AppMenuGroup } from './appMenu';
 import { startSettingsDrag } from '@mainview/App/Settings/useSettingsDrag';
 import { useTooltip } from 'ffbox-ui';
 import { getTimeString } from '@shared/utils';
+import { version } from '@shared/buildInfo';
 import styles from './TitleBar.module.css';
 import MTGxlong from './MTG-xlong.svg';
 
@@ -76,25 +77,43 @@ function CloseIcon() {
 
 export default function TitleBar() {
 	const [maximized, setMaximized] = createSignal(false);
-	const [frontendEnvInfo, setFrontendEnvInfo] = createSignal<{ platform: string; arch: string; osVersion: string; appVersion: string, build: typeof buildInfo } | null>(null);
+	/**
+	 * **桌面壳**的环境信息（平台 / 架构 / 系统 / 数据目录）。只有 electrobun 环境有；
+	 * 浏览器里没有壳，一直是 null —— 徽标照样渲染，只是不显示壳那一块。
+	 */
+	const [shellEnv, setShellEnv] = createSignal<ShellEnvInfo | null>(null);
 	/** 浏览器模式：整条栏照常画，但窗口按钮不可用 */
 	const inNativeWindow = isElectrobunEnv();
 
 	const hasUnread = createMemo(() => state.ui.unreadConversationIds.length > 0);
 
-	const serviceTooltipContent = createMemo(() => {
-		const env = frontendEnvInfo();
-		if (!env) return ``;
-		const buildType = env.build.isDev ? '开发' : '生产';
-		const buildTime = getTimeString(new Date(env.build.buildTime), false);
-		return [
-			`前端版本：${env.appVersion}`,
-			`平台：${env.platform}`,
-			`架构：${env.arch}`,
-			`操作系统：${env.osVersion}`,
-			`构建：${env.build.gitCommit} (${buildType})`,
-			`构建时间: ${buildTime}`,
-		].join('\n');
+	/**
+	 * 悬浮提示分两块：**前端**（打包时注入的 buildInfo 常量，任何环境都读得到）
+	 * 与**桌面壳**（RPC envInfo，浏览器里恒为 null）。
+	 * 这两类信息来源不同，别混成一份版本号 —— 浏览器里页面版本是确定的，壳是缺失的。
+	 */
+	const envTooltipContent = createMemo(() => {
+		const lines = [
+			'前端（页面）',
+			`  版本：${version}`,
+			`  构建：${buildInfo.gitCommit}（${buildInfo.isDev ? '开发' : '生产'}）`,
+			`  构建时间：${getTimeString(new Date(buildInfo.buildTime), false)}`,
+		];
+		const shell = shellEnv();
+		if (shell) {
+			lines.push(
+				'',
+				'桌面壳（Electrobun）',
+				`  版本：${shell.appVersion}`,
+				`  平台：${shell.platform}`,
+				`  架构：${shell.arch}`,
+				`  系统：${shell.osVersion}`,
+				`  数据目录：${shell.userDataPath}`,
+			);
+		} else {
+			lines.push('', '桌面壳：无（浏览器直接打开页面）');
+		}
+		return lines.join('\n');
 	});
 
 	/** 回读最大化状态（窗口被系统贴边、双击标题栏等都会改变它） */
@@ -107,7 +126,8 @@ export default function TitleBar() {
 		syncMaximized();
 		// 最大化 / 还原必然触发 resize，用它做同步信号，省得再加一条 bun → webview 的消息通道
 		window.addEventListener('resize', syncMaximized);
-		void getEnvInfo().then((env) => setFrontendEnvInfo(env));
+		// 壳信息只在原生窗口里有意义（浏览器里 RPC 返回 null，不用发这次请求）
+		if (inNativeWindow) void getEnvInfo().then(setShellEnv);
 	});
 
 	onCleanup(() => window.removeEventListener('resize', syncMaximized));
@@ -172,9 +192,9 @@ export default function TitleBar() {
 			<div class={styles.dragArea} ondblclick={() => void handleMaximizeClick()} />
 
 			{/* 运行时徽标 */}
-			<div class={styles.versionBadge} {...useTooltip(serviceTooltipContent())}>
+			<div class={styles.versionBadge} {...useTooltip(envTooltipContent())}>
 				<span class={styles.statusDot} />
-				{frontendEnvInfo() ? <span class={styles.statusText}>版本 {frontendEnvInfo()?.appVersion}</span> : null}
+				<span class={styles.statusText}>前端 {version} · {buildInfo.gitCommit}</span>
 			</div>
 
 			{/* 窗口控制组 */}

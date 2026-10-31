@@ -693,6 +693,55 @@ export interface DebugSettings {
 	mock?: MockSettings;
 }
 
+// #region 11. 用户与登录（照抄 FFBox 的 serviceBridge 鉴权模型）
+
+/**
+ * 权限项。本项目只开放一项「用户管理」。
+ * 值用驼峰字符串（与 FFBox 一致），存进 settings.json 的 users[].permissions。
+ */
+export type Permission = 'userManagement';
+
+/** 全部权限（新用户默认无权限；空用户名的管理员默认全有） */
+export const ALL_PERMISSIONS: Permission[] = ['userManagement'];
+
+/** 权限的中文标签（设置页 / 提示文案共用） */
+export const PERMISSION_LABELS: Record<Permission, string> = {
+	userManagement: '用户管理',
+};
+
+/** 一个用户（持久化在 settings.json 的 users 里） */
+export interface UserConfig {
+	username: string;	// 空字符串 = 管理员账号（仅在无密码时可空账号登录）
+	passkey: string;	// SHA-256 十六进制摘要；空串 = 该账号无密码
+	permissions: Permission[];	// 权限列表。空数组 = 已配置但无权限
+}
+
+/**
+ * 未配置任何用户时的默认账号：空用户名（管理员）、无密码、全部权限。
+ * 放在 shared 里是因为 storage（出厂默认值）与 auth（读侧回落）都要用它，
+ * 而这两个模块互相 import 会成环。
+ */
+export function defaultUsers(): UserConfig[] {
+	return [{ username: '', passkey: '', permissions: [...ALL_PERMISSIONS] }];
+}
+
+/** 登录结果（POST /api/auth/login 的响应体） */
+export interface LoginResult {
+	isUserExist: boolean;
+	isSuccess: boolean;
+	sessionId?: string;
+	permissions?: Permission[];
+}
+
+/** 当前登录态（GET /api/auth/session 的响应体） */
+export interface AuthInfo {
+	username: string;
+	permissions: Permission[];
+	anonymous?: boolean;	// true = 无密码放行的匿名访问（尚未配置密码的管理员）
+}
+
+// #endregion
+
 /** 后端完整设置 */
 export interface ServiceSettings {
 	providers: ModelProvider[];
@@ -707,6 +756,8 @@ export interface ServiceSettings {
 	basePrompt: string;
 	folders: Folder[];
 	mcpServers: McpServerConfig[];
+	/** 用户列表（见 §11）。缺字段时按「空用户名的管理员、无密码、全权限」处理 */
+	users: UserConfig[];
 	debug: DebugSettings;
 }
 

@@ -6,9 +6,10 @@
  */
 
 import { createSignal, createMemo, createEffect, on, For, Show } from 'solid-js';
-import { state, actions, isConversationAlive, isConversationUnread } from '@mainview/stores';
+import { state, actions, isConversationAlive, isConversationUnread, hasPermission, serviceOriginLabel } from '@mainview/stores';
 import { showMenu, type MenuItem } from '@mainview/bridges/ffboxBridge';
 import { addFolderViaDialog, newConversation } from '@mainview/logic/appCommands';
+import { disconnect, reconnect } from '@mainview/logic/authController';
 import { useTooltip } from 'ffbox-ui';
 import { folderLabel, getTimeString } from '@shared/utils';
 import type { ConversationSort } from '@mainview/stores';
@@ -146,13 +147,25 @@ export default function Sidebar() {
 		return `${h.build.gitCommit}`;
 	});
 
+	/**
+	 * 悬浮提示：构建 / 运行信息 + 这次连的是谁、服务是谁起的。
+	 * 第一行给的是接入地址（spawn 的会缀「已托管」），比「接入的现有服务」这种描述更好定位问题。
+	 */
 	const serviceTooltipContent = createMemo(() => {
 		const h = state.serviceHealth;
-		if (!h) return '服务未连接';
+		const lines = [
+			`服务地址: ${serviceOriginLabel()}`,
+			`登录用户: ${state.auth.username || '(管理员)'}`,
+		];
+		if (!h) {
+			lines.unshift('服务未连接');
+			return lines.join('\n');
+		}
 		const buildType = h.build.isDev ? '开发' : '生产';
 		const buildTime = getTimeString(new Date(h.build.buildTime), false);
 		const startedAt = getTimeString(new Date(h.startedAt), false);
 		return [
+			...lines,
 			`通道: ${h.channel}`,
 			`PID: ${h.pid}　端口: ${h.port}`,
 			`构建: ${h.build.gitCommit} (${buildType})`,
@@ -160,6 +173,29 @@ export default function Sidebar() {
 			`启动时间: ${startedAt}`,
 		].join('\n');
 	});
+
+	/**
+	 * 运行时状态行点开的菜单：断开 / 重连（FFBox 是关标签页 = 断开，MTG 单连接没有标签页，
+	 * 所以把这个动作挂到状态行上）。「用户管理」只有拿到权限才出现。
+	 */
+	const openConnectionMenu = (el: HTMLElement) => {
+		const menu: MenuItem[] = [
+			{ type: 'normal', value: 'reconnect', label: '重新连接', onClick: () => void reconnect() },
+			{ type: 'normal', value: 'disconnect', label: '断开连接', onClick: () => void disconnect() },
+			...(hasPermission('userManagement')
+				? [
+					{ type: 'separator' as const },
+					{ type: 'normal' as const, value: 'users', label: '用户管理…', onClick: () => actions.openSettings('用户管理') },
+				]
+				: []),
+		];
+		const rect = el.getBoundingClientRect();
+		showMenu({
+			menu,
+			type: 'action',
+			triggerRect: { xMin: rect.left, yMin: rect.top, xMax: rect.right, yMax: rect.bottom },
+		});
+	};
 
 	const toggleFolder = (id: string) => {
 		setExpandedFolders((prev) => {
@@ -335,9 +371,16 @@ export default function Sidebar() {
 				{/* 底部：运行时状态 + 设置 */}
 				<div class={styles['sidebar-footer-divider']} />
 				<div class={styles['sidebar-footer']}>
-					<div class={styles['runtime-status']} {...useTooltip(serviceTooltipContent(), 'tl')}>
+					{/* 这一行同时是「接的是哪个服务」的唯一常驻指示：直接显示 IP:端口，
+					    spawn 出来的会缀「（已托管）」。点开是断开 / 重连 / 用户管理（MTG 单连接，没有标签页可关） */}
+					<div
+						class={styles['runtime-status']}
+						title="点击：重新连接 / 断开连接"
+						onclick={(e) => openConnectionMenu(e.currentTarget)}
+						{...useTooltip(serviceTooltipContent(), 'tl')}
+					>
 						<span class={styles['status-dot']} />
-						<span class={styles['runtime-text']}>{state.serviceHealth ? '本地运行时 · Agent 在线' : '本地运行时 · 未连接'}</span>
+						<span class={styles['runtime-text']}>{serviceOriginLabel()}</span>
 						<span style="flex: 1" />
 						<span class={styles['runtime-version']}>{serviceVersion()}</span>
 					</div>

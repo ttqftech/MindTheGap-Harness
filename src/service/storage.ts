@@ -28,6 +28,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, McpServerConfig } from '../shared/agent';
+import { defaultUsers } from '../shared/agent';
 
 // #region 路径 & 文件读写
 
@@ -222,6 +223,9 @@ const defaultSettings: ServiceSettings = {
 	basePrompt: '',
 	folders: [{ id: 'local', isLocal: true }],
 	mcpServers: defaultMcpServers(),
+	// 默认只有一个「空用户名 = 管理员、无密码、全权限」的账号（见 auth.ts）。
+	// 老 settings.json 没有这个键时也会走这里；用户在设置页建了账号之后就以磁盘为准。
+	users: defaultUsers(),
 	debug: {
 		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false },
 		// 内置 mock 默认关。⚠️ 老 settings.json 里的 `debug` 只有 requestLog，而这里是**整对象覆盖**，

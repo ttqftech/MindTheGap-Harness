@@ -9,9 +9,10 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, McpServerConfig, ModeDefinition, ModeSummary } from '@shared/agent';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, McpServerConfig, ModeDefinition, ModeSummary, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './runner';
+import * as auth from './auth';
 import { getBuiltinToolNames } from './tools';
 import { setMockResolver } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
@@ -56,7 +57,15 @@ function healthInfo(): ServiceHealth {
 function setCors(res: ServerResponse) {
 	res.setHeader('Access-Control-Allow-Origin', '*');
 	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-	res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+	// Authorization 必须放行：登录后所有请求都带 `Bearer <sessionId>`
+	res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+}
+
+/** 取请求头里的 sessionId（`Authorization: Bearer xxx`） */
+function bearerToken(req: IncomingMessage): string {
+	const raw = req.headers['authorization'];
+	const value = Array.isArray(raw) ? raw[0] : raw;
+	return value?.startsWith('Bearer ') ? value.slice(7) : '';
 }
 
 function sendJson(res: ServerResponse, code: number, obj: unknown) {
@@ -228,6 +237,50 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				}
 				sendJson(res, 200, { ok: true });
 				gracefulShutdown('api');
+				return;
+			}
+
+			// #region 认证（未登录也要能访问：登录本身、登出）
+
+			// 登录。请求体的 passkey 是**前端算好的 SHA-256 十六进制**（明文口令不上线）
+			if (req.method === 'POST' && path === '/api/auth/login') {
+				const body = await readBody(req);
+				const { username, passkey } = JSON.parse(body || '{}') as { username?: string; passkey?: string };
+				sendJson(res, 200, auth.login(username ?? '', passkey ?? ''));
+				return;
+			}
+
+			// 登出：删掉这个 sessionId 对应的会话。不要求 session 仍然有效（过期了也得能登出）
+			if (req.method === 'POST' && path === '/api/auth/logout') {
+				const token = bearerToken(req);
+				if (token) auth.deleteSession(token);
+				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// #endregion
+
+			// ⚠️ 鉴权闸门：以下**所有**接口都要求登录态（或管理员无密码时的匿名放行）。
+			//    位置很关键 —— 必须排在 /api/health（主进程探活）、/api/shutdown（仅 loopback）、
+			//    /api/auth/*（登录 / 登出本身）之后，否则「登不进去」和「停不下来」。
+			// ⚠️ SSE 例外：EventSource 不能自定义请求头，前端把 sessionId 放 query 里（与 FFBox 的 WS 同一做法）。
+			//    只对 `/api/agent/stream` 认 query，别的接口一律只认 Authorization 头。
+			const querySession = path === '/api/agent/stream' ? url.searchParams.get('sessionId') : null;
+			const authInfo: AuthInfo | null = auth.resolveAuth(
+				req.headers['authorization'] ?? (querySession ? `Bearer ${querySession}` : undefined),
+			);
+			if (!authInfo) {
+				sendJson(res, 401, { ok: false, error: '需要登录（未携带有效的 sessionId）' });
+				return;
+			}
+
+			// 当前登录态：前端 10s 轮询用它确认 session 还有效（服务重启后会话全失效）
+			if (req.method === 'GET' && path === '/api/auth/session') {
+				sendJson(res, 200, {
+					username: authInfo.username,
+					permissions: authInfo.permissions,
+					anonymous: authInfo.anonymous ?? false,
+				});
 				return;
 			}
 
@@ -615,6 +668,32 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				const { name, arguments: args } = JSON.parse(body || '{}');
 				const result = await mcpManager.callTool(name, args ?? {});
 				sendJson(res, 200, result);
+				return;
+			}
+
+			// #endregion
+
+			// #region 设置 — 用户（读：任意登录用户；写：需要「用户管理」权限）
+
+			if (req.method === 'GET' && path === '/api/settings/users') {
+				sendJson(res, 200, auth.getUsers());
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/users') {
+				if (!auth.hasPermission(authInfo, 'userManagement')) {
+					sendJson(res, 403, { ok: false, error: '没有「用户管理」权限' });
+					return;
+				}
+				const body = await readBody(req);
+				const users = JSON.parse(body || '[]') as UserConfig[];
+				if (!Array.isArray(users)) {
+					sendJson(res, 400, { ok: false, error: '请求体需要是用户数组' });
+					return;
+				}
+				auth.setUsers(users);
+				logMsg(`[HttpServer] 用户配置已更新（${users.length} 个账号）`);
+				sendJson(res, 200, { ok: true });
 				return;
 			}
 

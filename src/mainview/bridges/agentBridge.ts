@@ -6,14 +6,76 @@
  * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
  */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, ConversationMeta, ServiceConversation, ServiceSettings, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
+import { sha256Hex } from '@shared/sha256';
 
-const HTTP_PORT = 18999;
-const HTTP_BASE = `http://localhost:${HTTP_PORT}`;
+// #region 连接目标（可手动指定 IP / 端口）
+
+/**
+ * 本机默认端点 = 主进程 spawn / adopt 的那个 Service。
+ * 「本应用托管 / 接入现有」这个区别**只对本端点成立**，连到别的机器时它就是个外部服务。
+ */
+export const LOCAL_ENDPOINT = { host: '127.0.0.1', port: 18999 } as const;
+
+export interface ServiceEndpoint {
+	host: string;
+	port: number;
+}
+
+/**
+ * 当前请求目标。默认本机 18999，可在连接面板里手动改成别的 IP / 端口（Service 监听 0.0.0.0，
+ * 所以同网段的另一台机器也能连）。由 `logic/authController.ts` 在每次连接前写入。
+ */
+let endpoint: ServiceEndpoint = { ...LOCAL_ENDPOINT };
+
+export function setEndpoint(host: string, port: number): void {
+	endpoint = { host: host.trim(), port };
+}
+
+export function getEndpoint(): ServiceEndpoint {
+	return { ...endpoint };
+}
+
+function baseUrlOf(host: string, port: number): string {
+	return `http://${host}:${port}`;
+}
+
+/** 展示用的 `host:port` */
+export function endpointText(e: ServiceEndpoint = endpoint): string {
+	return `${e.host}:${e.port}`;
+}
+
+// #endregion
+
+// #region 登录态（Bearer sessionId）
+
+/**
+ * 当前登录会话 id。**真相在 Service 内存里**，这里只是每次请求要带上的凭据。
+ * 由 `logic/authController.ts` 在登录成功 / 断开时通过 `setSession()` 写入。
+ */
+let sessionId: string | null = null;
+
+export function setSession(id: string | null): void {
+	sessionId = id;
+}
+
+export function getSession(): string | null {
+	return sessionId;
+}
+
+/** 带上 Authorization 的请求头（没登录时原样返回，便于「登录前也要能访问」的接口） */
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+	const headers: Record<string, string> = { ...extra };
+	if (sessionId) headers['Authorization'] = `Bearer ${sessionId}`;
+	return headers;
+}
 
 async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {
-	const resp = await fetch(`${HTTP_BASE}${path}`, init);
+	const resp = await fetch(`${baseUrlOf(endpoint.host, endpoint.port)}${path}`, {
+		...init,
+		headers: authHeaders(init?.headers as Record<string, string> | undefined),
+	});
 	if (!resp.ok) {
 		const text = await resp.text().catch(() => '');
 		throw new Error(`HTTP ${resp.status}: ${text}`);
@@ -21,23 +83,111 @@ async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	return resp.json();
 }
 
+/** 从 httpFetch 抛出的错误里取出后端的业务 error 字段（`{ ok:false, error }`） */
+function businessError(e: unknown): string {
+	const raw = String((e as Error)?.message ?? e);
+	const json = raw.match(/\{.*\}$/)?.[0];
+	if (json) {
+		try {
+			return (JSON.parse(json) as { error?: string }).error ?? raw;
+		} catch {
+			// 解析失败就用原文
+		}
+	}
+	return raw;
+}
+
+// #endregion
+
+// #region 认证（照抄 FFBox serviceBridge 的模型）
+
+/**
+ * 登录。口令在这里算 SHA-256（明文不出本机），失败时后端只回 `isSuccess:false`，
+ * 由调用方翻成「用户名错误 / 密码错误」。
+ */
+export async function login(username: string, password: string): Promise<{ ok: boolean; error?: string; sessionId?: string; username?: string; permissions?: AuthInfo['permissions'] }> {
+	try {
+		const result = await httpFetch<LoginResult>('/api/auth/login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ username, passkey: password ? sha256Hex(password) : '' }),
+		});
+		if (!result.isSuccess) {
+			return { ok: false, error: result.isUserExist === false ? '登录失败：用户名错误' : '登录失败：密码错误' };
+		}
+		return { ok: true, sessionId: result.sessionId, username, permissions: result.permissions ?? [] };
+	} catch (e) {
+		return { ok: false, error: `登录失败：${businessError(e)}` };
+	}
+}
+
+/** 当前登录态。session 失效（服务重启过）时返回 null */
+export async function getAuthInfo(): Promise<AuthInfo | null> {
+	try {
+		return await httpFetch<AuthInfo>('/api/auth/session');
+	} catch {
+		return null;
+	}
+}
+
+/** 登出：让后端丢掉这个 sessionId（服务端的会话表在内存里，不删就一直有效） */
+export async function logout(): Promise<void> {
+	try {
+		await httpFetch('/api/auth/logout', { method: 'POST' });
+	} catch {
+		// 服务已经没了也算登出成功（本地凭据照样清掉）
+	}
+}
+
+/** 用户列表（设置页「用户管理」） */
+export async function getUsers(): Promise<UserConfig[]> {
+	try {
+		return await httpFetch<UserConfig[]>('/api/settings/users');
+	} catch {
+		return [];
+	}
+}
+
+/** 保存用户列表。后端要求「用户管理」权限，无权限时返回 error */
+export async function setUsers(users: UserConfig[]): Promise<{ ok: boolean; error?: string }> {
+	try {
+		return await httpFetch('/api/settings/users', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(users),
+		});
+	} catch (e) {
+		return { ok: false, error: businessError(e) };
+	}
+}
+
+// #endregion
+
 // #region 健康检查
 
 /**
- * 探活并取回服务自报的构建信息。
+ * 探活某个端点并取回服务自报的构建信息。
  * 服务不可达返回 null（而不是吞掉细节的 false），调用方据此区分「后端没起来」与「起来了但版本不对」。
+ *
+ * 不碰模块里的 `endpoint`：连接面板要在**输入框里那个地址**上做探测，和当前连接目标未必是同一个。
  */
-export async function health(): Promise<ServiceHealth | null> {
+export async function probeHealthAt(host: string, port: number, timeoutMs = 3000): Promise<ServiceHealth | null> {
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 	try {
-		const ctrl = new AbortController();
-		const timer = setTimeout(() => ctrl.abort(), 3000);
-		const resp = await fetch(`${HTTP_BASE}/api/health`, { signal: ctrl.signal });
-		clearTimeout(timer);
+		const resp = await fetch(`${baseUrlOf(host, port)}/api/health`, { signal: ctrl.signal });
 		if (!resp.ok) return null;
 		return (await resp.json()) as ServiceHealth;
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
+}
+
+/** 探活当前连接目标 */
+export function health(): Promise<ServiceHealth | null> {
+	return probeHealthAt(endpoint.host, endpoint.port);
 }
 
 // #endregion
@@ -86,7 +236,10 @@ export async function answerToolCall(params: { conversationId: string; toolCallI
 // #region 流式订阅
 
 export function subscribeStream(conversationId: string, listener: (event: AgentStreamEvent) => void, onOpen?: () => void, onError?: () => void): () => void {
-	const es = new EventSource(`${HTTP_BASE}/api/agent/stream?conversationId=${encodeURIComponent(conversationId)}`);
+	// ⚠️ EventSource 不能自定义请求头，所以 sessionId 只能走 query（后端照抄 FFBox 的 WS 做法）
+	const querySearch = new URLSearchParams({ conversationId });
+	if (sessionId) querySearch.set('sessionId', sessionId);
+	const es = new EventSource(`${baseUrlOf(endpoint.host, endpoint.port)}/api/agent/stream?${querySearch.toString()}`);
 	// ⚠️ 建连是**异步**的（几百 ms）。调用方必须在发 run **之前**等到这里 open ——
 	//    后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，会永久丢失，
 	//    后果是在飞期间界面一片空白（详见 ChatView.beginRun 的说明）。

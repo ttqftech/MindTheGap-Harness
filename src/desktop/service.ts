@@ -160,10 +160,19 @@ export async function ensureService(options: { channel: string; isDev: boolean }
 /**
  * 停掉所有还在飞的会话。走 HTTP（GET /api/conversations 拿 runStatus，逐个 cancel），
  * 不 import agent 代码 —— 退场序列的 stopAllRuns 用它。
+ *
+ * ⚠️ 加了登录之后这一步**可能 401**：管理员设了密码时，主进程没有 sessionId（它不登录）。
+ *    这里刻意不做"后门"（本机任何进程都能凭 loopback 免鉴权，等于登录系统白做），
+ *    401 时只记一行日志 —— 紧接着的 `POST /api/shutdown` 本来就会在服务端 cancelAllRunners，
+ *    所以会话不会漏停，只是这两步的先后顺序变成"由服务自己收尾"。
  */
 export async function cancelAllRuns(): Promise<number> {
 	try {
 		const resp = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/conversations`);
+		if (resp.status === 401) {
+			logMsg('[service] 跳过取消会话：Service 要求登录（管理员已设密码），改由 /api/shutdown 在服务端收尾');
+			return 0;
+		}
 		const data = JSON.parse(await resp.text()) as { conversations?: Array<{ id: string; runStatus?: string }> };
 		const alive = (data.conversations ?? []).filter((c) => c.runStatus === 'running' || c.runStatus === 'waiting');
 		for (const c of alive) {
