@@ -675,6 +675,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		throw e;
 	} finally {
 		const endedAt = Date.now();
+		const logOptions = getRequestLogOptions();
 		const record: LlmRequestRecord = {
 			seq,
 			logId,
@@ -696,11 +697,14 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 			request: {
 				messageCount: messages.length,
 				toolCount: tools.length,
-				toolNames: getRequestLogOptions().includeToolNames ? toolNames : undefined,
+				toolNames: logOptions.includeToolNames ? toolNames : undefined,
 				systemPromptChars: systemText.length,
 				systemPromptHash: systemText ? hashString(systemText) : undefined,
 				totalChars: JSON.stringify(messages).length + JSON.stringify(tools).length,
 				stream: true,
+				// 等级 = 完整时把 messages 原文一起存下（界面上「导出详细信息」靠它）；
+				// 默认等级只留形状，日志体积与本项目历史上的 requestLog 一致。
+				messages: logOptions.level === 'full' ? messages : undefined,
 			},
 			status,
 			usage: Object.keys(usage).length > 0 ? usage : undefined,

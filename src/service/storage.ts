@@ -227,7 +227,7 @@ const defaultSettings: ServiceSettings = {
 	// 老 settings.json 没有这个键时也会走这里；用户在设置页建了账号之后就以磁盘为准。
 	users: defaultUsers(),
 	debug: {
-		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false },
+		requestLog: { enabled: true, includeToolNames: true, maxBytes: 8 * 1024 * 1024, dumpPayload: false, level: 'default' },
 		// 内置 mock 默认关。⚠️ 老 settings.json 里的 `debug` 只有 requestLog，而这里是**整对象覆盖**，
 		// 所以运行时 settings.debug.mock 可能是 undefined —— 读侧必须 `?.`（见 llm/model.ts、http-server.ts）
 		mock: { enabled: false, scenario: 'web' },

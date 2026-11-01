@@ -9,14 +9,14 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, McpServerConfig, ModeDefinition, ModeSummary, UserConfig } from '@shared/agent';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, RequestLogLevel, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './runner';
 import * as auth from './auth';
 import { getBuiltinToolNames } from './tools';
 import { setMockResolver } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
-import { clearRequests, readRequests, setRequestLogOptions } from './llm/requestLog';
+import { clearRequests, readRequest, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
 import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers, flushAll } from './storage';
@@ -424,13 +424,27 @@ export function startHttpServer(options: { channel?: string } = {}) {
 							agentInstanceId: url.searchParams.get('agentInstanceId') ?? undefined,
 							purpose: url.searchParams.get('purpose') ?? undefined,
 							since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
-						});
+						}).map(stripRequestMessages);
 						sendJson(res, 200, { requests: records });
 						return;
 					}
 					if (req.method === 'DELETE') {
 						clearRequests(conversationId);
 						sendJson(res, 200, { ok: true });
+						return;
+					}
+				}
+
+				// 单条请求日志：渲染树里右键某个 LLM 块「导出详细信息」时，前端拿 logId 来取全文
+				if (rest.startsWith('requests/')) {
+					if (req.method === 'GET') {
+						const logId = decodeURIComponent(rest.slice('requests/'.length));
+						const record = readRequest(conversationId, logId);
+						if (!record) {
+							sendJson(res, 404, { ok: false, error: '没找到这条请求日志（可能已被清空或轮转覆盖）' });
+							return;
+						}
+						sendJson(res, 200, { ok: true, record });
 						return;
 					}
 				}
@@ -576,6 +590,35 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				};
 				logMsg(`[HttpServer] 内置 mock：${settings.debug.mock.enabled ? `开（${settings.debug.mock.scenario}）` : '关'}`);
 				sendJson(res, 200, { ok: true, ...settings.debug.mock, scenarios: MOCK_SCENARIOS });
+				return;
+			}
+
+			// #endregion
+
+			// #region 设置 — LLM 请求日志等级
+
+			// 只暴露「等级」这一项：enabled / maxBytes 等仍是 settings.json 里的手工项
+			if (req.method === 'GET' && path === '/api/settings/request-log') {
+				sendJson(res, 200, { level: getRequestLogOptionsFromSettings().level });
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/request-log') {
+				const body = await readBody(req);
+				const params = JSON.parse(body || '{}') as { level?: string };
+				const requested = params.level;
+				if (requested !== 'default' && requested !== 'full') {
+					sendJson(res, 400, { ok: false, error: "level 只能是 'default' 或 'full'" });
+					return;
+				}
+				// 整份写回：老 settings.json 里可能连 requestLog 都没有，四要素由读侧兜底
+				const level: RequestLogLevel = requested === 'full' ? 'full' : 'default';
+				const next = { ...getRequestLogOptionsFromSettings(), level };
+				settings.debug = { ...settings.debug, requestLog: next };
+				// 立刻同步给 llm 层：下一次请求就按新等级记录
+				setRequestLogOptions(next);
+				logMsg(`[HttpServer] LLM 请求日志等级：${next.level}`);
+				sendJson(res, 200, { ok: true, level: next.level });
 				return;
 			}
 
@@ -806,6 +849,16 @@ export function stopHttpServer(): void {
 
 // #endregion
 
+/**
+ * 列表接口只给元信息：`request.messages`（等级 = 完整时才有）只在单条查询里返回。
+ * 否则一次拉 50 条会把几十 MB 正文拖到设置面板里。
+ */
+function stripRequestMessages(rec: LlmRequestRecord): LlmRequestRecord {
+	if (!rec.request?.messages) return rec;
+	const { messages: _messages, ...rest } = rec.request;
+	return { ...rec, request: rest };
+}
+
 /** 从 settings 里读 requestLog 配置（带默认值兜底） */
 function getRequestLogOptionsFromSettings() {
 	const cfg = settings.debug?.requestLog;
@@ -814,5 +867,6 @@ function getRequestLogOptionsFromSettings() {
 		includeToolNames: cfg?.includeToolNames ?? true,
 		maxBytes: cfg?.maxBytes ?? 8 * 1024 * 1024,
 		dumpPayload: cfg?.dumpPayload ?? false,
+		level: cfg?.level === 'full' ? ('full' as const) : ('default' as const),
 	};
 }

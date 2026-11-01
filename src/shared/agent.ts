@@ -177,7 +177,15 @@ export type AgentInstanceStatus =
  * - `tool_result` / `reflection` 是普通条目的附加信息，仍会进 LLM 上下文
  *   （`tool_result` 解掉「成功/失败靠 `[失败] ` 前缀嗅探」；`reflection` 解掉「反思文本和 system prompt 分不开」）
  */
-export type MessageKind = 'tool_result' | 'reflection';
+/**
+ * 条目的语义分类：
+ * - `tool_result`：工具结果（贴在对应 toolCall 处）
+ * - `reflection`：反思轮
+ * - `notice`：**系统事件**（预算耗尽 / 用户取消 / 出错…）。它是时间线的一部分，按发生顺序落在
+ *   `messages` 里、`uiOnly`（只给界面看，不进 LLM 上下文）。别再往实例上另加「错误时间戳」之类的字段 ——
+ *   那样只能把错误补在末尾，时序就乱了（2026-10-27）。
+ */
+export type MessageKind = 'tool_result' | 'reflection' | 'notice';
 
 /**
  * 实例条目 = LLM 消息 + 时间戳 + 可选的结构化载荷。
@@ -259,14 +267,24 @@ export interface AgentInstance {
 	reflectionsRemaining: number;
 	/** 本实例消耗的 agentLoop 轮数 */
 	rounds: number;
-	/** 本实例累计发起过多少次 LLM 请求（由 runner 在每次 callLlm 后累加） */
+	/**
+	 * 本实例**终身**累计发起过多少次 LLM 请求（由 runner 在每次 callLlm 后累加）。
+	 *
+	 * ⚠️ 界面**不读**它：根实例永续（一个会话一个根），终身数字显示在发言末尾会被误读成
+	 * 「这一句话就花了这么多」。界面用投影按「本次发言区间」现算的 `RunUsage`（见 projection.ts）。
+	 */
 	llmCalls: number;
 	childAgentInstanceIds: string[];
-	/** 本实例累计 token（由 runner 在每次 callLlm 后累加；唯一真相） */
+	/**
+	 * 本实例**终身**累计 token（由 runner 在每次 callLlm 后累加）。
+	 *
+	 * ⚠️ 只存不读（2026-10-27 起）：保留它是为了将来做「会话总消耗」之类的统计；
+	 * 界面的运行摘要已改为按本次发言区间求和（`RunUsage`），不要再拿它渲染。
+	 */
 	tokens?: TokenUsage;
 	startedAt: number;
 	lastUpdatedAt?: number;
-	/** 中断 / 失败原因（供父实例的「尚未完成的子 Agent」段落展示） */
+	/** 中断 / 失败原因（供父实例的「尚未完成的子 Agent」段落展示；界面上的那条由 `kind:'notice'` 的消息承载） */
 	interruptReason?: string;
 	/** 动态状态快照：key → 上次序列化值，用于 buildPromptScope 计算 stateChanged */
 	stateSnapshot?: Record<string, string>;
@@ -504,6 +522,12 @@ export interface LlmRequestRecord {
 		systemPromptHash?: string;
 		totalChars: number;
 		stream: boolean;
+		/**
+		 * 发给 LLM 的 messages **全文**（含拼接后的 system / 状态提示词）。
+		 * 只在 `settings.debug.requestLog.level === 'full'` 时记录 —— ctx 里的记录是节选，
+		 * 想复现「模型到底看到了什么」只能靠它。
+		 */
+		messages?: LlmMessage[];
 	};
 
 	// ---- 结果 ----
@@ -524,7 +548,10 @@ export interface RequestLogConfig {
 	includeToolNames: boolean;
 	maxBytes: number;
 	dumpPayload: boolean;
+	level?: RequestLogLevel;
 }
+
+export type RequestLogLevel = 'default' | 'full';
 
 // #endregion
 

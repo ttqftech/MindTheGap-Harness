@@ -680,4 +680,45 @@ export async function clearRequests(conversationId: string): Promise<boolean> {
 	}
 }
 
+/**
+ * 取**一条**请求日志（渲染树右键「导出详细信息」）。
+ * `level: 'full'` 时 `record.request.messages` 才是完整的那份 messages。
+ */
+export async function getRequestDetail(conversationId: string, logId: string): Promise<{ ok: boolean; record?: LlmRequestRecord; error?: string }> {
+	try {
+		return await httpFetch(`/api/conversations/${encodeURIComponent(conversationId)}/requests/${encodeURIComponent(logId)}`);
+	} catch (e) {
+		return { ok: false, error: businessError(e) };
+	}
+}
+
+// #endregion
+
+// #region 设置 — LLM 请求日志等级
+
+export type RequestLogLevel = 'default' | 'full';
+
+/** 读日志等级。读不到一律按『默认』（宁可少记，也不要意外把全文写进磁盘） */
+export async function getRequestLogLevel(): Promise<RequestLogLevel> {
+	try {
+		const resp = await httpFetch<{ level: RequestLogLevel }>('/api/settings/request-log');
+		return resp.level === 'full' ? 'full' : 'default';
+	} catch {
+		return 'default';
+	}
+}
+
+export async function setRequestLogLevel(level: RequestLogLevel): Promise<boolean> {
+	try {
+		await httpFetch('/api/settings/request-log', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ level }),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // #endregion

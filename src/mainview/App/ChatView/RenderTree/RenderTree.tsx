@@ -1,14 +1,39 @@
 import { For, Show } from 'solid-js';
-import type { RenderAgentNode, RenderBlock, RenderSubBlock, RenderToolSub } from '@mainview/logic/projection';
+import { useTooltip } from 'ffbox-ui';
+import type { RenderAgentNode, RenderBlock, RenderLlmBlock, RenderSubBlock, RenderToolSub, RunUsage } from '@mainview/logic/projection';
+import { runOfTurn } from '@mainview/logic/projection';
 import type { UsageEntry } from '@shared/agent';
 import { answerAskUser } from '@mainview/logic/runController';
+import { showMenu } from '@mainview/bridges/ffboxBridge';
 import AskUserCard from '@mainview/App/ChatView/AskUserCard/AskUserCard';
+import { showRequestDetailMsgbox } from './requestDetail';
 import {
 	ReflectionIcon, McpIcon,
 	TOOL_ARGS_LIMIT, TOOL_OUTPUT_LIMIT, PURPOSE_LABEL, STATUS_LABEL,
 	truncateWithNote, fmtTokens, fmtDuration, fmtClock, fmtSize, parseMcpName,
 } from './shared';
 import styles from './RenderTree.module.css';
+
+/**
+ * 摘要胶囊的悬浮明细：表面只显示合计，这里摊开「合计是怎么加起来的」。
+ */
+function runSummaryTooltip(run: RunUsage): string {
+	const lines = ['本次发言（含子 Agent 与反思）'];
+	lines.push(`本 Agent · ${run.own.calls} 次  ↑${fmtTokens(run.own.input)} ↓${fmtTokens(run.own.output)}`);
+	if (run.reflection.calls > 0) {
+		lines.push(`反思 · ${run.reflection.calls} 次  ↑${fmtTokens(run.reflection.input)} ↓${fmtTokens(run.reflection.output)}`);
+	}
+	if (run.toolSub.calls > 0) {
+		lines.push(`工具内请求 · ${run.toolSub.calls} 次  ↑${fmtTokens(run.toolSub.input)} ↓${fmtTokens(run.toolSub.output)}`);
+	}
+	if (run.children.calls > 0) {
+		lines.push(`子 Agent · ${run.childAgents} 个 / ${run.children.calls} 次  ↑${fmtTokens(run.children.input)} ↓${fmtTokens(run.children.output)}`);
+	}
+	if (run.total.cached > 0) {
+		lines.push(`其中缓存命中  ${fmtTokens(run.total.cached)}`);
+	}
+	return lines.join('\n');
+}
 
 /**
  * 渲染树组件：把 RenderAgentNode 树投影成 JSX。
@@ -38,6 +63,33 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 				<span class={styles['agent-usage-text']}>{parts.join(' · ')}</span>
 			</div>
 		);
+	};
+
+	/**
+	 * 一个 LLM 块的右键菜单：导出这次请求**真正发给模型**的 messages 全文。
+	 *
+	 * logId 来自该块自己的账本（`usage.logId`）；块还在飞、账本还没落地时置灰。
+	 * 菜单挂在鼠标处而不是块上 —— 一次调用的块可能很长，用块矩形会飘到很远。
+	 */
+	const openLlmBlockMenu = (e: MouseEvent, block: RenderLlmBlock) => {
+		e.preventDefault();
+		const usage = block.usages?.find((u) => u.logId) ?? block.usages?.[0];
+		const logId = usage?.logId;
+		showMenu({
+			type: 'action',
+			triggerRect: { xMin: e.clientX, yMin: e.clientY, xMax: e.clientX, yMax: e.clientY },
+			menu: [
+				{
+					type: 'normal',
+					value: 'export-detail',
+					label: '查看这条 LLM 请求的详细信息…',
+					disabled: !logId,
+					onClick: () => {
+						if (logId) showRequestDetailMsgbox(convId, logId, usage?.seq);
+					},
+				},
+			],
+		});
 	};
 
 	/**
@@ -228,28 +280,34 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		</div>
 	);
 
-	/** 运行摘要：设计稿的指标胶囊（耗时 / 工具调用 / 重入我们暂时拿不到，只出这四项） */
-	const renderRunSummaryFor = (node: () => RenderAgentNode) => (
-		<Show when={node().tokens || node().llmCalls > 0}>
-			<div class={styles['run-summary']}>
+	/**
+	 * 运行摘要：**某一轮发言**的消耗（该轮用户消息之后、下一轮用户消息之前）。
+	 *
+	 * ⚠️ 别退回成读 `instance.tokens` / `instance.llmCalls`：那两个是**实例终身累加**，根实例又是永续的（一个会话一个根），显示出来会让人误以为「这一句话就花了这么多」。
+	 * 表面是含子 Agent 与反思的合计；悬浮看分项（FFBox-UI 的 tooltip，见 `runSummaryTooltip`）。
+	 * 每轮末尾各一个 —— 历史每一轮的成本都留在原地，不只最后一轮。
+	 */
+	const renderRunSummaryFor = (run: () => RunUsage) => (
+		<Show when={run().total.calls > 0}>
+			<div class={styles['run-summary']} {...useTooltip(runSummaryTooltip(run()), 'tl')}>
 				<span class={styles['summary-chip']}>
 					<span class={styles['summary-chip-key']}>LLM 调用</span>
-					{node().llmCalls}
+					{run().total.calls}
 				</span>
 				<span class={styles['summary-chip']}>
 					<span class={styles['summary-chip-key']}>tokens</span>
-					↑{fmtTokens(node().tokens?.input)} ↓{fmtTokens(node().tokens?.output)}
+					↑{fmtTokens(run().total.input)} ↓{fmtTokens(run().total.output)}
 				</span>
-				<Show when={node().tokens?.inputCached}>
+				<Show when={run().total.cached > 0}>
 					<span class={styles['summary-chip']}>
 						<span class={styles['summary-chip-key']}>缓存</span>
-						{fmtTokens(node().tokens!.inputCached)}
+						{fmtTokens(run().total.cached)}
 					</span>
 				</Show>
-				<Show when={node().rounds > 0}>
+				<Show when={run().rounds > 0}>
 					<span class={styles['summary-chip']}>
 						<span class={styles['summary-chip-key']}>轮次</span>
-						{node().rounds}
+						{run().rounds}
 					</span>
 				</Show>
 			</div>
@@ -275,7 +333,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 			// ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方
 			case 'llm':
 				return (
-					<div class={styles['block-llm']}>
+					<div class={styles['block-llm']} oncontextmenu={(e) => openLlmBlockMenu(e, block)}>
 						<For each={block.subBlocks}>{(sub) => renderSubBlock(sub)}</For>
 						<Show when={block.usages}>{(usages) => (
 							<>
@@ -310,48 +368,55 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 * - 传 accessor：`<For each={currentNode().blocks}>` 的 `each` 是编译出的 getter，读取落在 For 自己的 memo 里，才能实现每次投影重算都会重新取数组、**逐项按引用比较**
 	 *   同理，节点自身的字段（status / tokens / …）都在 JSX 表达式里读 `currentNode().x`，天生响应式。
 	 */
-	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {		
+	/**
+	 * 每轮的**最后一块**：摘要胶囊插在它后面。
+	 * 下一块是新的 `user`（= 新一轮开始），或者它已经是最后一块（正在进行 / 已结束的一轮）—— 两种都是轮末。
+	 */
+	function isTurnEnd(node: RenderAgentNode, i: number): boolean {
+		const next = node.blocks[i + 1];
+		return !next || next.type === 'user';
+	}
+
+	/**
+	 * 块序列（根节点与子节点共用）：AGENT 头（仅根）→ 块 → **本轮末尾的摘要胶囊**。
+	 * 胶囊按 `block.turn` 取账，所以历史每一轮都有自己的胶囊，不是只在最后出现一个。
+	 */
+	const renderBlocks = (node: () => RenderAgentNode, isRoot: boolean) => (
+		<For each={node().blocks}>
+			{(block, index) => (
+				<>
+					<Show when={isRoot && isTurnStart(node(), index())}>{renderAgentHeaderFor(node)}</Show>
+					{renderBlock(block, isRoot)}
+					<Show when={isTurnEnd(node(), index())}>
+						{renderRunSummaryFor(() => runOfTurn(node(), block.turn))}
+					</Show>
+				</>
+			)}
+		</For>
+	);
+
+	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {
 		if (isRoot) {
-			const blockList = () => (
-				<For each={currentNode().blocks}>
-					{(block, index) => (
-						<>
-							<Show when={isTurnStart(currentNode(), index())}>{renderAgentHeaderFor(currentNode)}</Show>
-							{renderBlock(block, true)}
-						</>
-					)}
-				</For>
-			);
-			return (
-				<div class={styles['agent-reply']}>
-					{blockList()}
-					{renderRunSummaryFor(currentNode)}
-				</div>
-			);
-		} else {
-			return (
-				<details
-					class={styles['agent-node']}
-					/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。
-					   曾经按 status 自动折（跑完就收起），结果是「子 Agent 一完成就从界面上消失」。 */
-					open={openOverrides.get(`node:${currentNode().agentInstanceId}`) ?? true}
-					ontoggle={(e) => openOverrides.set(`node:${currentNode().agentInstanceId}`, e.currentTarget.open)}
-				>
-					<summary class={styles['agent-node-header']}>
-						<span class={styles['agent-node-caret']}>▶</span>
-						<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
-						<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
-						<Show when={currentNode().task}>
-							<span class={styles['agent-node-task']}>{currentNode().task}</span>
-						</Show>
-					</summary>
-					<div class={styles['agent-node-body']}>
-						<For each={currentNode().blocks}>{(block) => renderBlock(block, false)}</For>
-						{renderRunSummaryFor(currentNode)}
-					</div>
-				</details>
-			);
+			return <div class={styles['agent-reply']}>{renderBlocks(currentNode, true)}</div>;
 		}
+		return (
+			<details
+				class={styles['agent-node']}
+				/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。 */
+				open={openOverrides.get(`node:${currentNode().agentInstanceId}`) ?? true}
+				ontoggle={(e) => openOverrides.set(`node:${currentNode().agentInstanceId}`, e.currentTarget.open)}
+			>
+				<summary class={styles['agent-node-header']}>
+					<span class={styles['agent-node-caret']}>▶</span>
+					<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
+					<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
+					<Show when={currentNode().task}>
+						<span class={styles['agent-node-task']}>{currentNode().task}</span>
+					</Show>
+				</summary>
+				<div class={styles['agent-node-body']}>{renderBlocks(currentNode, false)}</div>
+			</details>
+		);
 	};
 
 	/**

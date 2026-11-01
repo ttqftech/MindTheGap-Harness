@@ -58,6 +58,16 @@ function message(msg: LlmMessage): AgentInstanceMessage {
 }
 
 /**
+ * 系统事件（预算耗尽 / 用户取消 / 出错）落成**消息流里的一条**。
+ * 根实例与子实例一视同仁 —— 子实例的这条也会显示在它自己的时间线里。
+ *
+ * `uiOnly: true`：只给界面看，`toLlmMessages()` 会滤掉它（对模型不可见）。给父 Agent 的「尚未完成的子 Agent」段落仍然读 `interruptReason`，两者各司其职。
+ */
+function noticeEntry(content: string): AgentInstanceMessage {
+	return { ...message({ role: 'system', content }), uiOnly: true, kind: 'notice' };
+}
+
+/**
  * 组装真正发给模型的 messages。
  *
  * `instance.messages` 是双重身份：既是界面转写的唯一真相，又是 LLM 上下文。所以这里必须
@@ -201,6 +211,7 @@ export class AgentRunner {
 			if (!isTerminal(instance.status)) {
 				instance.status = 'interrupted';
 				instance.interruptReason = '用户取消';
+				instance.messages.push(noticeEntry('用户取消'));
 				instance.lastUpdatedAt = now();
 				this.emitStream({ type: 'agent_end', agentInstanceId: instance.agentInstanceId, status: 'interrupted' });
 			}
@@ -235,6 +246,8 @@ export class AgentRunner {
 	async run(userMessage: string): Promise<void> {
 		const limits = this.getModeLimits();
 		this.ctx.budget = { total: limits.totalRounds, spent: 0 };
+		// ⚠️ 循环预算（`ctx.budget` + 每个实例的 `rounds`）是**一次 run 的护栏**，不是会话 / 实例的终身上限：用户一开口就是新的预算周期。
+		for (const instance of Object.values(this.ctx.agentInstances)) instance.rounds = 0;
 		this.ctx.modeId = this.mode.id;
 
 		let root = this.ctx.agentInstances[this.ctx.rootAgentInstanceId];
@@ -544,6 +557,7 @@ export class AgentRunner {
 				logMsg.error(`[Runner] 实例 ${agentInstanceId} 出错:`, err.message);
 				instance.status = 'failed';
 				instance.interruptReason = err.message;
+				instance.messages.push(noticeEntry(err.message));
 				instance.lastUpdatedAt = now();
 				this.emitEvent(instance, 'system', { level: 'error', message: err.message });
 				this.emitStream({ type: 'error', agentInstanceId, message: err.message });
@@ -1036,6 +1050,7 @@ export class AgentRunner {
 		instance.summaries = [...(instance.summaries ?? []), summary];
 		instance.status = opts.forced ? 'failed' : 'succeeded';
 		instance.interruptReason = opts.forced ? '循环预算耗尽' : undefined;
+		if (opts.forced) instance.messages.push(noticeEntry('循环预算耗尽'));
 		instance.lastUpdatedAt = now();
 
 		const isRoot = instance.agentInstanceId === this.ctx.rootAgentInstanceId;
@@ -1163,6 +1178,7 @@ export class AgentRunner {
 	private markInterrupted(instance: AgentInstance, reason: string): void {
 		instance.status = 'interrupted';
 		instance.interruptReason = reason;
+		instance.messages.push(noticeEntry(reason));
 		instance.lastUpdatedAt = now();
 		this.emitStream({ type: 'agent_end', agentInstanceId: instance.agentInstanceId, status: 'interrupted' });
 		this.handleChildTerminal(instance);

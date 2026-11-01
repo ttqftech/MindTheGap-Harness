@@ -39,6 +39,17 @@ import type { AgentInstanceMessage, AgentStreamEvent, ModelConfig, ToolResult, U
 const sources = new Map<string, () => void>();
 /** conversationId → 当前注册的事件处理器（subscribe 换 handler 时更新） */
 const handlers = new Map<string, (event: AgentStreamEvent) => void>();
+/**
+ * conversationId → 这条 SSE **真的建连了吗**（底层 EventSource 的 `onopen` 已到）。
+ *
+ * ⚠️ 「已订阅」≠「已就绪」。`initRunController` 的 effect 会在 runStatus 变成 running/waiting 时
+ * 抢先替该会话建订阅，而 EventSource 建连是异步的；此时若把 onOpen 直接回调，`beginRun` 会立刻
+ * 发 run，后端紧接着发出的头几条事件（**只有 `agent_start` 携带用户那条消息**）就永久丢了 ——
+ * 表现是「在飞期间始终看不到自己刚发的那条消息，停下来才出现」（2026-10-27 实测）。
+ */
+const opened = new Set<string>();
+/** 建连之前登记的回调：真 onopen 时统一触发 */
+const openWaiters = new Map<string, Array<() => void>>();
 
 /** 这个会话当前是不是在监听 SSE */
 export function isSubscribed(conversationId: string): boolean {
@@ -56,7 +67,7 @@ export function subscribedConversationIds(): string[] {
  * @param onOpen  建连回调。调用方用它来「等连接真的建立再发 run」——
  *                后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，
  *                丢了的话在飞期间界面一片空白。
- *                已在监听时也会立即触发（换 handler 场景）。
+ *                **已建连**时立即触发；**已订阅但还在连**时排队，等底层 onopen 再触发。
  */
 export function subscribe(
 	conversationId: string,
@@ -64,16 +75,25 @@ export function subscribe(
 	onOpen?: () => void,
 ): void {
 	handlers.set(conversationId, handler);
-	const existing = sources.get(conversationId);
-	if (existing) {
-		// 已经在监听：只要换 handler，onOpen 照常触发（调用方要等建连完成）
-		onOpen?.();
-		return;
+	if (onOpen) {
+		if (opened.has(conversationId)) onOpen();
+		else {
+			const queue = openWaiters.get(conversationId) ?? [];
+			queue.push(onOpen);
+			openWaiters.set(conversationId, queue);
+		}
 	}
+	if (sources.has(conversationId)) return;
 	const unsub = agentBridge.subscribeStream(
 		conversationId,
 		(event) => handlers.get(conversationId)?.(event),
-		onOpen,
+		() => {
+			// 真的通了：唤醒所有在等建连的调用方
+			opened.add(conversationId);
+			const queue = openWaiters.get(conversationId) ?? [];
+			openWaiters.delete(conversationId);
+			for (const cb of queue) cb();
+		},
 		() => {
 			// ⚠️ SSE 连接断开：如果 runStatus 仍为 running/waiting，说明后端已不再推送
 			//   但前端还卡在「运行中」（服务崩溃 / 网络断开等），需要兜底收尾（2026-09-22 加）。
@@ -94,6 +114,8 @@ export function subscribe(
 /** 停止监听某个会话。run 结束 / 等待用户响应时调用。 */
 export function unsubscribe(conversationId: string): void {
 	handlers.delete(conversationId);
+	opened.delete(conversationId);
+	openWaiters.delete(conversationId);
 	const unsub = sources.get(conversationId);
 	if (unsub) {
 		unsub();
@@ -106,6 +128,8 @@ export function unsubscribeAll(): void {
 	for (const unsub of sources.values()) unsub();
 	sources.clear();
 	handlers.clear();
+	opened.clear();
+	openWaiters.clear();
 }
 
 // #endregion
@@ -198,11 +222,16 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			};
 			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = instanceId;
 			// 首条 user 条目 = 该实例的任务（与 ctx 里的形态一致）
-			getInstanceMessagesByIdSafe(instanceId).push({
-				role: 'user',
-				content: event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? ''),
-				updatedAt: event.timestamp,
-			});
+			// ⚠️ 发送时已经本地乐观种了一条（`seedUserMessage`）：这里只把它的时间改成后端时间，
+			//    不要再 push —— 否则界面上会出现两条一模一样的用户气泡。
+			const content = event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? '');
+			const messages = getInstanceMessagesByIdSafe(instanceId);
+			const tail = messages[messages.length - 1];
+			if (tail?.role === 'user' && tail.content === content) {
+				tail.updatedAt = event.timestamp;
+			} else {
+				messages.push({ role: 'user', content, updatedAt: event.timestamp });
+			}
 			break;
 		}
 		case 'text': {
@@ -343,11 +372,13 @@ const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 //   endRun   —— 重拉 ctx（拿「已提交」的内容）+ 清空 overlay
 // 中间不重拉：§6 决定了「在飞」的内容不在 ctx 里，靠 overlay 呈现即可。
 
-const beginRun = async (conversationId: string) => {
+const beginRun = async (conversationId: string, userMessage: string) => {
 	// ⚠️ 订阅**跟着会话走**，不跟着视图走：这里只负责「这一轮」的订阅，
 	//   不清掉其它会话的订阅 —— 否则切到 B 时会把 A 的 SSE 也关掉，A 的在飞内容就彻底丢了。
 	runErrorActions.clear(conversationId);
 	overlayActions.clear(conversationId);
+	// 清空之后立刻把用户这条消息摆上去：自己刚发的话不该等后端回话才出现
+	seedUserMessage(conversationId, userMessage);
 	streamTickActions.bump(conversationId);
 	actions.setConversationRunStatus(conversationId, 'running');
 	// ⚠️ 必须**等 SSE 连接真的建立**再返回：EventSource 建连要几百 ms，而调用方紧接着就发 run，后端在连接建立前发出的头几条事件（含 `agent_start`）不会重放，会永久丢失。
@@ -383,6 +414,29 @@ const endRun = async (conversationId: string) => {
 	await loadConversationCtx(conversationId, true);
 };
 
+/**
+ * 把自己的这条消息**先**摆到在飞 overlay 里。
+ *
+ * 在飞内容不该等后端回话：`agent_start` 是唯一携带用户原话的事件，它要等 SSE 建连 + POST +
+ * 后端装载模式之后才回来（几百 ms 起）。这段时间界面上什么都没有，用户会以为「没发出去」；
+ * 而一旦这条事件丢了（建连超时兜底，见 beginRun），自己的消息就整轮都不出现。
+ *
+ * ⚠️ 只有**已有根实例**的会话能种：全新会话此刻还没有 `rootAgentInstanceId`，
+ *    那条消息只能等 `agent_start` 把它带出来。
+ */
+function seedUserMessage(conversationId: string, text: string): void {
+	const rootId = appState.conversations.find((c) => c.id === conversationId)?.agentCtx?.rootAgentInstanceId;
+	if (!rootId) return;
+	overlayActions.produce(conversationId, (draft) => {
+		const instance = draft.instances[rootId] ?? (draft.instances[rootId] = { messages: [] });
+		const tail = instance.messages[instance.messages.length - 1];
+		if (tail?.role === 'user' && tail.content === text) return;
+		// 这里允许前端自己取时间：它是「用户按下发送」这一刻，后端此刻还没有任何事件能对上它。
+		// 紧接着的 `agent_start` 会用后端时间把它覆盖掉（见 applyEvent）。
+		instance.messages.push({ role: 'user', content: text, updatedAt: Date.now() });
+	});
+}
+
 // #endregion
 
 // #region 对外：发起 / 停止 / 回答提问
@@ -405,7 +459,7 @@ export async function startRun(params: StartRunParams): Promise<void> {
 	// ⚠️ beginRun 里也会设一次，这里早设是为了「发请求还没建连」这段极短窗口
 	//   也能立刻看到「运行中」（否则用户点了发送会感觉没反应）。
 	actions.setConversationRunStatus(conversationId, 'running');
-	await beginRun(conversationId);
+	await beginRun(conversationId, params.userMessage);
 	try {
 		const result = await agentBridge.runAgent({
 			conversationId,

@@ -10,7 +10,7 @@
  * 设计稿：docs/设计-ctx唯一真相与动态投影.md §4
  */
 
-import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, ReflectionInfo, TokenUsage, ToolResultInfo, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, ReflectionInfo, ToolResultInfo, UsageEntry } from '@shared/agent';
 
 // #region 渲染树类型
 
@@ -21,14 +21,32 @@ export interface RenderAgentNode {
 	agentName: string;
 	depth: number;
 	status: AgentInstanceStatus;
-	/** 该实例的任务（子 Agent 头部显示；根实例 = 用户首条发言） */
-	task?: string;
-	/** 最后一次 finish 的总结 */
-	summary?: string;
-	rounds: number;
-	llmCalls: number;
-	tokens?: TokenUsage;
+	task?: string;	// 该实例的任务（子 Agent 头部显示；根实例 = 用户首条发言）
+	summary?: string;	// 最后一次 finish 的总结
+	turnRuns: RunUsage[];	// 每一轮发言的消耗，渲染时插在**每一轮的末尾**
 	blocks: RenderBlock[];
+}
+
+/** 一组 token 账（run 统计的分项与合计都用它） */
+export interface UsageBucket {
+	calls: number;
+	input: number;
+	output: number;
+	cached: number;
+}
+
+/**
+ * 一轮发言（run）的消耗统计。
+ * 这里只统计**这一轮发言期间**发生的请求，并非 `AgentInstance.tokens` / `llmCalls`——那两个是**实例终身累加**
+ */
+export interface RunUsage {
+	total: UsageBucket;	// 合计：本源实例（含反思 / 工具内请求）+ 全部子 Agent
+	own: UsageBucket;	// 分项：本源实例的 agentLoop 主调用（purpose='agent_loop'）
+	reflection: UsageBucket;	// 分项：反思（purpose='reflection'）
+	toolSub: UsageBucket;	// 分项：本源实例里工具内部发起的子请求（web_rank / ask_child…）
+	children: UsageBucket;	// 分项：全部子 Agent（递归，含它们各自的反思与子请求）
+	childAgents: number;	// 本次发言里真消耗过 token 的子 Agent 个数（递归计数）
+	rounds: number;	// 本发言里真消耗过 token 的子 Agent 个数（递归计数）（不统计预算耗尽 / 报错的那一轮，不统计子 Agent 的轮号）
 }
 
 interface BlockBase {
@@ -42,6 +60,11 @@ interface BlockBase {
 	 * 自己取的时间会跟着变，任何靠它算出来的计时（提问卡阻塞时长、工具耗时）都会被清零重数。
 	 */
 	updatedAt: number;
+	/**
+	 * 这一块属于**第几轮发言**（从 0 起，`turnRuns` 的下标）。
+	 * 只有顶层块有意义：遇到 `user` 块就 +1，之后的所有块都归这一轮，直到下一个 `user`。
+	 */
+	turn?: number;
 }
 
 // #region 子块
@@ -136,6 +159,149 @@ export type RenderBlock = RenderUserBlock | RenderLlmBlock | RenderErrorBlock | 
 
 // #endregion
 
+// #region 本次发言（run）的消耗统计
+
+function emptyBucket(): UsageBucket {
+	return { calls: 0, input: 0, output: 0, cached: 0 };
+}
+
+function addUsage(bucket: UsageBucket, u: UsageEntry): void {
+	bucket.calls += 1;
+	bucket.input += u.input ?? 0;
+	bucket.output += u.output ?? 0;
+	bucket.cached += u.cached ?? 0;
+}
+
+function sameBucket(a: UsageBucket, b: UsageBucket): boolean {
+	return a.calls === b.calls && a.input === b.input && a.output === b.output && a.cached === b.cached;
+}
+
+/** `run` 每次投影都是新对象，所以 diff 必须**按值**比较，否则每帧都判定「变了」→ 整块重建 DOM */
+export function sameRunUsage(a: RunUsage, b: RunUsage): boolean {
+	return (
+		a.childAgents === b.childAgents
+		&& a.rounds === b.rounds
+		&& sameBucket(a.total, b.total)
+		&& sameBucket(a.own, b.own)
+		&& sameBucket(a.reflection, b.reflection)
+		&& sameBucket(a.toolSub, b.toolSub)
+		&& sameBucket(a.children, b.children)
+	);
+}
+
+/** `turnRuns` 同理：逐项按值比（长度变了就算变） */
+export function sameRunUsageList(a: RunUsage[], b: RunUsage[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (!sameRunUsage(a[i], b[i])) return false;
+	return true;
+}
+
+/** 空账（还没开始 / 没有调用的那一轮）：常量只读，别改它 */
+const EMPTY_RUN: RunUsage = {
+	total: { calls: 0, input: 0, output: 0, cached: 0 },
+	own: { calls: 0, input: 0, output: 0, cached: 0 },
+	reflection: { calls: 0, input: 0, output: 0, cached: 0 },
+	toolSub: { calls: 0, input: 0, output: 0, cached: 0 },
+	children: { calls: 0, input: 0, output: 0, cached: 0 },
+	childAgents: 0,
+	rounds: 0,
+};
+
+/** 每轮的起点都来自**用户消息的时间戳**：`[since, until)`，`until` = 下一轮用户消息的起点 */
+type Window = { since: number; until?: number };
+
+/**
+ * 一条消息是否落在这一轮的区间里。
+ *
+ * - 起点：本轮 user 消息的 `updatedAt`（每次 run 必然 push 一条 user 消息：新实例在
+ *   `createInstance`、老实例在 `run()`、子 Agent 在 delegate / `resume_*`），后端不需要再落 run 标记。
+ * - 用时间戳而不是 `usage.seq`：seq 是会话级序号，`requestLog` 轮转后会从头续号（会回退），时间戳单调。
+ */
+function inWindow(msg: AgentInstanceMessage, w: Window): boolean {
+	if (msg.updatedAt < w.since) return false;
+	return w.until === undefined || msg.updatedAt < w.until;
+}
+
+/** 一次 usage 计入某一轮：按 purpose 分到 own / reflection / toolSub，并计入合计 */
+function addToTurn(stats: RunUsage, u: UsageEntry): void {
+	addUsage(stats.total, u);
+	if (u.purpose === 'reflection') addUsage(stats.reflection, u);
+	else if (u.purpose === 'agent_loop') addUsage(stats.own, u);
+	else addUsage(stats.toolSub, u);
+	// 轮号只认本源实例的（子 Agent 的 round 是它自己的，混进来会跳号）
+	if (u.round && u.round > stats.rounds) stats.rounds = u.round;
+}
+
+/**
+ * 子 Agent：它自己的账全部计入 `children`（不再细分它内部的反思 / 子请求），并递归下钻。
+ * ⚠️ 区间沿用**父实例这一轮**的窗口：子实例里更早任务留下的旧条目因此被过滤掉，
+ *    被 `resume_*` 唤醒的子实例只有这一轮新产生的条目会算进来。
+ */
+function collectChildUsage(ctx: AgentCtx, instance: AgentInstance, w: Window, stats: RunUsage): void {
+	for (const childId of instance.childAgentInstanceIds ?? []) {
+		const child = ctx.agentInstances[childId];
+		if (!child) continue;
+		const before = stats.children.calls;
+		for (const msg of child.messages) {
+			if (!msg.usages?.length || !inWindow(msg, w)) continue;
+			for (const u of msg.usages) {
+				addUsage(stats.children, u);
+				addUsage(stats.total, u);
+			}
+		}
+		if (stats.children.calls > before) stats.childAgents += 1;
+		collectChildUsage(ctx, child, w, stats);
+	}
+}
+
+function emptyRunUsage(): RunUsage {
+	return {
+		total: emptyBucket(),
+		own: emptyBucket(),
+		reflection: emptyBucket(),
+		toolSub: emptyBucket(),
+		children: emptyBucket(),
+		childAgents: 0,
+		rounds: 0,
+	};
+}
+
+/**
+ * 逐轮统计：以实例里**每一条 `role:'user'` 消息**为一轮的起点，区间到下一轮起点为止。
+ * 返回数组与 `blocks` 里用户块的顺序一一对应（`BlockBase.turn` 就是它的下标）。
+ *
+ * 本源实例走**一次遍历**分桶（`user` 消息处开新桶），别写成「每轮扫一遍全部消息」——
+ * 长会话里那是「轮数 × 消息数」，流式时每帧都要算。
+ */
+function buildTurnRuns(ctx: AgentCtx, instance: AgentInstance): RunUsage[] {
+	const runs: RunUsage[] = [];
+	const starts: number[] = [];
+	let turn = -1;
+	for (const msg of instance.messages) {
+		if (msg.role === 'user') {
+			turn += 1;
+			starts.push(msg.updatedAt);
+			runs.push(emptyRunUsage());
+			continue;
+		}
+		if (turn < 0 || !msg.usages?.length) continue;
+		for (const u of msg.usages) addToTurn(runs[turn], u);
+	}
+
+	// 子 Agent 的时间窗口由「父实例这一轮」决定，只能逐轮递归
+	for (let k = 0; k < runs.length; k++) {
+		collectChildUsage(ctx, instance, { since: starts[k], until: starts[k + 1] }, runs[k]);
+	}
+	return runs;
+}
+
+/** 取某一轮的账（越界 / 空实例 → 空账，胶囊自然不显示） */
+export function runOfTurn(node: RenderAgentNode, turn: number | undefined): RunUsage {
+	return node.turnRuns[turn ?? 0] ?? EMPTY_RUN;
+}
+
+// #endregion
+
 // #region 编排类工具
 
 /** 会创建 / 唤醒子实例的工具：它们的工具调用是子节点的挂载点 */
@@ -179,6 +345,9 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 	const claimedChildIds = new Set<string>();
 	let counter = 0;
 	const nextKey = (kind: string) => `${instance.agentInstanceId}:${kind}:${counter++}`;
+	/** 块所属的轮次：遇到 user 块 +1（0 起）；块出现在任何 user 之前时算第 0 轮 */
+	let turn = -1;
+	const curTurn = () => (turn < 0 ? 0 : turn);
 
 	for (const entry of entries) {
 		// ① 反思条目：正文在 content 里，它本身就是**一次 LLM 调用**（所以照样出一个 llm 块，里面只有一个 reflection 子块）。
@@ -188,6 +357,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 				type: 'llm',
 				key: nextKey('refl'),
 				updatedAt: entry.updatedAt,
+				turn: curTurn(),
 				subBlocks: [{
 					type: 'reflection',
 					key: nextKey('refl-sub'),
@@ -200,6 +370,19 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 			continue;
 		}
 
+		// ①.b 系统事件（预算耗尽 / 用户取消 / 出错）：它就是时间线上的一条，**按发生顺序**渲染成错误块。
+		//      这类事件是 `uiOnly` 的（不进 LLM 上下文），但界面必须看得见；顺序天然正确，不需要任何时间字段兜。
+		if (entry.kind === 'notice') {
+			blocks.push({
+				type: 'error',
+				key: nextKey('notice'),
+				updatedAt: entry.updatedAt,
+				turn: curTurn(),
+				message: entry.content,
+			});
+			continue;
+		}
+
 		// ② 工具结果：贴在对应 toolCall 的位置（见 ⑥），不单独成块
 		if (entry.role === 'tool') continue;
 
@@ -208,7 +391,8 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 		// ⑤ 用户发言（根实例 = 用户每轮的原话；子实例的任务在节点头部显示）
 		if (entry.role === 'user') {
-			blocks.push({ type: 'user', key: nextKey('user'), updatedAt: entry.updatedAt, content: entry.content });
+			turn += 1;	// 用户消息 = 新一轮的开始
+			blocks.push({ type: 'user', key: nextKey('user'), updatedAt: entry.updatedAt, turn, content: entry.content });
 			continue;
 		}
 
@@ -297,7 +481,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 		// 空 assistant（没正文没思考没工具调用）就不出行了，免得界面上多一个空壳
 		if (subBlocks.length === 0 && !entry.usages?.length) continue;
-		blocks.push({ type: 'llm', key: nextKey('llm'), updatedAt: entry.updatedAt, subBlocks, usages: entry.usages });
+		blocks.push({ type: 'llm', key: nextKey('llm'), updatedAt: entry.updatedAt, turn: curTurn(), subBlocks, usages: entry.usages });
 	}
 
 	// 兜底：没被任何工具调用认领的子实例（正常流程不会发生，比如结果结构化字段缺失）
@@ -305,19 +489,13 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		if (claimedChildIds.has(childId)) continue;
 		const child = ctx.agentInstances[childId];
 		if (child) {
-			blocks.push({ type: 'agent', key: nextKey('orphan'), updatedAt: child.lastUpdatedAt ?? child.startedAt, node: buildNode(ctx, child) });
+			blocks.push({ type: 'agent', key: nextKey('orphan'), updatedAt: child.lastUpdatedAt ?? child.startedAt, turn: curTurn(), node: buildNode(ctx, child) });
 		}
 	}
 
-	// 失败 / 被中断的实例：原因只存在 interruptReason 里（错误不会进 messages），渲染成一块错误
-	if ((instance.status === 'failed' || instance.status === 'interrupted') && instance.interruptReason) {
-		blocks.push({
-			type: 'error',
-			key: nextKey('error'),
-			updatedAt: instance.lastUpdatedAt ?? instance.startedAt,
-			message: instance.interruptReason,
-		});
-	}
+	// ⚠️ 这里**不再**为 `interruptReason` 补错误块：失败 / 中断的原因已经由 runner 写成
+	//    `kind:'notice'` 的消息条目，位置就在它发生的那一刻（见上面的 ①.b）。
+	//    字段 `interruptReason` 仍保留，但它只服务提示词里「尚未完成的子 Agent」段落，不参与渲染。
 
 	const summaries = instance.summaries ?? [];
 	return {
@@ -328,9 +506,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		status: instance.status,
 		task: instance.task,
 		summary: summaries.length > 0 ? summaries[summaries.length - 1] : undefined,
-		rounds: instance.rounds,
-		llmCalls: instance.llmCalls ?? 0,
-		tokens: instance.tokens,
+		turnRuns: buildTurnRuns(ctx, instance),
 		blocks,
 	};
 }
@@ -368,9 +544,7 @@ export function diffRenderTree(oldNode: RenderAgentNode | null, newNode: RenderA
 		&& oldNode.status === newNode.status
 		&& oldNode.task === newNode.task
 		&& oldNode.summary === newNode.summary
-		&& oldNode.rounds === newNode.rounds
-		&& oldNode.llmCalls === newNode.llmCalls
-		&& oldNode.tokens === newNode.tokens
+		&& sameRunUsageList(oldNode.turnRuns, newNode.turnRuns)
 	) return oldNode;
 
 	return { ...newNode, blocks };
@@ -537,20 +711,37 @@ export function createEmptyOverlay(conversationId?: string, modeId?: string): Ov
  * 切回来时 loadConversationCtx 会从后端拉取 ctx（后端已通过 persist() 持久化了部分消息），
  * 而 overlay 里仍保留着同一轮 run 的全部在飞消息 —— 如果简单拼接就会重复。
  *
- * 去重策略：用消息的稳定标识符做集合差。
+ * 去重策略（见 `sameEntry`）：逐条与已提交条目配对抵扣（同一条已提交消息只抵扣一次）——
  * - tool 结果：用 toolCallId（唯一）
  * - assistant 消息中的 toolCalls：用 toolCalls[0].id（一次 LLM 调用最多一批 toolCall，用首个 id 即可区分）
- * - 其他消息（user / system / reflection）：用 role + content 前缀组合（不用 updatedAt，因为 runner now() 和 SSE event.timestamp 之间可能有几 ms 偏差）
+ * - 其他消息（user / system / reflection / 纯文本 assistant）：role + content 前缀，**再加上时间近似**
+ *   —— 光是内容相同不足以判定「同一条」，连发两次「继续」就是两条不同的消息。
  */
 function dedupOverlayMessages(committed: AgentInstanceMessage[], overlay: AgentInstanceMessage[]): AgentInstanceMessage[] {
 	if (committed.length === 0 || overlay.length === 0) return overlay;
 
-	const existingKeys = new Set<string>();
-	for (const m of committed) {
-		existingKeys.add(messageKey(m));
-	}
+	const pool = committed.slice();
+	return overlay.filter((m) => {
+		const index = pool.findIndex((c) => sameEntry(c, m));
+		if (index < 0) return true;
+		pool.splice(index, 1);	// 一条已提交消息只抵扣一次
+		return false;
+	});
+}
 
-	return overlay.filter((m) => !existingKeys.has(messageKey(m)));
+/**
+ * 在飞条目与已提交条目是不是**同一条消息**。
+ *
+ * - 有稳定 id 的（tool 结果、带 toolCalls 的 assistant）认 id 就够。
+ * - 其余（user / 纯文本 assistant / reflection）内容相同的**两条不同消息**是可能存在的
+ *   （连发两次「继续」），只能再靠时间区分：同一条消息在两边的时间来自两个相邻的 `now()`
+ *   （`message()` 与 `emitStream()`），差几毫秒；不同消息至少差一整轮 run。
+ */
+function sameEntry(a: AgentInstanceMessage, b: AgentInstanceMessage): boolean {
+	if (a === b) return true;
+	if (messageKey(a) !== messageKey(b)) return false;
+	if (a.role === 'tool' || (a.role === 'assistant' && a.toolCalls?.length)) return true;
+	return Math.abs((a.updatedAt ?? 0) - (b.updatedAt ?? 0)) < 1000;
 }
 
 function messageKey(m: AgentInstanceMessage): string {

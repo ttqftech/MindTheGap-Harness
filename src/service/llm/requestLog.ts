@@ -13,7 +13,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LlmRequestRecord } from '@shared/agent';
+import type { LlmRequestRecord, RequestLogLevel } from '@shared/agent';
 import { conversationDir } from '../storage';
 
 // #region 常量
@@ -31,6 +31,8 @@ export interface RequestLogOptions {
 	includeToolNames: boolean;
 	maxBytes: number;
 	dumpPayload: boolean;
+	/** 'full' 时把本次请求的 messages 全文写进日志（见 model.ts 的落点） */
+	level: RequestLogLevel;
 }
 
 let options: RequestLogOptions = {
@@ -38,6 +40,7 @@ let options: RequestLogOptions = {
 	includeToolNames: true,
 	maxBytes: DEFAULT_MAX_BYTES,
 	dumpPayload: false,
+	level: 'default',
 };
 
 export function setRequestLogOptions(next: Partial<RequestLogOptions>): void {
@@ -200,6 +203,37 @@ export function readRequests(conversationId: string, opts: ReadRequestsOptions =
 		// 读失败按空处理
 	}
 	return out;
+}
+
+/**
+ * 按 logId 取**一条**完整记录（`level: 'full'` 时才带 `request.messages`）。
+ *
+ * 当前文件优先，找不到再看轮转历史（一次 run 跨过一次轮转也还能翻回来）。
+ * 返回 null = 这条日志已经不在了（被清空 / 被轮转覆盖 / 根本没写过）。
+ */
+export function readRequest(conversationId: string, logId: string): LlmRequestRecord | null {
+	const dir = conversationDir(conversationId);
+	for (const name of [LOG_NAME, ROTATED_NAME]) {
+		try {
+			const path = join(dir, name);
+			if (!existsSync(path)) continue;
+			// 从尾部找：同一条会话里越新的请求越可能被点开，命中更快
+			const lines = readFileSync(path, 'utf-8').split('\n');
+			for (let i = lines.length - 1; i >= 0; i--) {
+				const line = lines[i].trim();
+				if (!line || !line.includes(logId)) continue;
+				try {
+					const rec = JSON.parse(line) as LlmRequestRecord;
+					if (rec.logId === logId) return rec;
+				} catch {
+					// 半行 / 坏行跳过
+				}
+			}
+		} catch {
+			// 读失败按「没有」处理
+		}
+	}
+	return null;
 }
 
 export interface RequestStats {

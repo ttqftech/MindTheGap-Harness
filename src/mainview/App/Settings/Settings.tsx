@@ -17,7 +17,7 @@ import type { ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord
 import { PERMISSION_LABELS } from '@shared/agent';
 import { sha256Hex } from '@shared/sha256';
 import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
-import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers } from '@mainview/bridges/agentBridge';
+import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers, getRequestLogLevel, setRequestLogLevel } from '@mainview/bridges/agentBridge';
 import { shell } from '@mainview/bridges/localBridge';
 import { startSettingsDrag, setSettingsTravelMeasure } from './useSettingsDrag';
 import { EXIT_THEME_OPTIONS, previewExitTheme, themeById } from '@mainview/App/ExitOverlay';
@@ -113,6 +113,48 @@ function Segmented<T extends string>(props: {
 	);
 }
 
+const REQUEST_LOG_LEVEL_OPTIONS = [
+	{ value: 'default', label: '默认' },
+	{ value: 'full', label: '完整' },
+] as const;
+
+/**
+ * LLM 请求日志等级。
+ * 「完整」= 每次 LLM 调用都把 messages 全文写进 requestLog.jsonl ——
+ * 渲染树上右键某个 LLM 块「导出详细信息」能看到的就是它。
+ * 只影响**之后**的请求，已有的日志不会补写。
+ */
+function RequestLogLevelRow() {
+	const [level, setLevel] = createSignal<'default' | 'full'>('default');
+
+	onMount(async () => {
+		setLevel(await getRequestLogLevel());
+	});
+
+	const change = async (next: 'default' | 'full') => {
+		const prev = level();
+		if (next === prev) return;
+		setLevel(next);	// 乐观更新：失败再回滚
+		const ok = await setRequestLogLevel(next);
+		if (!ok) {
+			setLevel(prev);
+			void alertMsgbox('保存失败', '请求日志等级没能写进后端设置（Service 可能不可达）。');
+		}
+	};
+
+	return (
+		<div class={styles['setting-row']}>
+			<div class={styles['setting-row-label']}>
+				<span class={styles['setting-row-title']}>LLM 请求日志等级</span>
+				<span class={styles['setting-row-desc']}>
+					「完整」会把每次请求的 messages 全文写进日志（体积明显变大，仅调试用）；只影响之后的请求
+				</span>
+			</div>
+			<Segmented options={REQUEST_LOG_LEVEL_OPTIONS} value={level()} onChange={(v) => void change(v)} />
+		</div>
+	);
+}
+
 function GeneralTab() {
 	return (
 		<>
@@ -167,6 +209,13 @@ function GeneralTab() {
 					</div>
 					<span class={styles['setting-row-value']}>简体中文</span>
 				</div>
+			</div>
+
+			{/* 调试：LLM 请求日志等级。真相在后端 settings.debug.requestLog.level，
+			    改完立刻同步给 llm 层（下一次请求就按新等级记录） */}
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>调试</div>
+				<RequestLogLevelRow />
 			</div>
 
 			{/* 构建信息：前端是打包时注入的常量，后端是 Agent Service 自报的（GET /api/health）。
