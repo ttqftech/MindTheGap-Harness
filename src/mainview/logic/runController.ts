@@ -138,78 +138,33 @@ export function unsubscribeAll(): void {
 
 /**
  * 把一条 SSE 事件翻译成「ctx 形状」的在飞条目（翻译表见设计稿 §5.3）。
- *
- * ⚠️ overlay 必须与 ctx 同形状（实例 → 条目），否则子 Agent 的在飞内容就没法嵌进上级的
- * delegate 块里，只能再写一套拼树逻辑 —— 那正是旧设计病根的复现。
  */
 function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
-	const getInstanceMessagesByIdSafe = (instanceId: string) => {
-		if (!draft.instances[instanceId]) draft.instances[instanceId] = { messages: [] };
-		return draft.instances[instanceId]!.messages;
+	/** 该实例的条目列表（不存在就建） */
+	const messagesOf = (instanceId: string): AgentInstanceMessage[] => {
+		const inst = draft.instances[instanceId] ?? (draft.instances[instanceId] = { messages: [] });
+		return inst.messages;
 	};
 
+	/** 工具结果的展示文本（失败时把错误也带上） */
 	/**
-	 * 取「当前正在写」的 assistant 条目，通常是最后一条，根据尾部情况决定是否另起一条
+	 * 按 id 认领条目：已经有 → 就地更新；没有 → 按 `seed` 建一条追加到末尾。
+	 * 追加顺序即 ctx 里的顺序（事件按时间到达，同一个 id 只会建一次），所以这份增量与后端那份 ctx 拼起来天然同源。
 	 */
-	const assistantEntry = (instanceId: string, kind: 'text' | 'toolCall'): AgentInstanceMessage => {
-		const messages = getInstanceMessagesByIdSafe(instanceId);
-		const tail = messages[messages.length - 1];
-		if (tail?.role === 'assistant') {
-			if (kind === 'toolCall') return tail;
-			if (!tail.toolCalls?.length) return tail;
-		}
-		// 尾部不是 assistant 消息，另起一条
-		messages.push({ role: 'assistant', content: '', updatedAt: event.timestamp });
-		return messages[messages.length - 1]!;
-	};
-
-	/**
-	 * 工具结果按 callId 写（后到的覆盖先到的）。
-	 *
-	 * 同一个 callId 会来两次：`delegate` / `resume_*` 先发「占位」，等子实例全部终态后再来一次「终态」；
-	 * 其余工具只来一次。两次都走同一条「有则改、无则建」的分支，不必区分谁是谁。
-	 *
-	 * ⚠️ **「无则建」是正常路径，不是异常**：`tool_start` 只往 assistant 条目上挂了 `toolCalls`，overlay 里
-	 *    并没有对应的 `role:'tool'` 条目，所以第一次 `tool_end` 一定是「找不到」。
-	 *    早先这里写的是「找不到就抛错」，而 SSE 回调外面还有一层 try/catch（`agentBridge.subscribeStream`）
-	 *    把异常原样吞掉 —— 于是每条工具结果都在翻译时被丢掉，工具行一直停在「执行中…」，
-	 *    直到整轮跑完重拉 ctx（ctx 里有完整结果）才显示出来，界面上还不留任何报错。（2026-09-15）
-	 */
-	const upsertToolResult = (id: string, event: Extract<AgentStreamEvent, { type: 'tool_end' }>) => {
-		function toolOutputText(result: ToolResult): string {
-			const body = result.content ?? '';
-			if (!result.success) {
-				return `[工具执行失败] ${result.error ? `${result.error}\n${body}` : body}`.trim();
-			}
-			return body;
-		}
-
-		const messages = getInstanceMessagesByIdSafe(id);
-		const content = toolOutputText(event.result);
-		const data = { success: event.result.success, structured: event.result.structured, error: event.result.error };
-		const existing = messages.find((m) => m.role === 'tool' && m.toolCallId === event.callId);
-		if (existing) {
-			existing.content = content;
-			existing.kind = 'tool_result';
-			existing.data = data;
-			existing.updatedAt = event.timestamp;
-		} else {
-			messages.push({
-				role: 'tool',
-				content,
-				toolCallId: event.callId,
-				kind: 'tool_result',
-				data,
-				updatedAt: event.timestamp,
-			});
-		}
+	const entryOf = (instanceId: string, messageId: string, seed: () => AgentInstanceMessage): AgentInstanceMessage => {
+		const messages = messagesOf(instanceId);
+		const existing = messages.find((m) => m.id === messageId);
+		if (existing) return existing;
+		const created = seed();
+		messages.push(created);
+		return created;
 	};
 
 	// done / error 已在 handleStreamEvent 里提前返回，但这里仍要防一手类型（它们没有 agentInstanceId）
 	const instanceId = 'agentInstanceId' in event ? event.agentInstanceId ?? '' : '';
 	switch (event.type) {
 		case 'agent_start': {
-			getInstanceMessagesByIdSafe(instanceId);
+			messagesOf(instanceId);
 			draft.meta[instanceId] = {
 				agentInstanceId: instanceId,
 				agentId: event.agentId,
@@ -222,43 +177,73 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			};
 			if (!event.parentAgentInstanceId) draft.rootAgentInstanceId = instanceId;
 			// 首条 user 条目 = 该实例的任务（与 ctx 里的形态一致）
-			// ⚠️ 发送时已经本地乐观种了一条（`seedUserMessage`）：这里只把它的时间改成后端时间，
-			//    不要再 push —— 否则界面上会出现两条一模一样的用户气泡。
 			const content = event.parentAgentInstanceId ? `[来自父 Agent 的任务]\n${event.task ?? ''}` : (event.task ?? '');
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			const tail = messages[messages.length - 1];
-			if (tail?.role === 'user' && tail.content === content) {
-				tail.updatedAt = event.timestamp;
+			const messages = messagesOf(instanceId);
+			const existing = messages.find((m) => m.id === event.messageId);
+			if (existing) {
+				existing.content = content;
+				existing.updatedAt = event.timestamp;
 			} else {
-				messages.push({ role: 'user', content, updatedAt: event.timestamp });
+				// 发送时已经本地乐观种过一条（`seedUserMessage`），它还没有后端 id ——
+				// 直接把这条改写成后端的 id，避免同一句用户的话出现两颗气泡。
+				const seeded = messages.find((m) => m.role === 'user');
+				if (seeded) {
+					seeded.id = event.messageId;
+					seeded.content = content;
+					seeded.updatedAt = event.timestamp;
+				} else {
+					messages.push({ id: event.messageId, role: 'user', content, updatedAt: event.timestamp });
+				}
 			}
 			break;
 		}
 		case 'text': {
-			const entry = assistantEntry(instanceId, 'text');
+			const entry = entryOf(instanceId, event.messageId, () => ({ id: event.messageId, role: 'assistant', content: '', updatedAt: event.timestamp }));
 			entry.content += event.chunk;
 			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'reasoning': {
-			const entry = assistantEntry(instanceId, 'text');
+			const entry = entryOf(instanceId, event.messageId, () => ({ id: event.messageId, role: 'assistant', content: '', updatedAt: event.timestamp }));
 			entry.reasoningContent = (entry.reasoningContent ?? '') + event.chunk;
 			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'tool_start': {
-			const entry = assistantEntry(instanceId, 'toolCall');
+			// 工具调用挂在**产生它的那次 LLM 调用**（同一个 messageId）上，不再另起条目
+			const entry = entryOf(instanceId, event.messageId, () => ({ id: event.messageId, role: 'assistant', content: '', updatedAt: event.timestamp }));
 			if (!entry.toolCalls) entry.toolCalls = [];
-			entry.toolCalls.push({
-				id: event.callId,
-				type: 'function',
-				function: { name: event.toolName, arguments: JSON.stringify(event.args ?? {}) },
-			});
+			if (!entry.toolCalls.some((c) => c.id === event.callId)) {
+				entry.toolCalls.push({
+					id: event.callId,
+					type: 'function',
+					function: { name: event.toolName, arguments: JSON.stringify(event.args ?? {}) },
+				});
+			}
 			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'tool_end': {
-			upsertToolResult(instanceId, event);
+			/**
+			 * 工具结果按 id 写。同一 id 会来两次：`delegate` / `resume_*` 先发「占位」，等子实例全部终态后再来一次「终态」——两次走同一条「有则改、无则建」的分支。
+			 *
+			 * ⚠️ **「无则建」是正常路径，不是异常**：`tool_start` 只往 assistant 条目上挂了 `toolCalls`，overlay 里并没有对应的 `role:'tool'` 条目，所以第一次 `tool_end` 一定是「找不到」。
+			 *    （2026-09-15：早先这里写的是「找不到就抛错」，而 SSE 回调外面还有一层 try/catch 把异常吞掉，于是每条工具结果都被丢掉，工具行一直停在「执行中…」。）
+			 */
+			const data = { success: event.result.success, structured: event.result.structured, error: event.result.error };
+			const entry = entryOf(instanceId, event.messageId, () => ({
+				id: event.messageId,
+				role: 'tool',
+				content: '',
+				toolCallId: event.callId,
+				kind: 'tool_result',
+				data,
+				updatedAt: event.timestamp,
+			}));
+			entry.content = event.result.success ? event.result.content ?? '' : `[工具执行失败] ${event.result.error ? `${event.result.error}\n${event.result.content ?? ''}` : ''}`.trim();
+			entry.kind = 'tool_result';
+			entry.data = data;
+			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'usage': {
@@ -274,39 +259,39 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				total: event.tokens.total,
 				durationMs: event.durationMs ?? 0,
 			};
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			if (event.purpose === 'reflection') {
-				const refl = messages.findLast((m) => m.kind === 'reflection');
-				if (refl) {
-					refl.usages = [...(refl.usages ?? []), data];
-					refl.updatedAt = event.timestamp;
-					break;
-				}
-			}
-			const entry = assistantEntry(instanceId, 'text');
+			// 反思的账记在那条 reflection 条目上，其余记在产生它的 assistant 条目上
+			const isReflection = event.purpose === 'reflection';
+			const entry = entryOf(instanceId, event.messageId, () => isReflection
+				? { id: event.messageId, role: 'system', content: '', uiOnly: true, kind: 'reflection', data: { remaining: 0 }, updatedAt: event.timestamp }
+				: { id: event.messageId, role: 'assistant', content: '', updatedAt: event.timestamp });
 			entry.usages = [...(entry.usages ?? []), data];
 			entry.updatedAt = event.timestamp;
 			break;
 		}
 		case 'reflection_start': {
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			messages.push({
+			entryOf(instanceId, event.messageId, () => ({
+				id: event.messageId,
 				role: 'system',
 				content: '',
 				uiOnly: true,
 				kind: 'reflection',
 				data: { remaining: event.remaining },
 				updatedAt: event.timestamp,
-			});
+			}));
 			break;
 		}
 		case 'reflection_chunk': {
-			const messages = getInstanceMessagesByIdSafe(instanceId);
-			const refl = messages.findLast((m) => m.kind === 'reflection');
-			if (refl) {
-				refl.content += event.chunk;
-				refl.updatedAt = event.timestamp;
-			}
+			const refl = entryOf(instanceId, event.messageId, () => ({
+				id: event.messageId,
+				role: 'system',
+				content: '',
+				uiOnly: true,
+				kind: 'reflection',
+				data: { remaining: 0 },
+				updatedAt: event.timestamp,
+			}));
+			refl.content += event.chunk;
+			refl.updatedAt = event.timestamp;
 			break;
 		}
 		case 'client_tool_call': {
@@ -431,10 +416,17 @@ function seedUserMessage(conversationId: string, text: string): void {
 		const instance = draft.instances[rootId] ?? (draft.instances[rootId] = { messages: [] });
 		const tail = instance.messages[instance.messages.length - 1];
 		if (tail?.role === 'user' && tail.content === text) return;
-		// 这里允许前端自己取时间：它是「用户按下发送」这一刻，后端此刻还没有任何事件能对上它。
+		// 这里是前端唯一还会自己取时间的地方：它是「用户按下发送」这一刻，后端此刻还没有任何事件能对上它。
 		// 紧接着的 `agent_start` 会用后端时间把它覆盖掉（见 applyEvent）。
-		instance.messages.push({ role: 'user', content: text, updatedAt: Date.now() });
+		// ⚠️ id 是临时占位： `agent_start` 带着后端那条用户消息的 id 到达时会就地改写成它，二者不会并存。
+		instance.messages.push({ id: seedMessageId(), role: 'user', content: text, updatedAt: Date.now() });
 	});
+}
+
+/** 本地乐观种的条目 id（`agent_start` 到达后会被后端 id 顶掉） */
+let localSeq = 0;
+function seedMessageId(): string {
+	return `local-${++localSeq}`;
 }
 
 // #endregion

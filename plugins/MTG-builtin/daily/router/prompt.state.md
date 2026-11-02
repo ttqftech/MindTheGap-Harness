@@ -1,6 +1,5 @@
-{{#if stateChanged.any}}
-<state_update>
 {{#if stateChanged.unfinished}}
+{{#if hasUnfinished}}
 <unfinished_children>
 {{#each unfinished}}- [{{agentId}}] `{{agentInstanceId}}`（{{agentName}}）状态={{statusLabel}}{{#if interruptReason}}｜原因：{{interruptReason}}{{/if}}｜任务：{{taskLine}}
 {{/each}}
@@ -13,15 +12,18 @@
 {{/if}}
 </unfinished_children>
 {{/if}}
+{{/if}}
 
 {{#if stateChanged.children}}
+{{#if hasChildren}}
 <your_children>
 {{#each children}}- [{{agentId}}] `{{agentInstanceId}}`（{{agentName}}）状态={{statusLabel}}｜任务：{{taskLine}}
 {{/each}}
 </your_children>
 {{/if}}
+{{/if}}
 
-{{#if stateChanged.budgetWarn}}
+{{#if budgetWarn}}
 <budget_warning>
 循环预算{{#if budgetExhausted}}已耗尽{{else}}即将耗尽{{/if}}。
 剩余轮数：总预算 {{budgetTotalLeft}}，本实例 {{budgetAgentInstanceLeft}}。
@@ -32,6 +34,4 @@
 请**尽快收敛**：不要追加委托、不要交叉验证，把手上结果整理好交还。
 {{/if}}
 </budget_warning>
-{{/if}}
-</state_update>
 {{/if}}

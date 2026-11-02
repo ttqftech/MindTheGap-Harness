@@ -437,20 +437,20 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		hasBackgroundTasks: false,
 	};
 
-	// stateChanged：将当前 scope 快照与上轮比对，结果供 prompt.state.md 用 {{#if stateChanged.any}} 消费
+	// stateChanged：把当前 scope 快照与上轮逐键比对，供 prompt.state.md 用 `{{#if stateChanged.xxx}}` 消费。
+	// **边沿语义**：只在值跟上轮不同时为真 —— 模板里判断「当前是什么状态」要用 `budgetWarn` / `hasTaskList`
+	// 这类电平变量，别用 stateChanged。这里不提供 any：各块自己判断要不要出现，全都不出现时
+	// renderStatePrompt 渲染出空串，调用方自然就不拼这条消息。
 	const currentSnap: Record<string, string> = {};
 	for (const [k, v] of Object.entries(scope)) {
 		currentSnap[k] = typeof v === 'object' ? JSON.stringify(v) : String(v);
 	}
 	const prevSnap = agentInstance.stateSnapshot ?? {};
 	const stateChangedEntries: Record<string, boolean> = {};
-	let anyChanged = !agentInstance.stateSnapshot;
 	for (const key of Object.keys(currentSnap)) {
-		const changed = currentSnap[key] !== prevSnap[key];
-		stateChangedEntries[key] = changed;
-		if (changed) anyChanged = true;
+		stateChangedEntries[key] = currentSnap[key] !== prevSnap[key];
 	}
-	scope.stateChanged = { ...stateChangedEntries, any: anyChanged };
+	scope.stateChanged = stateChangedEntries;
 	scope._stateSnapshot = currentSnap;
 
 	// 基座自己也可以带 {{platform}} / {{time}} 之类的变量：

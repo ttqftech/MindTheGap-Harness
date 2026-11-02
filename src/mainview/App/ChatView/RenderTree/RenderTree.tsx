@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js';
+import { Index, For, Show, Switch, Match } from 'solid-js';
 import { useTooltip } from 'ffbox-ui';
 import type { RenderAgentNode, RenderBlock, RenderLlmBlock, RenderSubBlock, RenderToolSub, RunUsage } from '@mainview/logic/projection';
 import { runOfTurn } from '@mainview/logic/projection';
@@ -314,50 +314,60 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		</Show>
 	);
 
+	/** 某个位置当前的块（类型不符给 undefined，让 `<Match>` 判假落到下一个分支） */
+	function blockTypeEquals<T extends RenderBlock['type']>(block: () => RenderBlock, type: T): Extract<RenderBlock, { type: T }> | undefined {
+		const b = block();
+		return b.type === type ? (b as Extract<RenderBlock, { type: T }>) : undefined;
+	}
+
 	/** 单个顶层块（`isRoot` 决定用户发言是否渲染成气泡：子 Agent 的任务已在头部显示） */
-	const renderBlock = (block: RenderBlock, isRoot: boolean) => {
-		switch (block.type) {
-			case 'user':
-				if (!isRoot) return null;
-				return (
+	const renderBlock = (block: () => RenderBlock, isRoot: boolean) => (
+		<Switch fallback={null}>
+			{/* 用户发言：子 Agent 的那条已经在它自己的节点头部显示，不再重复成气泡 */}
+			<Match when={isRoot && blockTypeEquals(block, 'user')}>
+				{(user) => (
 					<div class={styles['block-userMessage']}>
 						<div class={styles['message-head']}>
 							<span class={styles['message-head-label']}>用户</span>
 							<span class={styles['message-head-spacer']} />
-							<span class={styles['message-head-time']}>{fmtClock(block.updatedAt)}</span>
+							<span class={styles['message-head-time']}>{fmtClock(user().updatedAt)}</span>
 						</div>
-						<div class={styles['user-bubble']}>{block.content}</div>
+						<div class={styles['user-bubble']}>{user().content}</div>
 					</div>
-				);
+				)}
+			</Match>
 
-			// ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方
-			case 'llm':
-				return (
-					<div class={styles['block-llm']} oncontextmenu={(e) => openLlmBlockMenu(e, block)}>
-						<For each={block.subBlocks}>{(sub) => renderSubBlock(sub)}</For>
-						<Show when={block.usages}>{(usages) => (
+			{/* ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方 */}
+			<Match when={blockTypeEquals(block, 'llm')}>
+				{(llm) => (
+					<div class={styles['block-llm']} oncontextmenu={(e) => openLlmBlockMenu(e, llm())}>
+						<For each={llm().subBlocks}>{(sub) => renderSubBlock(sub)}</For>
+						<Show when={llm().usages}>{(usages) => (
 							<>
 								<For each={usages()}>{(usage) => renderUsage(usage)}</For>
-								<Show when={fmtClock(block.updatedAt)}>{(time) => (
+								<Show when={fmtClock(llm().updatedAt)}>{(time) => (
 									<div class={styles['agent-block-time']}>{time()}</div>
 								)}</Show>
 							</>
 						)}</Show>
 					</div>
-				);
+				)}
+			</Match>
 
-			case 'error':
-				return (
+			<Match when={blockTypeEquals(block, 'error')}>
+				{(err) => (
 					<div class={styles['block-error']}>
 						<span>✗</span>
-						<span>{block.message}</span>
+						<span>{err().message}</span>
 					</div>
-				);
+				)}
+			</Match>
 
-			case 'agent':
-				return renderNode(() => block.node, false);
-		}
-	};
+			<Match when={blockTypeEquals(block, 'agent')}>
+				{(agent) => renderNode(() => agent().node, false)}
+			</Match>
+		</Switch>
+	);
 
 	/**
 	 * 一个 Agent 实例 = 一个块序列（含它的子节点）。
@@ -365,7 +375,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 *
 	 * ⚠️ `currentNode` 参数是 accessor（访问器），不是值——这是「流式可见」和「逐块复用」能同时成立的前提：
 	 * - 传值：`node.blocks` 在组件体（只执行一次）里就被求值，闭包捕获首帧快照 ⇒ 之后的流式增量全看不到。
-	 * - 传 accessor：`<For each={currentNode().blocks}>` 的 `each` 是编译出的 getter，读取落在 For 自己的 memo 里，才能实现每次投影重算都会重新取数组、**逐项按引用比较**
+	 * - 传 accessor：`<Index each={currentNode().blocks}>` 的 `each` 是编译出的 getter，读取落在组件自己的 memo 里，才能实现每次投影重算都会重新取数组、逐个位置更新
 	 *   同理，节点自身的字段（status / tokens / …）都在 JSX 表达式里读 `currentNode().x`，天生响应式。
 	 */
 	/**
@@ -380,19 +390,24 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	/**
 	 * 块序列（根节点与子节点共用）：AGENT 头（仅根）→ 块 → **本轮末尾的摘要胶囊**。
 	 * 胶囊按 `block.turn` 取账，所以历史每一轮都有自己的胶囊，不是只在最后出现一个。
+	 *
+	 * ⭐ 用 `<Index>` 而不是 `<For>`：
+	 *    `<For>` 按**引用**比对项，流式时「当前这个 llm 块的正文长了两个字」就会产生一个新对象 ⇒ 整块（连同它里面的所有工具卡）被拆掉重建；
+	 *    `<Index>` 按**位置**给该项一个 signal，值变了只更新读到它的那些表达式 —— 只剩那一段正文节点在动。
+	 *    （代价是「位置」变了 DOM 会被复用：所以分支选择也必须是响应式的，用 `<Switch>` 而不是 switch，否则某个位置上的块换了类型，旧的 DOM 会留在原位。块类型本身通过 messageId 派生的 key 保持稳定。）
 	 */
 	const renderBlocks = (node: () => RenderAgentNode, isRoot: boolean) => (
-		<For each={node().blocks}>
+		<Index each={node().blocks}>
 			{(block, index) => (
 				<>
-					<Show when={isRoot && isTurnStart(node(), index())}>{renderAgentHeaderFor(node)}</Show>
+					<Show when={isRoot && isTurnStart(node(), index)}>{renderAgentHeaderFor(node)}</Show>
 					{renderBlock(block, isRoot)}
-					<Show when={isTurnEnd(node(), index())}>
-						{renderRunSummaryFor(() => runOfTurn(node(), block.turn))}
+					<Show when={isTurnEnd(node(), index)}>
+						{renderRunSummaryFor(() => runOfTurn(node(), block().turn))}
 					</Show>
 				</>
 			)}
-		</For>
+		</Index>
 	);
 
 	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {

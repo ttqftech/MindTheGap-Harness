@@ -50,7 +50,12 @@ export interface RunUsage {
 }
 
 interface BlockBase {
-	/** Solid 的 For 需要稳定的 key；用「实例 id + 序号」 */
+	/**
+	 * Solid 的 For 需要稳定的 key。
+	 *
+	 * ⭐ 一律由**消息条目的 id** 派生（`${entry.id}` / `${entry.id}:think` / `${entry.id}:tool:${callId}`），
+	 *    不用「实例 + 序号」：序号是位置性的，一旦中间插入或删除一条（比如切会话重拉 ctx 后前后两个来源的条目略有差异），它后面所有块的 key 就会集体错位 ⇒ diff 认不出来 ⇒ 整段被当成新项重挂。
+	 */
 	key: string;
 	/**
 	 * 这一块的**最近更新时间**（毫秒时间戳）。
@@ -343,8 +348,6 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 	const blocks: RenderBlock[] = [];
 	const claimedChildIds = new Set<string>();
-	let counter = 0;
-	const nextKey = (kind: string) => `${instance.agentInstanceId}:${kind}:${counter++}`;
 	/** 块所属的轮次：遇到 user 块 +1（0 起）；块出现在任何 user 之前时算第 0 轮 */
 	let turn = -1;
 	const curTurn = () => (turn < 0 ? 0 : turn);
@@ -355,12 +358,12 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		if (entry.kind === 'reflection') {
 			blocks.push({
 				type: 'llm',
-				key: nextKey('refl'),
+				key: `${entry.id}:refl`,
 				updatedAt: entry.updatedAt,
 				turn: curTurn(),
 				subBlocks: [{
 					type: 'reflection',
-					key: nextKey('refl-sub'),
+					key: `${entry.id}:refl-sub`,
 					updatedAt: entry.updatedAt,
 					content: entry.content,
 					remaining: (entry.data as ReflectionInfo | undefined)?.remaining,
@@ -375,7 +378,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		if (entry.kind === 'notice') {
 			blocks.push({
 				type: 'error',
-				key: nextKey('notice'),
+				key: entry.id,
 				updatedAt: entry.updatedAt,
 				turn: curTurn(),
 				message: entry.content,
@@ -392,17 +395,17 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		// ⑤ 用户发言（根实例 = 用户每轮的原话；子实例的任务在节点头部显示）
 		if (entry.role === 'user') {
 			turn += 1;	// 用户消息 = 新一轮的开始
-			blocks.push({ type: 'user', key: nextKey('user'), updatedAt: entry.updatedAt, turn, content: entry.content });
+			blocks.push({ type: 'user', key: entry.id, updatedAt: entry.updatedAt, turn, content: entry.content });
 			continue;
 		}
 
 		// ⑥ assistant = **一次 LLM 调用 → 一个块**；思考 / 正文 / 工具调用都是它的子块
 		const subBlocks: RenderSubBlock[] = [];
 		if (entry.reasoningContent) {
-			subBlocks.push({ type: 'reasoning', key: nextKey('think'), updatedAt: entry.updatedAt, content: entry.reasoningContent });
+			subBlocks.push({ type: 'reasoning', key: `${entry.id}:think`, updatedAt: entry.updatedAt, content: entry.reasoningContent });
 		}
 		if (entry.content?.trim()) {
-			subBlocks.push({ type: 'text', key: nextKey('text'), updatedAt: entry.updatedAt, content: entry.content });
+			subBlocks.push({ type: 'text', key: `${entry.id}:text`, updatedAt: entry.updatedAt, content: entry.content });
 		}
 		for (const toolCall of entry.toolCalls ?? []) {
 			const resultEntry = resultByCallId.get(toolCall.id);
@@ -429,7 +432,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 					: [{ question: typeof args?.question === 'string' ? args.question : '对齐颗粒度', selectionMode: 'single', options: Array.isArray(args?.options) ? (args.options as RenderAskQuestion['options']) : [] }];
 				subBlocks.push({
 					type: 'tool',
-					key: nextKey('ask'),
+					key: `${entry.id}:tool:${toolCall.id}`,
 					updatedAt: toolUpdatedAt,
 					callId: toolCall.id,
 					name: toolCall.function.name,
@@ -466,7 +469,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 			const awaitingChild = (resultInfo?.structured?.status as string | undefined) === 'pending';
 			subBlocks.push({
 				type: 'tool',
-				key: nextKey('tool'),
+				key: `${entry.id}:tool:${toolCall.id}`,
 				updatedAt: toolUpdatedAt,
 				callId: toolCall.id,
 				name: toolCall.function.name,
@@ -481,7 +484,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 
 		// 空 assistant（没正文没思考没工具调用）就不出行了，免得界面上多一个空壳
 		if (subBlocks.length === 0 && !entry.usages?.length) continue;
-		blocks.push({ type: 'llm', key: nextKey('llm'), updatedAt: entry.updatedAt, turn: curTurn(), subBlocks, usages: entry.usages });
+		blocks.push({ type: 'llm', key: entry.id, updatedAt: entry.updatedAt, turn: curTurn(), subBlocks, usages: entry.usages });
 	}
 
 	// 兜底：没被任何工具调用认领的子实例（正常流程不会发生，比如结果结构化字段缺失）
@@ -489,7 +492,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		if (claimedChildIds.has(childId)) continue;
 		const child = ctx.agentInstances[childId];
 		if (child) {
-			blocks.push({ type: 'agent', key: nextKey('orphan'), updatedAt: child.lastUpdatedAt ?? child.startedAt, turn: curTurn(), node: buildNode(ctx, child) });
+			blocks.push({ type: 'agent', key: `${childId}:orphan`, updatedAt: child.lastUpdatedAt ?? child.startedAt, turn: curTurn(), node: buildNode(ctx, child) });
 		}
 	}
 
@@ -710,49 +713,11 @@ export function createEmptyOverlay(conversationId?: string, modeId?: string): Ov
  * 场景：run 在飞期间（如 ask_user 等待用户回答），用户切走再切回来。
  * 切回来时 loadConversationCtx 会从后端拉取 ctx（后端已通过 persist() 持久化了部分消息），
  * 而 overlay 里仍保留着同一轮 run 的全部在飞消息 —— 如果简单拼接就会重复。
- *
- * 去重策略（见 `sameEntry`）：逐条与已提交条目配对抵扣（同一条已提交消息只抵扣一次）——
- * - tool 结果：用 toolCallId（唯一）
- * - assistant 消息中的 toolCalls：用 toolCalls[0].id（一次 LLM 调用最多一批 toolCall，用首个 id 即可区分）
- * - 其他消息（user / system / reflection / 纯文本 assistant）：role + content 前缀，**再加上时间近似**
- *   —— 光是内容相同不足以判定「同一条」，连发两次「继续」就是两条不同的消息。
  */
 function dedupOverlayMessages(committed: AgentInstanceMessage[], overlay: AgentInstanceMessage[]): AgentInstanceMessage[] {
 	if (committed.length === 0 || overlay.length === 0) return overlay;
-
-	const pool = committed.slice();
-	return overlay.filter((m) => {
-		const index = pool.findIndex((c) => sameEntry(c, m));
-		if (index < 0) return true;
-		pool.splice(index, 1);	// 一条已提交消息只抵扣一次
-		return false;
-	});
-}
-
-/**
- * 在飞条目与已提交条目是不是**同一条消息**。
- *
- * - 有稳定 id 的（tool 结果、带 toolCalls 的 assistant）认 id 就够。
- * - 其余（user / 纯文本 assistant / reflection）内容相同的**两条不同消息**是可能存在的
- *   （连发两次「继续」），只能再靠时间区分：同一条消息在两边的时间来自两个相邻的 `now()`
- *   （`message()` 与 `emitStream()`），差几毫秒；不同消息至少差一整轮 run。
- */
-function sameEntry(a: AgentInstanceMessage, b: AgentInstanceMessage): boolean {
-	if (a === b) return true;
-	if (messageKey(a) !== messageKey(b)) return false;
-	if (a.role === 'tool' || (a.role === 'assistant' && a.toolCalls?.length)) return true;
-	return Math.abs((a.updatedAt ?? 0) - (b.updatedAt ?? 0)) < 1000;
-}
-
-function messageKey(m: AgentInstanceMessage): string {
-	if (m.role === 'tool' && m.toolCallId) return `tool:${m.toolCallId}`;
-	if (m.role === 'assistant' && m.toolCalls?.length) return `assistant_tc:${m.toolCalls[0].id}`;
-	// user / system / reflection / 纯文本 assistant：
-	// 用 role + content 前缀做键。不用 updatedAt，因为 runner 的 now() 和 SSE event.timestamp
-	// 之间可能有几 ms 偏差，导致同一消息在 committed 和 overlay 中 updatedAt 不同而无法匹配。
-	// 同一实例内不会同时出现两条 role+contentPrefix 相同的消息（content 截 80 字符足以区分）。
-	const contentPrefix = (m.content ?? '').slice(0, 80);
-	return `${m.role}:${contentPrefix}`;
+	const committedIds = new Set(committed.map((m) => m.id));
+	return overlay.filter((m) => !committedIds.has(m.id));
 }
 
 /**

@@ -53,8 +53,27 @@ function isTerminal(status: AgentInstanceStatus): boolean {
 	return status === 'succeeded' || status === 'failed' || status === 'interrupted';
 }
 
-function message(msg: LlmMessage): AgentInstanceMessage {
-	return { ...msg, updatedAt: now() };
+/**
+ * 消息 id 的发号器。
+ *
+ * ⭐ 这是整份 ctx 里条目身份的唯一来源：分配之后**永不改变、永不复用**，
+ * SSE 事件与渲染 key 都以它为准（见 `shared/agent.ts` 的 `AgentInstanceMessage.id`）。
+ *
+ * 形状：`m<进程启动时刻36进制>-<单调序号>`。带启动时刻是避免服务重启后与上一次进程发出的 id 撞号（同毫秒内重启并再次发到同一序号，实践中不可能）。
+ */
+let messageSeq = 0;
+const MESSAGE_ID_PREFIX = `m${Date.now().toString(36)}-`;
+function newMessageId(): string {
+	return `${MESSAGE_ID_PREFIX}${++messageSeq}`;
+}
+
+/**
+ * 造一条实例条目。
+ *
+ * @param id 显式指定（该条目已经有消费者在盯时必传 —— 比如一次 LLM 调用的 assistant 条目要在 `callLlm` **之前**就把 id 发进流里，chunk 才能归位）；不传则由发号器分配。
+ */
+function message(msg: LlmMessage, id?: string): AgentInstanceMessage {
+	return { ...msg, id: id ?? newMessageId(), updatedAt: now() };
 }
 
 /**
@@ -72,14 +91,14 @@ function noticeEntry(content: string): AgentInstanceMessage {
  *
  * `instance.messages` 是双重身份：既是界面转写的唯一真相，又是 LLM 上下文。所以这里必须
  * ①滤掉「只给界面看」的条目（usage / 提问卡片状态，见 shared/agent.ts 的 uiOnly）
- * ②剥掉内部字段（updatedAt 等），免得被序列化进请求体。
+ * ②剥掉内部字段（id / updatedAt 等），免得被序列化进请求体。
  *
  * ⚠️ 所有 callLlm 调用点都必须经过本函数 —— 直接 map instance.messages 会把 UI 专用内容塞给模型。
  */
 function toLlmMessages(entries: AgentInstanceMessage[]): LlmMessage[] {
 	return entries
 		.filter((m) => !m.uiOnly)
-		.map(({ updatedAt: _updatedAt, uiOnly: _uiOnly, kind: _kind, data: _data, usages: _usages, ...rest }) => rest);
+		.map(({ id: _id, updatedAt: _updatedAt, uiOnly: _uiOnly, kind: _kind, data: _data, usages: _usages, ...rest }) => rest);
 }
 
 function mergeTokens(prev: TokenUsage | undefined, usage: TokenUsage): TokenUsage {
@@ -287,8 +306,8 @@ export class AgentRunner {
 			for (const callId of instance.pendingCallIds ?? []) {
 				if (this.pendingWait.get(callId) === 'client') {
 					const result: ToolResult = { success: true, content: '用户已跳过此提问', structured: { askUserStatus: 'skipped' as const } };
-					this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, callId, toolName: 'ask_user', result });
-					this.writeToolResult(instance, callId, result);
+					const skippedEntry = this.writeToolResult(instance, callId, result);
+					this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, messageId: skippedEntry.id, callId, toolName: 'ask_user', result });
 				}
 				this.pendingWait.delete(callId);
 			}
@@ -303,17 +322,21 @@ export class AgentRunner {
 		const agentDef = this.getAgentDefinitionByInstance(root);
 		root.lastUpdatedAt = now();
 		if (!isNewRoot) root.reflectionsRemaining = agentDef.reflectionCount ?? 0;	// 反思次数是实例级字段且只减不增；根实例永续之后必须按轮重置，否则反思用尽一次就再也不反思了
-		if (!isNewRoot) root.messages.push(message({ role: 'user', content: userMessage }));	// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，非新建的时候才在这里再补一条
-		this.emitEvent(root, 'user_message', { content: userMessage });
 		if (!isNewRoot) {
+			const userEntry = message({ role: 'user', content: userMessage });
+			root.messages.push(userEntry);	// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，非新建的时候才在这里再补一条
+			this.emitEvent(root, 'user_message', { content: userMessage });
 			this.emitStream({
 				type: 'agent_start',
 				agentInstanceId: root.agentInstanceId,
+				messageId: userEntry.id,
 				agentId: root.agentId,
 				agentName: root.agentName,
 				depth: root.depth,
 				task: userMessage,
 			});
+		} else {
+			this.emitEvent(root, 'user_message', { content: userMessage });
 		}
 		this.enterLoop(root.agentInstanceId, 'user_message');
 	}
@@ -340,6 +363,12 @@ export class AgentRunner {
 
 	/** 创建一个 Agent 实例，放入 this.ctx 中，并补充父实例的 childAgentInstanceIds、发送事件 */
 	private createInstance(params: { agentInstanceId: string; agentId: string; def: AgentDefinition; depth: number; task: string; parentAgentInstanceId?: string }): AgentInstance {
+		const firstUserEntry = message({
+			role: 'user',
+			content: params.parentAgentInstanceId
+				? `[来自父 Agent 的任务]\n${params.task}`	// TODO 提示词中同样可以嵌入 parentPrompt，考虑配置是否插入这句话
+				: params.task,
+		});
 		const instance: AgentInstance = {
 			agentInstanceId: params.agentInstanceId,
 			conversationId: this.conversationId,
@@ -350,14 +379,7 @@ export class AgentRunner {
 			depth: params.depth,
 			status: 'running',
 			task: params.task,
-			messages: [
-				message({
-					role: 'user',
-					content: params.parentAgentInstanceId
-						? `[来自父 Agent 的任务]\n${params.task}`	// TODO 提示词中同样可以嵌入 parentPrompt，考虑配置是否插入这句话
-						: params.task,
-				}),
-			],
+			messages: [firstUserEntry],
 			pendingCallIds: [],
 			summaries: [],
 			reflectionsRemaining: params.def.reflectionCount ?? 0,
@@ -385,6 +407,7 @@ export class AgentRunner {
 		this.emitStream({
 			type: 'agent_start',
 			agentInstanceId: instance.agentInstanceId,
+			messageId: firstUserEntry.id,
 			parentAgentInstanceId: params.parentAgentInstanceId,
 			agentId: instance.agentId,
 			agentName: instance.agentName,
@@ -468,6 +491,10 @@ export class AgentRunner {
 			}
 			instance.stateSnapshot = snapshot;
 
+			// ⭐ 本次调用的 assistant 条目：**先建 id 再发请求**。
+			//    流式 chunk 只能靠这个 id 归属到同一条消息（条目本身要等调用结束才有完整内容），
+			//    反过来做就只能让前端按「尾部是不是 assistant」猜 —— 那条路在「文本→工具→文本」时会拆错。
+			const assistantEntryId = newMessageId();
 			const result = await callLlm(
 				{
 					config: this.model,
@@ -477,10 +504,10 @@ export class AgentRunner {
 						// 思考增量先发：思考模型的推理阶段通常远长于正文，
 						// 只推 text 的话「模型正在思考」这段时间界面上是全黑的。
 						if (chunk.reasoningDelta) {
-							this.emitStream({ type: 'reasoning', agentInstanceId, chunk: chunk.reasoningDelta });
+							this.emitStream({ type: 'reasoning', agentInstanceId, messageId: assistantEntryId, chunk: chunk.reasoningDelta });
 						}
 						if (chunk.textDelta) {
-							this.emitStream({ type: 'text', agentInstanceId, chunk: chunk.textDelta });
+							this.emitStream({ type: 'text', agentInstanceId, messageId: assistantEntryId, chunk: chunk.textDelta });
 						}
 					},
 					signal: this.abortController.signal,
@@ -515,12 +542,13 @@ export class AgentRunner {
 					function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
 				}));
 			}
-			instance.messages.push({ ...message(assistantMessage), usages: [usageEntry] });
+			instance.messages.push({ ...message(assistantMessage, assistantEntryId), usages: [usageEntry] });
 			instance.lastUpdatedAt = now();
 			// 给在飞中的前端 ctx 发送 usage 事件（因不可能从 chunk 中携带 usage，所以要另发）
 			this.emitStream({
 				type: 'usage',
 				agentInstanceId,
+				messageId: assistantEntryId,
 				logId: result.logId,
 				tokens: result.usage,
 				seq: result.seq,
@@ -545,7 +573,7 @@ export class AgentRunner {
 				...result.toolCalls.map((tc) => tc.id),
 			];
 			instance.status = 'running';
-			nextTrigger = await this.dispatchToolUse(instance, def, result.toolCalls);
+			nextTrigger = await this.dispatchToolUse(instance, def, result.toolCalls, assistantEntryId);
 			this.persist();
 		} catch (e) {
 			exitReason = 'error';
@@ -587,7 +615,7 @@ export class AgentRunner {
 	 * - `ask_user` / `await_child` → 记下挂起原因、留在 pending 里，等 `resolvePendingCall()` 回填
 	 * - `finish` → 走结束路径（可能返回反思轮）
 	 */
-	private async dispatchToolUse(instance: AgentInstance, def: AgentDefinition, toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[]): Promise<LlmTriggerReason | null> {
+	private async dispatchToolUse(instance: AgentInstance, def: AgentDefinition, toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[], assistantEntryId: string): Promise<LlmTriggerReason | null> {
 		const resolved: string[] = [];
 		let finishSummary: string | null = null;
 
@@ -603,6 +631,7 @@ export class AgentRunner {
 			this.emitStream({
 				type: 'tool_start',
 				agentInstanceId: instance.agentInstanceId,
+				messageId: assistantEntryId,
 				callId: call.id,
 				toolName: call.name,
 				args: call.arguments,
@@ -647,7 +676,7 @@ export class AgentRunner {
 			if (control?.kind === 'ask_user') {
 				// 挂起等用户：占位结果（含 askUserStatus）→ 前端弹卡片，callId 留在 pending 里
 				const placeholder: ToolResult = { success: true, content: '已向客户端发出提问，等待用户回应', structured: { askUserStatus: 'waiting' as const } };
-				this.writeToolResult(instance, call.id, placeholder);
+				const placeholderEntry = this.writeToolResult(instance, call.id, placeholder);
 				instance.status = 'pending';
 				this.pendingWait.set(call.id, 'client');
 				this.emitStream({
@@ -658,14 +687,15 @@ export class AgentRunner {
 					args: control.args ?? call.arguments,
 					needResponse: true,
 				});
-				this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, callId: call.id, toolName: call.name, result: placeholder });
+				this.emitStream({ type: 'tool_end', agentInstanceId: instance.agentInstanceId, messageId: placeholderEntry.id, callId: call.id, toolName: call.name, result: placeholder });
 				continue;
 			}
 
-			this.writeToolResult(instance, call.id, result);
+			const resultEntry = this.writeToolResult(instance, call.id, result);
 			this.emitStream({
 				type: 'tool_end',
 				agentInstanceId: instance.agentInstanceId,
+				messageId: resultEntry.id,
 				callId: call.id,
 				toolName: call.name,
 				result,
@@ -712,6 +742,7 @@ export class AgentRunner {
 		this.emitStream({
 			type: 'usage',
 			agentInstanceId: instance.agentInstanceId,
+			messageId: lastAssistant?.id ?? newMessageId(),
 			logId: result.logId,
 			tokens: result.usage,
 			seq: result.seq,
@@ -1000,35 +1031,39 @@ export class AgentRunner {
 			instance.status = 'running';
 			instance.lastUpdatedAt = now();
 
+			// ⭐ 与主调用同理：反思条目在 `reflect()` 之前就把 id 发进流里，chunk 与 usage 才能归位
+			const reflectionEntryId = newMessageId();
 			this.emitStream({
 				type: 'reflection_start',
 				agentInstanceId: instance.agentInstanceId,
+				messageId: reflectionEntryId,
 				remaining: instance.reflectionsRemaining,
 			});
 
 			let reflection = '';
 			let reflectionUsage: UsageEntry | undefined;
 			try {
-				const r = await this.reflect(instance, summary);
+				const r = await this.reflect(instance, summary, reflectionEntryId);
 				reflection = r.text;
 				reflectionUsage = r.usageEntry;
 			} catch (e) {
 				this.emitStream({
 					type: 'reflection_chunk',
 					agentInstanceId: instance.agentInstanceId,
+					messageId: reflectionEntryId,
 					chunk: `（反思请求失败：${(e as Error).message}）`,
 				});
 				instance.messages.push(message({
 					role: 'system',
 					content: `（反思请求失败：${(e as Error).message}）`,
-				}));
+				}, reflectionEntryId));
 			}
 
 			this.emitEvent(instance, 'reflection', { remaining: instance.reflectionsRemaining, prompt: reflection });
 
 			if (reflectionActionable(reflection)) {
 				instance.messages.push({
-					...message({ role: 'system', content: reflection }),
+					...message({ role: 'system', content: reflection }, reflectionEntryId),
 					kind: 'reflection',
 					data: { remaining: instance.reflectionsRemaining },
 					...(reflectionUsage ? { usages: [reflectionUsage] } : {}),
@@ -1037,7 +1072,7 @@ export class AgentRunner {
 				return 'reflection';
 			}
 			instance.messages.push({
-				...message({ role: 'system', content: reflection }),
+				...message({ role: 'system', content: reflection }, reflectionEntryId),
 				uiOnly: true,
 				kind: 'reflection',
 				data: { remaining: instance.reflectionsRemaining },
@@ -1075,7 +1110,7 @@ export class AgentRunner {
 	}
 
 	/** 反思轮：根据该实例的初始 system 提示词 + 本次总结，生成反思提示词，返回文本与用量 */
-	private async reflect(instance: AgentInstance, summary: string): Promise<{ text: string; usageEntry?: UsageEntry }> {
+	private async reflect(instance: AgentInstance, summary: string, reflectionEntryId: string): Promise<{ text: string; usageEntry?: UsageEntry }> {
 		const def = this.getAgentDefinitionByInstance(instance);
 		const prompt = resolveReflectionPrompt(this.mode, def)?.text;
 		if (!prompt) return { text: '' };
@@ -1094,7 +1129,7 @@ export class AgentRunner {
 				tools: [],
 				onChunk: (chunk) => {
 					if (chunk.textDelta) {
-						this.emitStream({ type: 'reflection_chunk', agentInstanceId: instance.agentInstanceId, chunk: chunk.textDelta });
+						this.emitStream({ type: 'reflection_chunk', agentInstanceId: instance.agentInstanceId, messageId: reflectionEntryId, chunk: chunk.textDelta });
 					}
 				},
 				signal: this.abortController.signal,
@@ -1117,6 +1152,7 @@ export class AgentRunner {
 		this.emitStream({
 			type: 'usage',
 			agentInstanceId: instance.agentInstanceId,
+			messageId: reflectionEntryId,
 			logId: result.logId,
 			tokens: result.usage,
 			seq: result.seq,
@@ -1135,12 +1171,15 @@ export class AgentRunner {
 	 *
 	 * 等用户（answerToolCall）与等子 Agent（handleChildTerminal）走的是同一条路，
 	 * 只有「回填完之后要不要重入」不一样，由 `nextTrigger` 决定（传 null = 不在这里重入）。
+	 *
+	 * @returns 那条工具结果条目（把它的 `id` 塞进 `tool_end` 事件，前端就能直接认领）
 	 */
-	private resolvePendingCall(instance: AgentInstance, callId: string, result: ToolResult, nextTrigger: LlmTriggerReason | null): void {
+	private resolvePendingCall(instance: AgentInstance, callId: string, result: ToolResult, nextTrigger: LlmTriggerReason | null): AgentInstanceMessage {
 		instance.pendingCallIds = (instance.pendingCallIds ?? []).filter((id) => id !== callId);
 		this.pendingWait.delete(callId);
-		this.writeToolResult(instance, callId, result);
+		const entry = this.writeToolResult(instance, callId, result);
 		if (nextTrigger) this.maybeReenter(instance.agentInstanceId, nextTrigger);
+		return entry;
 	}
 
 	/** 子实例进入终态：把总结直接回填给父实例的 delegate / resume 工具调用，并唤醒父实例 */
@@ -1157,14 +1196,16 @@ export class AgentRunner {
 			content: `## [${child.agentId}] ${child.agentName}（${child.status}）\n${summary}`,
 			structured: { childAgentInstanceIds: [child.agentInstanceId], status: 'done' },
 		};
+		// ⚠️ 先写 ctx 再发事件：`tool_end` 要带这条结果的 id
+		const entry = this.resolvePendingCall(parent, link.callId, finalResult, null);
 		this.emitStream({
 			type: 'tool_end',
 			agentInstanceId: parent.agentInstanceId,
+			messageId: entry.id,
 			callId: link.callId,
 			toolName: link.toolName,
 			result: finalResult,
 		});
-		this.resolvePendingCall(parent, link.callId, finalResult, null);
 
 		if (parent.status === 'pending') {
 			parent.status = 'running';
@@ -1201,21 +1242,25 @@ export class AgentRunner {
 	 * 写回（或追加）某次工具调用的结果。
 	 * 结果的终态信息（成功/失败 + 结构化字段）随条目一起落 ctx（`kind: 'tool_result'`）——
 	 * 前端不必再对 `[失败] ` 前缀做字符串嗅探；delegate 的子实例 ID 也从这里取。
+	 *
+	 * @returns 那条工具结果条目（把它的 `id` 塞进 `tool_end` 事件，前端就能直接认领，不必再靠 callId 反查）
 	 */
-	private writeToolResult(instance: AgentInstance, callId: string, result: ToolResult): void {
+	private writeToolResult(instance: AgentInstance, callId: string, result: ToolResult): AgentInstanceMessage {
 		const content = result.success ? result.content : `[失败] ${result.content}`;
 		const data: ToolResultInfo = { success: result.success, structured: result.structured, error: result.error };
-		const existing = instance.messages.find((m) => m.role === 'tool' && m.toolCallId === callId);
-		if (existing) {
-			existing.content = content;
-			existing.kind = 'tool_result';
-			existing.data = data;
-			existing.updatedAt = now();
+		let entry = instance.messages.find((m) => m.role === 'tool' && m.toolCallId === callId);
+		if (entry) {
+			entry.content = content;
+			entry.kind = 'tool_result';
+			entry.data = data;
+			entry.updatedAt = now();
 		} else {
-			instance.messages.push({ ...message({ role: 'tool', content, toolCallId: callId }), kind: 'tool_result', data });
+			entry = { ...message({ role: 'tool', content, toolCallId: callId }), kind: 'tool_result', data };
+			instance.messages.push(entry);
 		}
 		instance.lastUpdatedAt = now();
 		this.emitEvent(instance, 'tool_result', { callId, success: result.success, content: content.slice(0, 2000) });
+		return entry;
 	}
 
 	private buildPromptContext(instance: AgentInstance, tools: AgentTool[]): import('./prompt').PromptContext {

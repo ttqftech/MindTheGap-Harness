@@ -1,6 +1,4 @@
-{{#if stateChanged.any}}
-<state_update>
-{{#if stateChanged.budgetWarn}}
+{{#if budgetWarn}}
 <budget_warning>
 循环预算{{#if budgetExhausted}}已耗尽{{else}}即将耗尽{{/if}}。
 剩余轮数：总预算 {{budgetTotalLeft}}，本实例 {{budgetAgentInstanceLeft}}。
@@ -11,6 +9,4 @@
 请**尽快收敛**：把已经确认的意见整理好，用 `finish` 交还。
 {{/if}}
 </budget_warning>
-{{/if}}
-</state_update>
 {{/if}}

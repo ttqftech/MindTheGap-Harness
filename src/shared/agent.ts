@@ -188,12 +188,20 @@ export type AgentInstanceStatus =
 export type MessageKind = 'tool_result' | 'reflection' | 'notice';
 
 /**
- * 实例条目 = LLM 消息 + 时间戳 + 可选的结构化载荷。
+ * 实例条目 = LLM 消息 + id + 时间戳 + 可选的结构化载荷。
  *
  * ⚠️ 这份数组是**双重身份**：既是界面转写的唯一真相，又是发给模型的上下文。
  * 所以要区分「界面看、模型不看」的条目（如提问卡片状态），这就是 `uiOnly` 的用途。
+ *
+ * ⭐ `id` 是条目的**唯一身份**，由**写这条的人**（Runner）分配，全局唯一、永不复用：
+ * - SSE 事件用 `messageId` 指着自己属于哪一条 ⇒ 前端不必「猜」这份增量该拼进哪条消息；
+ * - 「已提交 ctx」与「在飞 overlay」按 id 抵扣 ⇒ 不需要内容前缀 / 时间窗这类启发式；
+ * - 渲染树的 key 由它派生 ⇒ 条目插入 / 删除不会让后面的块 key 错位。
+ *
+ * ⚠️ 它**不发给模型**：`toLlmMessages()` 会把它剥掉。
  */
 export type AgentInstanceMessage = LlmMessage & {
+	id: string;
 	updatedAt: number;
 	/** 只给界面看，组 payload 时过滤掉（见 runner 的 `toLlmMessages()`） */
 	uiOnly?: true;
@@ -383,20 +391,29 @@ export interface StreamEventBase {
 export type StreamEventDraft = DistributiveOmit<AgentStreamEvent, 'timestamp'>;
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
 
-/** Agent 流式输出事件（SSE 推送，前端按 agentInstanceId 归层） */
+/**
+ * Agent 流式输出事件（SSE 推送）。
+ *
+ * ⭐ 每个「作用于某条消息」的事件都必须带 `messageId`——它等于该条目在 ctx 里的 `id`。
+ * 前端把事件翻译成在飞条目时**只按 id 定位**，不再靠「尾部是不是 assistant」「内容前缀是否相同」
+ * 这类猜测。`agent_start` 带的是该实例首条用户消息的 id。
+ *
+ * 不要嫌冗余：少了它，界面就得重新发明一条启发式规则，而启发式在「连续两条相同内容」时必然出错。
+ */
 export type AgentStreamEvent = StreamEventBase & (
-	| { type: 'text'; agentInstanceId: string; chunk: string }
-	| { type: 'reasoning'; agentInstanceId: string; chunk: string }
-	| { type: 'tool_start'; agentInstanceId: string; callId: string; toolName: string; args: unknown; reason: string }
-	| { type: 'tool_end'; agentInstanceId: string; callId: string; toolName: string; result: ToolResult }
-	| { type: 'agent_start'; agentInstanceId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string }
+	| { type: 'text'; agentInstanceId: string; messageId: string; chunk: string }
+	| { type: 'reasoning'; agentInstanceId: string; messageId: string; chunk: string }
+	| { type: 'tool_start'; agentInstanceId: string; messageId: string; callId: string; toolName: string; args: unknown; reason: string }
+	| { type: 'tool_end'; agentInstanceId: string; messageId: string; callId: string; toolName: string; result: ToolResult }
+	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
 	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
-	| { type: 'reflection_start'; agentInstanceId: string; remaining: number }
-	| { type: 'reflection_chunk'; agentInstanceId: string; chunk: string }
+	| { type: 'reflection_start'; agentInstanceId: string; messageId: string; remaining: number }
+	| { type: 'reflection_chunk'; agentInstanceId: string; messageId: string; chunk: string }
 	| {
 		type: 'usage';
 		agentInstanceId?: string;
+		messageId: string;	// 这笔账挂在哪个条目上（主调用 = 那条 assistant；反思 = 那条 reflection）
 		logId?: string;
 		tokens: TokenUsage;
 		seq?: number;
