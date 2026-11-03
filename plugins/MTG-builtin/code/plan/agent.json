@@ -9,7 +9,7 @@
 		"tools": {
 			"allow": [
 				"file_read", "file_list", "file_search", "file_write",
-				"web_search", "web_fetch", "bash",
+				"web_search", "web_fetch", "shell",
 				"task_list_read", "task_list_write",
 				"ask_user", "delegate", "finish"
 			]

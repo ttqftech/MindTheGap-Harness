@@ -7,7 +7,7 @@
 	"ability": {
 		"mcpDisabled": true,
 		"tools": {
-			"allow": ["bash", "file_list", "file_read", "file_search", "file_write", "file_create", "finish"]
+			"allow": ["shell", "file_list", "file_read", "file_search", "file_write", "file_create", "finish"]
 		}
 	}
 }

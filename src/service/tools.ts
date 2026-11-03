@@ -10,7 +10,7 @@
  * 注意：主进程运行时是 Cottontail（JSC），不是 Bun。所以必须用 node:* 系列 API，不能用 Bun.xxx。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { resolve, dirname, join, isAbsolute, relative, extname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { FromSchema } from 'json-schema-to-ts';
@@ -232,40 +232,532 @@ const SEARCH_MAX_RESULTS = 50;
 
 // #endregion
 
+// #region 文件探测（file_read 用）
+
+/**
+ * 为什么需要探测：
+ * - UTF-8 解码器**从不报错**，非法字节一律变 U+FFFD。用文本模式读二进制不会失败，只会返回一整片替换字符（1MB 图片 ≈ 100 万字符）。
+ */
+
+/** 魔数表：命中即判定二进制并给出类型名。短的放后面（"BM"/"MZ" 只有 2 字节，容易误判） */
+const MAGIC_NUMBERS: Array<{ type: string; bytes: number[] }> = [
+	{ type: 'png', bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+	{ type: 'jpeg', bytes: [0xff, 0xd8, 0xff] },
+	{ type: 'gif', bytes: [0x47, 0x49, 0x46, 0x38] },
+	{ type: 'webp', bytes: [0x52, 0x49, 0x46, 0x46] },
+	{ type: 'pdf', bytes: [0x25, 0x50, 0x44, 0x46] },
+	{ type: 'zip', bytes: [0x50, 0x4b, 0x03, 0x04] },
+	{ type: 'gzip', bytes: [0x1f, 0x8b] },
+	{ type: '7z', bytes: [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c] },
+	{ type: 'rar', bytes: [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07] },
+	{ type: 'elf', bytes: [0x7f, 0x45, 0x4c, 0x46] },
+	{ type: 'wasm', bytes: [0x00, 0x61, 0x73, 0x6d] },
+	{ type: 'glb', bytes: [0x67, 0x6c, 0x54, 0x46] },
+	{ type: 'bmp', bytes: [0x42, 0x4d] },
+	{ type: 'pe', bytes: [0x4d, 0x5a] },
+];
+
+const SNIFF_BYTES = 8 * 1000;	// 探测用采样长度（只读文件头，不整份加载）
+const TEXT_MAX_FILE_BYTES = 8 * 1000 * 1000;	// 文本单次读取的总字节上限：超过就直接拒绝（读 200 行不值得为 1GB 文件分配内存）
+const TEXT_DEFAULT_LIMIT = 200;	// 文本单次读取的默认行数上限
+const TEXT_MAX_LIMIT = 2000;	// 文本单次读取的最大行数上限
+const TEXT_MAX_LINE_CHARS = 500;	// 单行字符上限：minified js / 一行 2MB 的 json，只限行数是挡不住的
+const TEXT_MAX_RETURN_CHARS = 100 * 1000;	// 单次返回的总字符上限（防止 2000 行 × 500 字符）
+const BIN_DEFAULT_LIMIT = 256;
+const BIN_MAX_LIMIT = 4096;
+const BIN_PROBE_BYTES = 64;	// 二进制文件探测时头尾各探多少字节
+const BIN_SMALL_FILE = 512;	// 二进制文件小于这个大小就直接整份 dump（头尾会重叠）
+
+type TextEncoding = 'utf-8' | 'utf-16le' | 'utf-16be' | 'latin1';
+
+type SniffResult =
+	| { kind: 'binary'; type: string; detected: string }
+	| { kind: 'text'; encoding: TextEncoding; detected: string; bom: boolean };
+
+/** 定位读一段字节（二进制模式绝不整份 readFileSync：读 200MB 图片的第 0x1000 字节不该载入整个文件） */
+function readRange(path: string, offset: number, length: number, fileSize: number): Buffer {
+	if (length <= 0) return Buffer.alloc(0);
+	try {
+		const fd = openSync(path, 'r');
+		try {
+			const buf = Buffer.alloc(length);
+			let done = 0;
+			while (done < length) {
+				const n = readSync(fd, buf, done, length - done, offset + done);
+				if (n <= 0) break;
+				done += n;
+			}
+			return done === length ? buf : buf.subarray(0, done);
+		} finally {
+			closeSync(fd);
+		}
+	} catch (err) {
+		// 运行时不支持 fd 定位读时的兜底：小文件整份读再切
+		if (fileSize > TEXT_MAX_FILE_BYTES) throw err;
+		return readFileSync(path).subarray(offset, offset + length);
+	}
+}
+
+// 通过文件头的魔数判断文件类型
+function matchMagic(head: Buffer): string | null {
+	for (const m of MAGIC_NUMBERS) {
+		if (head.length < m.bytes.length) continue;
+		if (m.bytes.every((b, i) => head[i] === b)) return m.type;
+	}
+	return null;
+}
+
+/** 手写严格 UTF-8 校验（不依赖 TextDecoder 的 fatal 选项，JSC 不保证有） */
+function utf8LooksValid(buf: Buffer): boolean {
+	let i = 0;
+	while (i < buf.length) {
+		const b = buf[i];
+		if (b < 0x80) { i++; continue; }
+		let extra = 0;
+		let cp = 0;
+		if ((b & 0xe0) === 0xc0) { extra = 1; cp = b & 0x1f; }
+		else if ((b & 0xf0) === 0xe0) { extra = 2; cp = b & 0x0f; }
+		else if ((b & 0xf8) === 0xf0) { extra = 3; cp = b & 0x07; }
+		else return false;
+		// 采样在多字节字符中间被截断 → 不算非法
+		if (i + extra >= buf.length) return true;
+		for (let k = 1; k <= extra; k++) {
+			const c = buf[i + k];
+			if ((c & 0xc0) !== 0x80) return false;
+			cp = (cp << 6) | (c & 0x3f);
+		}
+		if (extra === 1 && cp < 0x80) return false;
+		if (extra === 2 && cp < 0x800) return false;
+		if (extra === 3 && cp < 0x10000) return false;
+		if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return false;
+		i += extra + 1;
+	}
+	return true;
+}
+
+/** 无 BOM 的 UTF-16：ASCII 字符的高位字节是 0，据此判断零字节集中在奇位还是偶位 */
+function guessUtf16WithoutBom(buf: Buffer): 'utf-16le' | 'utf-16be' | null {
+	const n = Math.min(buf.length, 512) & ~1;
+	if (n < 8) return null;
+	let evenZeros = 0;
+	let oddZeros = 0;
+	for (let i = 0; i < n; i += 2) {
+		if (buf[i] === 0) evenZeros++;
+		if (buf[i + 1] === 0) oddZeros++;
+	}
+	const pairs = n / 2;
+	if (oddZeros / pairs > 0.3 && evenZeros / pairs < 0.1) return 'utf-16le';
+	if (evenZeros / pairs > 0.3 && oddZeros / pairs < 0.1) return 'utf-16be';
+	return null;
+}
+
+/** 计算控制字符（排除 \t \n \r \x1b、DEL）的占比：高就判断为二进制 */
+function controlRatio(buf: Buffer): number {
+	if (!buf.length) return 0;
+	let n = 0;
+	for (let i = 0; i < buf.length; i++) {
+		const b = buf[i];
+		if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d && b !== 0x1b) n++;
+		else if (b === 0x7f) n++;
+	}
+	return n / buf.length;
+}
+
+/**
+ * 给 file_search 用的廉价判定：文件已经被整份读成 UTF-8 字符串了，就不必再单独探测文件头。
+ * NUL，或采样区里 U+FFFD 占比高（非法字节被解码器替换）⇒ 二进制。
+ */
+function looksBinaryText(text: string): boolean {
+	const sample = text.length > 8192 ? text.slice(0, 8192) : text;
+	if (sample.indexOf('\u0000') >= 0) return true;
+	let bad = 0;
+	for (let i = 0; i < sample.length; i++) if (sample.charCodeAt(i) === 0xfffd) bad++;
+	return bad > 0 && bad / sample.length > 0.1;
+}
+
+/**
+ * 判定顺序：魔数 > BOM > NUL（含无 BOM 的 UTF-16 启发式）> 严格 UTF-8 > 控制字符比例 > latin1 兜底。
+ * latin1 兜底是给 GBK 这类「非 UTF-8 但仍是文本」的文件留的路，不然中文用户会看到「二进制」。
+ */
+function sniffBuffer(head: Buffer, size: number): SniffResult {
+	if (size === 0) return { kind: 'text', encoding: 'utf-8', detected: 'empty', bom: false };
+
+	const magic = matchMagic(head);
+	if (magic) return { kind: 'binary', type: magic, detected: `magic:${magic}` };
+
+	if (head.length >= 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) {
+		return { kind: 'text', encoding: 'utf-8', detected: 'bom:utf-8', bom: true };
+	}
+	if (head.length >= 2 && head[0] === 0xff && head[1] === 0xfe) {
+		return { kind: 'text', encoding: 'utf-16le', detected: 'bom:utf-16le', bom: true };
+	}
+	if (head.length >= 2 && head[0] === 0xfe && head[1] === 0xff) {
+		return { kind: 'text', encoding: 'utf-16be', detected: 'bom:utf-16be', bom: true };
+	}
+
+	let hasNul = false;
+	for (let i = 0; i < head.length; i++) if (head[i] === 0) { hasNul = true; break; }
+	if (hasNul) {
+		const u16 = guessUtf16WithoutBom(head);
+		if (u16) return { kind: 'text', encoding: u16, detected: `${u16}:no-bom`, bom: false };
+		return { kind: 'binary', type: 'unknown', detected: 'nul-bytes' };
+	}
+
+	if (utf8LooksValid(head)) return { kind: 'text', encoding: 'utf-8', detected: 'utf8', bom: false };
+
+	if (controlRatio(head) > 0.1) return { kind: 'binary', type: 'unknown', detected: 'control-chars' };
+
+	return { kind: 'text', encoding: 'latin1', detected: 'non-utf8', bom: false };
+}
+
+/** 文本 → 字节。写回一律用文件原本的编码与 BOM，别把 UTF-16 / 带 BOM 的文件悄悄改写成 UTF-8 */
+function encodeBuffer(text: string, encoding: TextEncoding, bom: boolean): Buffer {
+	if (encoding === 'utf-8') return Buffer.from(bom ? `\uFEFF${text}` : text, 'utf8');
+	if (encoding === 'latin1') {
+		const bytes = Buffer.alloc(text.length);
+		for (let i = 0; i < text.length; i++) {
+			const code = text.charCodeAt(i);
+			if (code > 0xff) {
+				const err = new Error(
+					`目标文件按 latin1（非 UTF-8/UTF-16，可能是 GBK）读写，写回内容里第 ${i + 1} 个字符「${text[i]}」无法表示。请改用脚本按目标编码写入`,
+				) as Error & { code?: string };
+				err.code = 'ENCODING_UNSUPPORTED';
+				throw err;
+			}
+			bytes[i] = code;
+		}
+		return bytes;
+	}
+	// utf-16le / utf-16be：逐码元写（代理对是两个码元，保持相邻即正确）
+	const units: number[] = bom ? [0xfeff] : [];
+	for (let i = 0; i < text.length; i++) units.push(text.charCodeAt(i));
+	const bytes = Buffer.alloc(units.length * 2);
+	for (let i = 0; i < units.length; i++) {
+		const u = units[i];
+		if (encoding === 'utf-16le') {
+			bytes[i * 2] = u & 0xff;
+			bytes[i * 2 + 1] = (u >> 8) & 0xff;
+		} else {
+			bytes[i * 2] = (u >> 8) & 0xff;
+			bytes[i * 2 + 1] = u & 0xff;
+		}
+	}
+	return bytes;
+}
+
+type Eol = '\n' | '\r\n';
+
+/**
+ * 按 `\n` 切行，但**保留每行自己的行尾**（`'\r\n'` / `'\n'` / `''`）。
+ * 这样编辑时未改动的行写回后字节完全不变（混合行尾也不会被整份改写），
+ * 同时也去掉了 `split('\n')` 在「文件以 \n 结尾」时凭空多出来的那个空行。
+ */
+function splitLines(text: string): Array<{ body: string; eol: string }> {
+	const out: Array<{ body: string; eol: string }> = [];
+	let start = 0;
+	for (let i = 0; i < text.length; i++) {
+		if (text[i] !== '\n') continue;
+		if (i > start && text[i - 1] === '\r') out.push({ body: text.slice(start, i - 1), eol: '\r\n' });
+		else out.push({ body: text.slice(start, i), eol: '\n' });
+		start = i + 1;
+	}
+	if (start < text.length) out.push({ body: text.slice(start), eol: '' });
+	return out;
+}
+
+/** 判断主行尾：CRLF 不少于 LF 且至少一个 CRLF → CRLF，否则 LF（无行尾的单行文件按 LF） */
+function dominantEol(parts: Array<{ eol: string }>): Eol {
+	let crlf = 0;
+	let lf = 0;
+	for (const p of parts) {
+		if (p.eol === '\r\n') crlf++;
+		else if (p.eol === '\n') lf++;
+	}
+	return crlf > 0 && crlf >= lf ? '\r\n' : '\n';
+}
+
+/** 把任意行尾统一成目标行尾（整份覆盖写时用，避免把 CRLF 文件整体改成 LF） */
+function applyEol(text: string, eol: Eol): string {
+	const normalized = text.replace(/\r\n/g, '\n');
+	return eol === '\r\n' ? normalized.replace(/\n/g, '\r\n') : normalized;
+}
+
+type WriteGuard =
+	| { ok: true; exists: boolean; encoding: TextEncoding; bom: boolean; eol: Eol }
+	| { ok: false; message: string };
+
+/**
+ * 写操作前的闸门：**二进制文件一律拒写**。
+ * 文本写入把一张图毁掉是静默的（解码成 latin1 再编码回去，字节全变），而这种损坏既不可逆也看不出原因，所以宁可让工具直接失败。
+ * 新文件（不存在）放行。
+ */
+function guardWritableFile(path: string): WriteGuard {
+	if (!existsSync(path)) return { ok: true, exists: false, encoding: 'utf-8', bom: false, eol: '\n' };
+	const st = statSync(path);
+	if (st.isDirectory()) return { ok: false, message: `"${path}" 是目录，不是文件` };
+	const size = st.size;
+	const head = readRange(path, 0, Math.min(SNIFF_BYTES, size), size);
+	const sniff = sniffBuffer(head, size);
+	if (sniff.kind === 'binary') {
+		return {
+			ok: false,
+			message:
+				`"${path}" 是二进制文件（${sniff.type}，${formatBytes(size)}，detected=${sniff.detected}），不应用文本方式写入。` +
+				'若要整体替换，先 file_delete 再 file_create。若需特殊操作请自行写脚本执行。',
+		};
+	}
+	// 行尾按文件头采样判断（头部 8KB 足够代表整个文件；真要判错也只影响整份覆盖写）
+	const eol = dominantEol(splitLines(decodeBuffer(head, sniff.encoding)));
+	return { ok: true, exists: true, encoding: sniff.encoding, bom: sniff.bom, eol };
+}
+
+/** 按探测结果解码。UTF-8 交给运行时的 TextDecoder；UTF-16/GBK 手工拼码元（不依赖编码器支持） */
+function decodeBuffer(raw: Buffer, encoding: TextEncoding): string {
+	if (encoding === 'utf-8') {
+		const text = new TextDecoder('utf-8').decode(raw);
+		return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+	}
+	if (encoding === 'latin1') {
+		const parts: string[] = [];
+		for (let i = 0; i < raw.length; i += 4096) {
+			const slice: number[] = [];
+			for (let k = i; k < Math.min(i + 4096, raw.length); k++) slice.push(raw[k]);
+			parts.push(String.fromCharCode.apply(null, slice));
+		}
+		return parts.join('');
+	}
+	// utf-16le / utf-16be：先按小端取出码元，big-endian 交换高低字节
+	const start = raw.length >= 2 && ((raw[0] === 0xff && raw[1] === 0xfe) || (raw[0] === 0xfe && raw[1] === 0xff)) ? 2 : 0;
+	const units: number[] = [];
+	for (let i = start; i + 1 < raw.length; i += 2) {
+		units.push(encoding === 'utf-16le' ? raw[i] | (raw[i + 1] << 8) : (raw[i] << 8) | raw[i + 1]);
+	}
+	const parts: string[] = [];
+	for (let i = 0; i < units.length; i += 4096) parts.push(String.fromCharCode.apply(null, units.slice(i, i + 4096)));
+	return parts.join('');
+}
+
+/** 16 字节一行的 hexdump，带 ASCII 旁列（旁列是把「可读字符串 / 结构标记」从字节里认出来的唯一线索） */
+function hexdump(buf: Buffer, baseOffset: number): string {
+	const lines: string[] = [];
+	for (let i = 0; i < buf.length; i += 16) {
+		const chunk = buf.subarray(i, i + 16);
+		const hex: string[] = [];
+		const ascii: string[] = [];
+		for (let k = 0; k < chunk.length; k++) {
+			const b = chunk[k];
+			hex.push((b < 16 ? '0' : '') + b.toString(16));
+			ascii.push(b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.');
+		}
+		const addr = (baseOffset + i).toString(16).padStart(8, '0');
+		lines.push(`${addr}  ${hex.join(' ').padEnd(47)}  |${ascii.join('')}|`);
+	}
+	return lines.join('\n');
+}
+
+function formatBytes(n: number): string {
+	if (n < 1000) return `${n} B`;
+	if (n < 1000 * 1000) return `${(n / 1000).toFixed(1)} KB`;
+	return `${(n / 1000 / 1000).toFixed(1)} MB`;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+	const n = Math.floor(Number(value));
+	if (!Number.isFinite(n)) return fallback;
+	return Math.min(max, Math.max(min, n));
+}
+
+// #endregion
+
 // #region 内置工具 —— 文件操作
 
 // --- 只读 ---
 
 registerTool({
 	name: 'file_read',
-	description: '读取指定文件的完整内容。如果文件太大，请使用 offset/limit 参数分段读取。',
+	description:
+		'读取文件内容，自动识别文本/二进制与编码。',
+		// `文本模式：按行返回，**恒带行号与总行数**，默认 ${TEXT_DEFAULT_LIMIT} 行（上限 ${TEXT_MAX_LIMIT}），超长行会截断，末尾提示下一段 offset；二进制模式：不输出内容，只给类型/大小/hexdump（默认头尾各 ${BIN_PROBE_BYTES} 字节，用 offset+limit 可指定字节区间，单次上限 ${BIN_MAX_LIMIT} 字节）。` +
+		// '二进制分析（修图片、提取嵌入数据、逆向格式）请自己写脚本用 shell 执行，不要逐段硬读字节。' +
+		// '不确定内容在哪个文件时先用 file_search 或 file_list 定位。',
 	parameters: {
 		type: 'object',
 		properties: {
 			path: { type: 'string', description: '相对或绝对路径' },
-			offset: { type: 'integer', description: '起始行号（从 1 开始）' },
-			limit: { type: 'integer', description: '读取的行数' },
+			offset: {
+				type: 'integer',
+				description: '文本模式：起始行号（从 1 开始）；二进制模式：起始字节偏移（从 0 开始）。省略则从头读',
+			},
+			limit: {
+				type: 'integer',
+				description: `文本模式：行数；二进制模式：字节数`,
+			},
+			mode: {
+				type: 'string',
+				enum: ['auto', 'text', 'binary'],
+				description: '推荐不填以自动判断。仅当自动判断明显不对时手动指定',
+			},
 		},
 		required: ['path'],
 	},
 	async execute(args, ctx) {
 		const path = resolvePath(args.path as string, ctx.runningDir);
+
+		let size: number;
 		try {
-			const content = readFileSync(path, 'utf-8');
-			const lines = content.split('\n');
-			const offset = ((args.offset as number) ?? 1) - 1;
-			const limit = args.limit as number | undefined;
-			const selected = limit ? lines.slice(offset, offset + limit) : lines.slice(offset);
-			const result = selected.join('\n');
+			const st = statSync(path);
+			if (st.isDirectory()) {
+				return { success: false, content: `"${path}" 是目录，不是文件，请用 file_list 列出其内容`, error: 'IS_DIRECTORY' };
+			}
+			size = st.size;
+		} catch (err) {
+			const code = (err as { code?: string }).code;
+			if (code === 'ENOENT') return { success: false, content: `文件不存在：${path}`, error: 'NOT_FOUND' };
+			if (code === 'EACCES' || code === 'EPERM') return { success: false, content: `没有权限读取：${path}`, error: 'NO_PERMISSION' };
+			return { success: false, content: `无法访问 ${path}：${(err as Error).message}`, error: code ?? 'STAT_FAILED' };
+		}
+
+		// 探测（只看文件头，不整份加载）
+		const head = readRange(path, 0, Math.min(SNIFF_BYTES, size), size);
+		const sniff = sniffBuffer(head, size);
+		const forcedMode = args.mode === 'text' || args.mode === 'binary' ? args.mode : null;
+		const mode = forcedMode ?? sniff.kind;
+		// const modeLabel = forcedMode && forcedMode !== sniff.kind ? `${mode}（forced）` : mode;
+		const modeLabel = mode;
+
+		// ---------- 二进制 ----------
+		if (mode === 'binary') {
+			const probeOnly = args.offset === undefined && args.limit === undefined;
+			const parts: string[] = [];
+			let rangeNote: string;
+
+			if (probeOnly && size > BIN_SMALL_FILE) {
+				const headN = Math.min(BIN_PROBE_BYTES, size);
+				const tailStart = Math.max(headN, size - BIN_PROBE_BYTES);
+				parts.push(hexdump(readRange(path, 0, headN, size), 0));
+				parts.push('...');
+				parts.push(hexdump(readRange(path, tailStart, size - tailStart, size), tailStart));
+				rangeNote = `head 0x0-0x${headN.toString(16)} + tail 0x${tailStart.toString(16)}-0x${size.toString(16)}`;
+			} else if (probeOnly) {
+				parts.push(hexdump(readRange(path, 0, size, size), 0));
+				rangeNote = `whole 0x0-0x${size.toString(16)}`;
+			} else {
+				const off = Math.max(0, Math.floor(Number(args.offset ?? 0)) || 0);
+				if (off >= size) {
+					return {
+						success: false,
+						content: `offset=${off} 超出范围：文件共 ${size} 字节（0x${size.toString(16)}）。`,
+						error: 'OFFSET_OUT_OF_RANGE',
+					};
+				}
+				const want = clampInt(args.limit, BIN_DEFAULT_LIMIT, 1, BIN_MAX_LIMIT);
+				const len = Math.min(want, size - off);
+				parts.push(hexdump(readRange(path, off, len, size), off));
+				rangeNote = `0x${off.toString(16)}-0x${(off + len).toString(16)}（${len} / ${size} 字节）`;
+			}
+
+			const header = `<file path="${path}" mode="${modeLabel}" type="${sniff.kind}" detected="${sniff.detected}" size=${size} offset_unit="byte(0-based)">`;
+			const footer = `[字节区间：${rangeNote}]`;
 
 			return {
 				success: true,
-				content: result,
-				structured: { totalLines: lines.length, readLines: selected.length },
+				content: `${header}\n${parts.join('\n')}\n${footer}`,
+				structured: {
+					mode: 'binary',
+					type: sniff.kind === 'binary' ? sniff.type : 'by-request',
+					detected: sniff.detected,
+					forced: forcedMode !== null && forcedMode !== sniff.kind,
+					totalBytes: size,
+					probeOnly,
+				},
 			};
-		} catch (err) {
-			return { success: false, content: `Failed to read file: ${(err as Error).message}` };
 		}
+
+		// ---------- 文本 ----------
+		const notes: string[] = [];
+		if (size > TEXT_MAX_FILE_BYTES) {
+			return {
+				success: false,
+				content: `文件 ${formatBytes(size)} 超过单次文本读取上限（${formatBytes(TEXT_MAX_FILE_BYTES)}）。请用 file_search 定位关键行，或用 shell 抽取片段（如 findstr / Select-String），或显式传 mode="binary" 只看指定字节区间。`,
+				error: 'FILE_TOO_LARGE',
+			};
+		}
+		if (sniff.kind === 'binary') {
+			notes.push(`[注意：该文件自动判定为二进制（${sniff.detected}），已按 mode="text" 强制解码，内容可能是乱码]`);
+		}
+		if (sniff.kind === 'text' && sniff.encoding === 'latin1') {
+			notes.push('[注意：文件不是合法 UTF-8（可能是 GBK/GB18030），已用 latin1 兜底解码，中文会乱码]');
+		}
+
+		const raw = readFileSync(path);
+		const content = decodeBuffer(raw, sniff.kind === 'text' ? sniff.encoding : 'latin1');
+		const encoding = sniff.kind === 'text' ? sniff.encoding : 'latin1';
+
+		if (size === 0) {
+			return {
+				success: true,
+				content: `<file path="${path}" mode="${modeLabel}" encoding="${encoding}" detected="empty" lines=0 size=0>\n（空文件）`,
+				structured: {
+					mode: 'text', encoding, detected: 'empty', forced: false,
+					totalLines: 0, totalBytes: 0, startLine: 0, endLine: 0, readLines: 0, truncated: false,
+				},
+			};
+		}
+
+		const lines = splitLines(content);
+
+		const offsetLine = Math.max(1, Math.floor(Number(args.offset ?? 1)) || 1);
+		const limit = clampInt(args.limit, TEXT_DEFAULT_LIMIT, 1, TEXT_MAX_LIMIT);
+		if (offsetLine > lines.length) {
+			return {
+				success: false,
+				content: `offset=${offsetLine} 超出范围：文件共 ${lines.length} 行`,
+				error: 'OFFSET_OUT_OF_RANGE',
+			};
+		}
+
+		const width = String(lines.length).length;
+		const body: string[] = [];
+		let chars = 0;
+		let cutByChars = false;
+		let endLine = offsetLine - 1;
+		for (let i = offsetLine - 1; i < lines.length && i < offsetLine - 1 + limit; i++) {
+			const textLine = lines[i].body;
+			const shown = textLine.length > TEXT_MAX_LINE_CHARS
+				? `${textLine.slice(0, TEXT_MAX_LINE_CHARS)} …(+${textLine.length - TEXT_MAX_LINE_CHARS} chars)`
+				: textLine;
+			const rendered = `${String(i + 1).padStart(width)}→${shown}`;
+			if (body.length > 0 && chars + rendered.length > TEXT_MAX_RETURN_CHARS) {
+				cutByChars = true;
+				break;
+			}
+			body.push(rendered);
+			chars += rendered.length + 1;
+			endLine = i + 1;
+		}
+
+		const header = `<file path="${path}" mode="${modeLabel}" encoding="${encoding}" detected="${sniff.detected}" lines=${lines.length} size=${size}>`;
+		const footer = endLine < lines.length
+			? `[已读 ${offsetLine}-${endLine} / 共 ${lines.length} 行${cutByChars ? '（已达单次返回上限，提前截断）' : ''}]`
+			: `[已读 ${offsetLine}-${endLine} / 共 ${lines.length} 行（已到文件末尾）]`;
+
+		return {
+			success: true,
+			content: [header, ...notes, body.join('\n'), footer].filter((s) => s !== '').join('\n'),
+			structured: {
+				mode: 'text',
+				encoding,
+				detected: sniff.detected,
+				forced: forcedMode !== null && forcedMode !== sniff.kind,
+				totalLines: lines.length,
+				totalBytes: size,
+				startLine: offsetLine,
+				endLine,
+				readLines: body.length,
+				truncated: endLine < lines.length,
+				nextOffset: endLine < lines.length ? endLine + 1 : undefined,
+			},
+		};
 	},
 });
 
@@ -316,7 +808,7 @@ registerTool({
 	name: 'file_search',
 	description:
 		'按关键词或正则搜索文件内容（不依赖 ripgrep，纯 node:fs 遍历）。' +
-		'自动跳过 node_modules/.git/dist/build 等目录，单文件上限 1MB，最多返回 50 条。',
+		'自动跳过 node_modules/.git/dist/build 等目录与二进制文件，单文件上限 1MB，最多返回 50 条。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -350,6 +842,7 @@ registerTool({
 
 		const hits: string[] = [];
 		let truncated = false;
+		let skippedBinary = 0;
 
 		const walk = (dir: string, depth: number) => {
 			if (truncated || depth > 12) return;
@@ -372,6 +865,11 @@ registerTool({
 				try {
 					if (statSync(full).size > SEARCH_MAX_FILE_BYTES) continue;
 					const text = readFileSync(full, 'utf-8');
+					// 跳过二进制：这里已经有解码后的字符串，判 NUL / 替换字符比例即可，不必再单独探测一遍文件头
+					if (looksBinaryText(text)) {
+						skippedBinary++;
+						continue;
+					}
 					const lines = text.split('\n');
 					for (let i = 0; i < lines.length; i++) {
 						pattern.lastIndex = 0;
@@ -389,10 +887,11 @@ registerTool({
 		};
 
 		walk(root, 1);
+		const note = skippedBinary > 0 ? `\n（已跳过 ${skippedBinary} 个二进制文件）` : '';
 		return {
 			success: true,
-			content: hits.length > 0 ? hits.join('\n') : '(没有匹配)',
-			structured: { count: hits.length, truncated },
+			content: (hits.length > 0 ? hits.join('\n') : '(没有匹配)') + note,
+			structured: { count: hits.length, truncated, skippedBinary },
 		};
 	},
 });
@@ -401,7 +900,7 @@ registerTool({
 
 registerTool({
 	name: 'file_write',
-	description: '将内容写入指定文件（覆盖）。如果文件不存在会自动创建。覆盖前建议先用 file_rename 备份原文件（高风险操作，先 ask_user）。',
+	description: '将文本写入指定文件（覆盖），沿用文件原有编码（UTF-8 / UTF-16 / BOM 都保持）。如果文件不存在会自动创建。覆盖前建议先用 file_rename 备份原文件。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -413,19 +912,24 @@ registerTool({
 	async execute(args, ctx) {
 		const path = resolvePath(args.path as string, ctx.runningDir);
 		try {
+			const guard = guardWritableFile(path);
+			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
 			const dir = dirname(path);
 			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-			writeFileSync(path, args.content as string, 'utf-8');
-			return { success: true, content: `File written: ${path}` };
+			// 已存在的文件沿用其行尾（整份覆盖不该把 CRLF 文件改成 LF）；新文件用给定的内容
+			const text = guard.exists ? applyEol(args.content as string, guard.eol) : (args.content as string);
+			writeFileSync(path, encodeBuffer(text, guard.encoding, guard.bom));
+			const tail = guard.encoding === 'utf-8' ? '' : `（沿用原编码 ${guard.encoding}）`;
+			return { success: true, content: `File written: ${path}${tail}` };
 		} catch (err) {
-			return { success: false, content: `Failed to write file: ${(err as Error).message}` };
+			return { success: false, content: `Failed to write file: ${(err as Error).message}`, error: (err as { code?: string }).code ?? 'WRITE_FAILED' };
 		}
 	},
 });
 
 registerTool({
 	name: 'file_edit',
-	description: '编辑文件的指定行范围（startLine 到 endLine，含两端），替换为 newContent。',
+	description: '编辑文本文件的指定行范围（startLine 到 endLine，含两端），替换为 newContent。行号与 file_read 输出的一致；写回沿用原编码。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -439,8 +943,12 @@ registerTool({
 	async execute(args, ctx) {
 		const path = resolvePath(args.path as string, ctx.runningDir);
 		try {
-			const content = readFileSync(path, 'utf-8');
-			const lines = content.split('\n');
+			const guard = guardWritableFile(path);
+			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
+			if (!guard.exists) return { success: false, content: `文件不存在：${path}（新建请用 file_create）`, error: 'NOT_FOUND' };
+
+			const content = decodeBuffer(readFileSync(path), guard.encoding);
+			const lines = splitLines(content);
 			const start = ((args.startLine as number) ?? 1) - 1;
 			const end = args.endLine as number;
 
@@ -451,23 +959,34 @@ registerTool({
 				};
 			}
 
-			const newLines = (args.newContent as string).split('\n');
-			const result = [...lines.slice(0, start), ...newLines, ...lines.slice(end)].join('\n');
-			writeFileSync(path, result, 'utf-8');
+			// 新行沿用「被替换区间第一行」的行尾；区间末行原本没有行尾（文件结尾无换行）时，新末行也不加
+			const replacedEol = lines[start].eol || dominantEol(lines);
+			const tailHasEol = lines[end - 1].eol !== '';
+			const newLines = (args.newContent as string)
+				.split('\n')
+				.map((s) => (s.endsWith('\r') ? s.slice(0, -1) : s));
+			const replacement = newLines.map((body, i) => ({
+				body,
+				eol: i === newLines.length - 1 && !tailHasEol ? '' : replacedEol,
+			}));
+			const result = [...lines.slice(0, start), ...replacement, ...lines.slice(end)]
+				.map((l) => l.body + l.eol)
+				.join('');
+			writeFileSync(path, encodeBuffer(result, guard.encoding, guard.bom));
 
 			return {
 				success: true,
 				content: `Edited lines ${start + 1}-${end} in ${path}. Old: ${end - start} lines, New: ${newLines.length} lines.`,
 			};
 		} catch (err) {
-			return { success: false, content: `Failed to edit file: ${(err as Error).message}` };
+			return { success: false, content: `Failed to edit file: ${(err as Error).message}`, error: (err as { code?: string }).code ?? 'EDIT_FAILED' };
 		}
 	},
 });
 
 registerTool({
 	name: 'file_create',
-	description: '创建一个新文件（可以是空文件或带初始内容）。',
+	description: '创建一个新文本文件。已存在的二进制文件不会被覆盖（会被拒绝）。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -479,9 +998,13 @@ registerTool({
 	async execute(args, ctx) {
 		const path = resolvePath(args.path as string, ctx.runningDir);
 		try {
+			const guard = guardWritableFile(path);
+			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
 			const dir = dirname(path);
 			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-			writeFileSync(path, (args.content as string) ?? '', 'utf-8');
+			const raw = (args.content as string) ?? '';
+			const text = guard.exists ? applyEol(raw, guard.eol) : raw;
+			writeFileSync(path, encodeBuffer(text, guard.encoding, guard.bom));
 			return { success: true, content: `Created file: ${path}` };
 		} catch (err) {
 			return { success: false, content: `Failed to create file: ${(err as Error).message}` };
@@ -542,7 +1065,7 @@ registerTool({
 // #region 内置工具 —— 进程
 
 registerTool({
-	name: 'bash',
+	name: 'shell',
 	description: `在运行目录中执行 shell 命令。${
 		process.platform === 'win32'
 			? '当前运行环境是 Windows（shell 为 cmd.exe），请使用 Windows 兼容命令（如 dir、type、echo），不要用 Unix 专属命令（如 ls、date +%Y、grep -r）。'

@@ -263,7 +263,7 @@ const TOOL_USAGE: Record<string, string> = {
 	file_create: '创建新文件',
 	file_delete: '删除文件',
 	file_rename: '重命名 / 移动文件（高风险操作请先 ask_user）',
-	bash: '执行 shell 命令（Windows / cmd.exe 兼容）',
+	shell: '执行 shell 命令（Windows 下为 cmd.exe；git / 构建 / 跑脚本等）',
 	web_search: '多引擎网络搜索：合并各引擎候选 → 独立模型按相关性打分 → 直接返回最相关页面的正文',
 	web_fetch: '抓取一个 URL 的正文（先 HTTP 直取，页面是 JS 空壳时自动改用无头浏览器渲染）',
 	task_list_read: '读取当前任务清单',

@@ -9,7 +9,7 @@
 	"ability": {
 		"tools": {
 			"allow": [
-				"file_read", "file_list", "file_search",
+				"file_read", "file_list", "file_search", "shell",
 				"task_list_read", "task_list_write",
 				"ask_user",
 				"delegate", "resume_pending_child", "resume_completed_child", "ask_child"

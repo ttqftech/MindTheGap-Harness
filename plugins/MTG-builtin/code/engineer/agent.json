@@ -9,7 +9,7 @@
 			"allow": [
 				"file_read", "file_list", "file_search",
 				"file_write", "file_edit", "file_create", "file_delete", "file_rename",
-				"bash", "web_search", "web_fetch",
+				"shell", "web_search", "web_fetch",
 				"ask_user", "finish"
 			]
 		}

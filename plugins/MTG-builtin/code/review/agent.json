@@ -6,7 +6,7 @@
 	"reflectionCount": 1,
 	"ability": {
 		"tools": {
-			"allow": ["file_read", "file_list", "file_search", "bash", "finish"]
+			"allow": ["file_read", "file_list", "file_search", "shell", "finish"]
 		}
 	}
 }

@@ -47,7 +47,7 @@
       du -sh /path/* 2>/dev/null | sort -hr | head -25
       find /path -type f -size +500M -printf '%s\t%TY-%Tm-%Td\t%p\n' 2>/dev/null | sort -nr | head -30
 
-- **控制成本**：先盘级、再目录级、再深入，不要一上来对整盘做全递归。大范围扫描给 `bash` 传 `timeout`（秒），超时就缩小范围重来。
+- **控制成本**：先盘级、再目录级、再深入，不要一上来对整盘做全递归。大范围扫描给 `shell` 传 `timeout`（秒），超时就缩小范围重来。
 - **权限与占用**：访问被拒 / 路径不存在属正常，`-ErrorAction SilentlyContinue`（Windows）或 `2>/dev/null`（Unix）跳过即可，在报告里记为「未获取（原因）」，不要反复重试。
 - **输出乱码**：命令输出尽量是 ASCII（路径、数字、英文列名），避免非 ASCII 文本被 shell 编码搞乱。
 

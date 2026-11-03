@@ -502,11 +502,50 @@
 	padding-left: 10px;
 	border-left: 2px solid var(--border-input);
 	transition: border 0.4s;
+	position: relative;	/* 扫光伪元素以它为定位基准 */
 	&:hover {
 		transition: border 0.45s cubic-bezier(0.2, 3, 0.2, 1);
 		border-left: 2px solid var(--accent);
 	}
+	/* 选中特效 */
+	&::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		outline: 0 solid transparent;
+		z-index: 1;
+	}
+	&.sweep::before {
+		outline: 1.5px solid var(--accent);
+		transition: outline 0.45s cubic-bezier(0.2, 3, 0.2, 1);
+	}
+	&.sweep::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		/* border-radius: 6px; */
+		pointer-events: none;
+		/* background-image: linear-gradient(90deg, transparent 33%, var(--accent) 50%, transparent 67%); */
+		/* background-size: 300% 100%; */
+		background-color: var(--accent);
+		box-shadow: 0 3px 10px var(--accent);
+		background-repeat: no-repeat;
+		mix-blend-mode: overlay;
+		animation: block-sweep 1s infinite cubic-bezier(0.5, 0.1, 0.5, 0.9);
+	}
 }
+@keyframes block-sweep {
+	0%, 49.9%, 100% {
+		/* background-position: -20% 0; */
+		opacity: 0.3;
+	}
+	50%, 99.9% {
+		/* background-position: 120% 0; */
+		opacity: 0.7;
+	}
+}
+
 
 /* ---------- 委托块 → 子 Agent ---------- */
 

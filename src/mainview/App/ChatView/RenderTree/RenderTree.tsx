@@ -70,9 +70,27 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 *
 	 * logId 来自该块自己的账本（`usage.logId`）；块还在飞、账本还没落地时置灰。
 	 * 菜单挂在鼠标处而不是块上 —— 一次调用的块可能很长，用块矩形会飘到很远。
+	 *
+	 * ⚠️ 必须 `stopPropagation`：子 Agent 的块是**嵌在**父块的 `.block-llm` 里的
+	 *    （委托工具 → `.agent-tool-children` → 子节点 → 子块），不拦的话右键子块
+	 *    会一路冒到外层，最后弹出来的是外层那次调用的菜单。
 	 */
 	const openLlmBlockMenu = (e: MouseEvent, block: RenderLlmBlock) => {
 		e.preventDefault();
+		e.stopPropagation();
+		/**
+		 * 右键那一刻给这条消息来一道扫光，**菜单关闭时**再把类摘掉。
+		 *
+		 * 只加/删一个 class，不参与投影与 diff —— 纯视觉反馈，不能让它进入渲染树（否则每次扫光都触发重算）。
+		 * 同一元素连点要能重放：先摘类、强制回流、再挂类。
+		 * 动画本身是 `forwards` 的，挂到菜单关闭为止不会残留光带，只保证菜单开着时这一块一直是「被选中」的那一条。
+		 */
+		const sweepTarget = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+		if (sweepTarget) {
+			sweepTarget.classList.remove(styles.sweep);
+			void sweepTarget.offsetWidth;	// 强制回流，否则第二次点同一个块动画不会重播
+			sweepTarget.classList.add(styles.sweep);
+		}
 		const usage = block.usages?.find((u) => u.logId) ?? block.usages?.[0];
 		const logId = usage?.logId;
 		showMenu({
@@ -89,6 +107,9 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 					},
 				},
 			],
+			onClose: () => {
+				sweepTarget?.classList.remove(styles.sweep);
+			}
 		});
 	};
 
