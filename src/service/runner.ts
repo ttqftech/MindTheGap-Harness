@@ -159,6 +159,17 @@ function reflectionActionable(text: string): boolean {
 
 // #region Runner
 
+/**
+ * 可合并的增量事件形状：只有这三个类型是「纯文本追加」，前端收到后各自 `+= chunk`。
+ */
+type DeltaStreamEvent = {
+	type: 'text' | 'reasoning' | 'reflection_chunk';
+	agentInstanceId: string;
+	messageId: string;
+	chunk: string;
+};
+const STREAM_COALESCE_MS = 50;	// 增量事件的合并窗口（ms）
+
 export interface RunnerOptions {
 	onStream?: (event: AgentStreamEvent) => void;
 }
@@ -180,6 +191,14 @@ export class AgentRunner {
 	private childLink = new Map<string, { parentAgentInstanceId: string; callId: string; toolName: string }>();
 	/** 挂起中的 callId → 它在等什么（见 `PendingWait`）。回填后删除 */
 	private pendingWait = new Map<string, PendingWait>();
+
+	/**
+	 * 增量事件（text / reasoning / reflection_chunk）的待发缓冲。
+	 * key = `type|agentInstanceId|messageId` —— 同一个条目的增量在窗口内直接拼接成一条再发。
+	 * 见 `STREAM_COALESCE_MS`。
+	 */
+	private streamBuffer = new Map<string, DeltaStreamEvent>();
+	private streamTimer: ReturnType<typeof setTimeout> | null = null;
 
 	private doneResolve: (() => void) | null = null;
 	private donePromise: Promise<void>;
@@ -1228,6 +1247,8 @@ export class AgentRunner {
 
 	/** 触发 donePromise 的 resolve */
 	private finishDone(): void {
+		// 兜底：run 要结束了，缓冲里的正文必须发完（正常路径上 `done` 事件已经把它 flush 掉了）
+		this.flushStream();
 		if (this.doneResolve) {
 			this.doneResolve();
 			this.doneResolve = null;
@@ -1327,9 +1348,43 @@ export class AgentRunner {
 	 * ⚠️ `timestamp` 在这里统一盖上，调用点一个都不许自己写 ——
 	 *    前端拿它当作条目的 `updatedAt`（见 `shared/agent.ts` 的 `StreamEventBase`），
 	 *    必须是从同一口钟出来的后端时间。
+	 *
+	 * ⭐ 三个增量类型先缓冲、窗口到期再合并发送（见 `STREAM_COALESCE_MS`）；
+	 *    **任何非增量事件一律先把缓冲区 flush 掉再发** —— 否则前端会先看到 `usage` / `done` /
+	 *    `tool_start`，正文却还在路上，账目挂到空条目上、工具行跑到文字前面。
 	 */
 	private emitStream(event: StreamEventDraft): void {
+		if (this.bufferDelta(event)) return;
+		this.flushStream();
 		this.options.onStream?.({ ...event, timestamp: now() });
+	}
+
+	/** 增量事件进缓冲；返回 true 表示「已缓冲、还没发出去」 */
+	private bufferDelta(event: StreamEventDraft): boolean {
+		if (event.type !== 'text' && event.type !== 'reasoning' && event.type !== 'reflection_chunk') return false;
+		const key = `${event.type}|${event.agentInstanceId}|${event.messageId}`;
+		const pending = this.streamBuffer.get(key);
+		if (pending) pending.chunk += event.chunk;
+		else this.streamBuffer.set(key, { ...event });
+		if (!this.streamTimer) {
+			this.streamTimer = setTimeout(() => {
+				this.streamTimer = null;
+				this.flushStream();
+			}, STREAM_COALESCE_MS);
+		}
+		return true;
+	}
+
+	/** 把缓冲区的增量一次发完（同一 key 已拼接，不同 key 按首次到达顺序） */
+	private flushStream(): void {
+		if (this.streamTimer) {
+			clearTimeout(this.streamTimer);
+			this.streamTimer = null;
+		}
+		if (this.streamBuffer.size === 0) return;
+		const batches = [...this.streamBuffer.values()];
+		this.streamBuffer.clear();
+		for (const event of batches) this.options.onStream?.({ ...event, timestamp: now() });
 	}
 
 	/** 更新最近更新时间，然后向 conversations Proxy 写一下，触发自动存盘 */

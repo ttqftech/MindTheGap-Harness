@@ -113,170 +113,206 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		});
 	};
 
+	/** 某个位置当前的子块是什么类型（类型不符给 undefined，让 `<Match>` 判假落到下一个分支） */
+	function subTypeEquals<T extends RenderSubBlock['type']>(sub: () => RenderSubBlock, type: T): Extract<RenderSubBlock, { type: T }> | undefined {
+		const s = sub();
+		return s.type === type ? (s as Extract<RenderSubBlock, { type: T }>) : undefined;
+	}
+
+	/**
+	 * 一次工具调用的卡片：一行摘要（状态 + 工具名 + 理由 + 输出预览）+ 可展开的入参与完整输出。
+	 *
+	 * ⚠️ 参数是 accessor，不是值：同一个位置上流式更新（状态翻转、输出变长）时只有这几处表达式在动，
+	 *    卡片元素本身不重建 —— 否则每次 fold 都换掉整张卡，连它下面的子 Agent 子树一起重挂。
+	 */
+	const renderToolCard = (tool: () => RenderToolSub) => {
+		const mcp = () => parseMcpName(tool().name);
+		return (
+			<details
+				class={styles['tool-card']}
+				classList={{
+					[styles['is-error']]: tool().status === 'error',
+					[styles['is-mcp']]: !!mcp(),
+				}}
+				open={openOverrides.get(`tool:${tool().callId}`) ?? (tool().status === 'error' || (!!tool().output && tool().output.length <= 240))}
+				ontoggle={(e) => openOverrides.set(`tool:${tool().callId}`, e.currentTarget.open)}
+			>
+				<summary class={styles['tool-head']}>
+					<span class={styles['tool-head-caret']}>▶</span>
+					<span class={styles['tool-status']}>
+						{tool().status === 'running' ? '⏳' : tool().status === 'success' ? '✓' : '✗'}
+					</span>
+					<Show
+						when={mcp()}
+						fallback={<span class={styles['tool-name']}>{tool().name}</span>}
+					>
+						{(m) => (
+							<>
+								<span class={styles['tool-icon']}>
+									<McpIcon />
+								</span>
+								<span class={styles['tool-name']}>mcp:{m().server}</span>
+								<span class={styles['tool-name-sub']}>tools/call · {m().method}</span>
+							</>
+						)}
+					</Show>
+					<Show when={(tool().children?.length ?? 0) > 0}>
+						{/* 子 Agent 渲染在这个块**下面**（同级），这里只提示它委托出去了几个 */}
+						<span class={styles['tool-owner']}>↳ {tool().children!.length} 个子 Agent</span>
+					</Show>
+					<Show when={tool().reason}>
+						<span class={styles['tool-reason']}>{tool().reason}</span>
+					</Show>
+					<Show when={mcp()}>
+						<span class={styles['tool-chip']}>JSON-RPC</span>
+					</Show>
+					<Show
+						when={tool().output}
+						fallback={
+							<Show when={tool().status === 'running'}>
+								<span class={styles['tool-preview']}>执行中…</span>
+							</Show>
+						}
+					>
+						<span class={styles['tool-preview']}>
+							{tool().output.replace(/\s+/g, ' ').trim().slice(0, 120)}
+						</span>
+					</Show>
+				</summary>
+				<div class={styles['tool-body']}>
+					{/* MCP 卡用设计稿的「→ request / ← response」行；普通工具用「入参 / 输出」小标 */}
+					<Show
+						when={mcp()}
+						fallback={
+							<>
+								<Show when={tool().args}>
+									<div class={styles['tool-section']}>入参</div>
+									<pre class={styles['tool-pre']}>{truncateWithNote(tool().args, TOOL_ARGS_LIMIT)}</pre>
+								</Show>
+								<Show when={tool().output}>
+									<div class={styles['tool-section']}>输出</div>
+									<pre class={styles['tool-pre']}>{truncateWithNote(tool().output, TOOL_OUTPUT_LIMIT)}</pre>
+								</Show>
+							</>
+						}
+					>
+						<>
+							<Show when={tool().args}>
+								<div class={styles['tool-line']}>→ request</div>
+								<pre class={styles['tool-pre']}>{truncateWithNote(tool().args, TOOL_ARGS_LIMIT)}</pre>
+							</Show>
+							<Show when={tool().output}>
+								<div class={`${styles['tool-line']} ${styles['is-response']}`}>
+									← response · {tool().status === 'success' ? '200 OK' : tool().status} · {fmtSize(tool().output.length)}
+								</div>
+								<pre class={styles['tool-pre']}>{truncateWithNote(tool().output, TOOL_OUTPUT_LIMIT)}</pre>
+							</Show>
+						</>
+					</Show>
+					<Show when={!tool().args && !tool().output}>
+						<div class={styles['tool-hint']}>
+							{tool().status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
+						</div>
+					</Show>
+				</div>
+			</details>
+		);
+	};
+
+	/**
+	 * 委托 / 唤醒类工具：卡片 + 它下面的子 Agent。
+	 *
+	 * ⚠️ 子 Agent **不嵌在卡片的 `<details>` 里**，而是同级渲染在它下面：
+	 *    ① 折叠卡片不该把整棵子 Agent 树一起藏起来
+	 *    ② 子 Agent 有自己的左边距，使「哪一块是一个完整的子 Agent」从结构上就看得出来
+	 * ⚠️ 子节点列表用 `<Index>`：子 Agent 流式时它的节点对象每帧都是新的，`<For>` 会按引用判定成「换了个人」→ 整棵子树重挂（`.block-llm` 是全新 DOM，:hover 的边条过渡会反复重播）。
+	 */
+	const renderToolGroup = (tool: () => RenderToolSub) => (
+		<div class={styles['agent-tool-group']}>
+			{renderToolCard(tool)}
+			<Show when={(tool().children?.length ?? 0) > 0}>
+				<div class={styles['agent-tool-children']}>
+					<Index each={tool().children ?? []}>{(child) => renderNode(child, false)}</Index>
+				</div>
+			</Show>
+		</div>
+	);
+
 	/**
 	 * LLM 调用块里的**一个子块**：思考 / 正文 / 一次工具调用。
 	 * 工具调用的结果贴在同一处（`role:'tool'` 的条目由投影合并进来），不单独成块。
+	 *
+	 * ⚠️ 与顶层块同理：参数是 accessor、分派用 `<Switch>`，让「同一位置上的内容变了」只更新表达式，
+	 *    不重建元素。用值 + switch 的话流式时每个 chunk 都会换一个新的子块 DOM。
 	 */
-	const renderSubBlock = (sub: RenderSubBlock) => {
-		switch (sub.type) {
-			case 'reasoning':
-				// 思考过程默认折叠，但 summary 里实时滚出末尾几个字，
-				// 这样即使折叠着也能看出「模型还在动」，而不是界面一片死寂。
-				return (
-					<details class={styles.reasoning}>
+	const renderSubBlock = (sub: () => RenderSubBlock) => (
+		<Switch fallback={null}>
+			{/* 思考过程默认折叠，但 summary 里实时滚出末尾几个字，这样即使折叠着也能看出「模型还在动」 */}
+			<Match when={subTypeEquals(sub, 'reasoning')}>
+				{(r) => (
+					<details
+						class={styles.reasoning}
+						/* ⚠️ 展开态必须自己记（与工具卡 / 反思 / 子 Agent 同一套 openOverrides）：
+						   靠浏览器原生 `open` 的话，这一块一旦被重建（换 key / 短暂消失再出现 / 树整体重挂）就弹回折叠。 */
+						open={openOverrides.get(`reasoning:${r().key}`) ?? false}
+						ontoggle={(e) => openOverrides.set(`reasoning:${r().key}`, e.currentTarget.open)}
+					>
 						<summary class={styles['reasoning-head']}>
 							<span class={styles['reasoning-caret']}>▶</span>
 							<span class={styles['reasoning-label']}>思考</span>
-							<span class={styles['reasoning-peek']}>{sub.content.slice(-72)}</span>
+							<span class={styles['reasoning-peek']}>{r().content.slice(-72)}</span>
 						</summary>
-						<div class={styles['reasoning-body']}>{sub.content}</div>
+						<div class={styles['reasoning-body']}>{r().content}</div>
 					</details>
-				);
+				)}
+			</Match>
 
-			case 'text':
-				return <div class={styles['agent-block-text']}>{sub.content}</div>;
+			<Match when={subTypeEquals(sub, 'text')}>
+				{(t) => <div class={styles['agent-block-text']}>{t().content}</div>}
+			</Match>
 
-			case 'reflection':
-				// 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定。
-				// 默认展开：设计稿就是展开态，而且它本来就只有一两句话。
-				return (
+			{/* 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定。
+			    默认展开：设计稿就是展开态，而且它本来就只有一两句话。 */}
+			<Match when={subTypeEquals(sub, 'reflection')}>
+				{(r) => (
 					<details
 						class={styles['reflection']}
-						open={openOverrides.get(`reflection:${sub.key}`) ?? true}
-						ontoggle={(e) => openOverrides.set(`reflection:${sub.key}`, e.currentTarget.open)}
+						open={openOverrides.get(`reflection:${r().key}`) ?? true}
+						ontoggle={(e) => openOverrides.set(`reflection:${r().key}`, e.currentTarget.open)}
 					>
 						<summary class={styles['reflection-head']}>
 							<span class={styles['reflection-icon']}>
 								<ReflectionIcon />
 							</span>
 							<span class={styles['reflection-title']}>REFLECTION</span>
-							<Show when={sub.remaining !== undefined}>
-								<span class={styles['reflection-chip']}>剩 {sub.remaining} 次</span>
+							<Show when={r().remaining !== undefined}>
+								<span class={styles['reflection-chip']}>剩 {r().remaining} 次</span>
 							</Show>
 							<span class={styles['reflection-caret']}>▶</span>
 						</summary>
-						<div class={styles['reflection-body']}>{sub.content}</div>
+						<div class={styles['reflection-body']}>{r().content}</div>
 					</details>
-				);
+				)}
+			</Match>
 
-			case 'tool': {
-				const tool = sub as RenderToolSub;
-
-				// ask_user 的工具调用渲染成提问卡片（它的「结果」是用户回答，不是工具输出）
-				if (tool.ask) {
-					return (
-						<AskUserCard
-							block={tool.ask}
-							onSubmit={(text) => void answerAskUser(convId, tool.callId, text)}
-						/>
-					);
-				}
-
-				// 工具调用 = 一行摘要（状态 + 工具名 + 理由 + 输出预览）+ 可展开的入参与完整输出。
-				const childCount = tool.children?.length ?? 0;
-				const mcp = parseMcpName(tool.name);
-				// 普通工具：输出短就直接展开（一眼看到结果），长的折起来。
-				// 子节点不再影响展开态 —— 它们已经不在这个 <details> 里了（见下面的注释）。
-				const toolBlock = (
-					<details
-						class={styles['tool-card']}
-						classList={{
-							[styles['is-error']]: tool.status === 'error',
-							[styles['is-mcp']]: !!mcp,
-						}}
-						open={openOverrides.get(`tool:${tool.callId}`) ?? (tool.status === 'error' || (!!tool.output && tool.output.length <= 240))}
-						ontoggle={(e) => openOverrides.set(`tool:${tool.callId}`, e.currentTarget.open)}
+			<Match when={subTypeEquals(sub, 'tool')}>
+				{(tool) => (
+					<Show
+						when={tool().ask}
+						fallback={renderToolGroup(tool)}
 					>
-						<summary class={styles['tool-head']}>
-							<span class={styles['tool-head-caret']}>▶</span>
-							<span class={styles['tool-status']}>
-								{tool.status === 'running' ? '⏳' : tool.status === 'success' ? '✓' : '✗'}
-							</span>
-							<Show
-								when={mcp}
-								fallback={<span class={styles['tool-name']}>{tool.name}</span>}
-							>
-								<span class={styles['tool-icon']}>
-									<McpIcon />
-								</span>
-								<span class={styles['tool-name']}>mcp:{mcp!.server}</span>
-								<span class={styles['tool-name-sub']}>tools/call · {mcp!.method}</span>
-							</Show>
-							<Show when={childCount > 0}>
-								{/* 子 Agent 渲染在这个块**下面**（同级），这里只提示它委托出去了几个 */}
-								<span class={styles['tool-owner']}>↳ {childCount} 个子 Agent</span>
-							</Show>
-							<Show when={tool.reason}>
-								<span class={styles['tool-reason']}>{tool.reason}</span>
-							</Show>
-							<Show when={mcp}>
-								<span class={styles['tool-chip']}>JSON-RPC</span>
-							</Show>
-							<Show
-								when={tool.output}
-								fallback={
-									<Show when={tool.status === 'running'}>
-										<span class={styles['tool-preview']}>执行中…</span>
-									</Show>
-								}
-							>
-								<span class={styles['tool-preview']}>
-									{tool.output.replace(/\s+/g, ' ').trim().slice(0, 120)}
-								</span>
-							</Show>
-						</summary>
-						<div class={styles['tool-body']}>
-							{/* MCP 卡用设计稿的「→ request / ← response」行；普通工具用「入参 / 输出」小标 */}
-							<Show
-								when={mcp}
-								fallback={
-									<>
-										<Show when={tool.args}>
-											<div class={styles['tool-section']}>入参</div>
-											<pre class={styles['tool-pre']}>{truncateWithNote(tool.args, TOOL_ARGS_LIMIT)}</pre>
-										</Show>
-										<Show when={tool.output}>
-											<div class={styles['tool-section']}>输出</div>
-											<pre class={styles['tool-pre']}>{truncateWithNote(tool.output, TOOL_OUTPUT_LIMIT)}</pre>
-										</Show>
-									</>
-								}
-							>
-								<Show when={tool.args}>
-									<div class={styles['tool-line']}>→ request</div>
-									<pre class={styles['tool-pre']}>{truncateWithNote(tool.args, TOOL_ARGS_LIMIT)}</pre>
-								</Show>
-								<Show when={tool.output}>
-									<div class={`${styles['tool-line']} ${styles['is-response']}`}>
-										← response · {tool.status === 'success' ? '200 OK' : tool.status} · {fmtSize(tool.output.length)}
-									</div>
-									<pre class={styles['tool-pre']}>{truncateWithNote(tool.output, TOOL_OUTPUT_LIMIT)}</pre>
-								</Show>
-							</Show>
-							<Show when={!tool.args && !tool.output}>
-								<div class={styles['tool-hint']}>
-									{tool.status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
-								</div>
-							</Show>
-						</div>
-					</details>
-				);
-
-				// ⚠️ 委托 / 唤醒类工具：子 Agent **不嵌在上面那个 <details> 里**，而是同级渲染在它下面。
-				// 理由：① 折叠工具块不该把整棵子 Agent 树一起藏起来
-				//       ② 子 Agent 要有自己的左边距，使「哪一块是一个完整的子 Agent」从结构上就看得出来
-				if (childCount === 0) return toolBlock;
-				return (
-					<div class={styles['agent-tool-group']}>
-						{toolBlock}
-						<div class={styles['agent-tool-children']}>
-							<For each={tool.children}>{(child) => renderNode(() => child, false)}</For>
-						</div>
-					</div>
-				);
-			}
-		}
-	};
+						{/* ask_user 的工具调用渲染成提问卡片（它的「结果」是用户回答，不是工具输出） */}
+						{(ask) => (
+							<AskUserCard
+								block={ask()}
+								onSubmit={(text) => void answerAskUser(convId, tool().callId, text)}
+							/>
+						)}
+					</Show>
+				)}
+			</Match>
+		</Switch>
+	);
 
 	/**
 	 * 「用户 → assistant」回合边界 —— AGENT 头就插在这些块前面。
@@ -362,7 +398,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 			<Match when={blockTypeEquals(block, 'llm')}>
 				{(llm) => (
 					<div class={styles['block-llm']} oncontextmenu={(e) => openLlmBlockMenu(e, llm())}>
-						<For each={llm().subBlocks}>{(sub) => renderSubBlock(sub)}</For>
+						<Index each={llm().subBlocks}>{(sub) => renderSubBlock(sub)}</Index>
 						<Show when={llm().usages}>{(usages) => (
 							<>
 								<For each={usages()}>{(usage) => renderUsage(usage)}</For>

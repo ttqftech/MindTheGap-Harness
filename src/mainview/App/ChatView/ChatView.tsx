@@ -408,7 +408,7 @@ export default function ChatView() {
 
 		setInputText('');
 		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
-		openOverrides.clear();
+		// openOverrides.clear();
 		prevTree = null;
 		// 「发起 / 停止 / 回答」全在 runController 里，这里只负责把 UI 上的东西（输入文本、模型配置、工作目录）交给它
 		void startRun({

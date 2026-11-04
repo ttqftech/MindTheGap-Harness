@@ -393,12 +393,6 @@ type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> :
 
 /**
  * Agent 流式输出事件（SSE 推送）。
- *
- * ⭐ 每个「作用于某条消息」的事件都必须带 `messageId`——它等于该条目在 ctx 里的 `id`。
- * 前端把事件翻译成在飞条目时**只按 id 定位**，不再靠「尾部是不是 assistant」「内容前缀是否相同」
- * 这类猜测。`agent_start` 带的是该实例首条用户消息的 id。
- *
- * 不要嫌冗余：少了它，界面就得重新发明一条启发式规则，而启发式在「连续两条相同内容」时必然出错。
  */
 export type AgentStreamEvent = StreamEventBase & (
 	| { type: 'text'; agentInstanceId: string; messageId: string; chunk: string }
