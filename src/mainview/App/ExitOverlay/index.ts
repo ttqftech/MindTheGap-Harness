@@ -94,7 +94,7 @@ async function runExit(theme: ExitTheme, preview: boolean) {
 		return;
 	}
 	console.log('[Exit] 退场完成');
-	void rpc.request.exitFinished();
+	void rpc.request.exitStage({ stage: 'finished' });
 }
 
 /** 真实退场：主进程截获关闭事件后推过来 */

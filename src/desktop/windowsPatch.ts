@@ -34,12 +34,98 @@ const ADD_STYLE = WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 /** 标识：electrobun 'hidden' 会建 WS_POPUP 窗口，那种情况下本补丁无法救回 */
 const WS_POPUP = 0x80000000;
 
+/** 退场动画解限时要摘掉的样式位（系统只对这两位的窗口强制最小跟踪尺寸） */
+const WS_CAPTION = 0x00c00000;
+const WS_THICKFRAME = 0x00040000;
+
+/** 主窗口标题（定位窗口用） */
+const WINDOW_TITLE = 'MindTheGap-Harness';
+
 /** SetWindowPos 标志 */
 const SWP_NOSIZE = 0x0001;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOZORDER = 0x0004;
 const SWP_FRAMECHANGED = 0x0020; // 必须带，否则 DWM 不会重算非客户区
 const SWP_NOACTIVATE = 0x0010;
+
+// #region 定位窗口
+
+/** 定位主窗口：先按标题找；electrobun 注册的窗口类名是 BasicWindowClass，作为兜底 */
+function locateWindow(FindWindowA: any, windowTitle: string): any {
+	const titleBuf = Buffer.from(`${windowTitle}\0`, 'utf8');
+	let hwnd: any = null;
+	try {
+		hwnd = FindWindowA(null, titleBuf);
+	} catch {
+		hwnd = null;
+	}
+	if (!hwnd) {
+		const classBuf = Buffer.from('BasicWindowClass\0', 'utf8');
+		try {
+			hwnd = FindWindowA(classBuf, null);
+		} catch {
+			hwnd = null;
+		}
+	}
+	return hwnd;
+}
+
+// #endregion
+
+// #region 退场动画：临时解除系统最小尺寸
+
+/**
+ * 退场动画要把外壳收到 1x1，但带 WS_CAPTION|WS_THICKFRAME 的窗口会被 Win32 钳住：
+ * `SetWindowPos` 不管传多小，外框都不会小于系统最小跟踪尺寸 `SM_CXMINTRACK/SM_CYMINTRACK`
+ * （本机实测 136x39 物理像素 → 实际生效 ~131x36；纯系统行为，与 electrobun 无关）。
+ *
+ * 依据：`WM_GETMINMAXINFO.ptMinTrackSize` 只在窗口带标题栏 / 可缩放边框时才被系统套用。
+ * 实测同一窗口去掉这两位（转 WS_POPUP）后，SetWindowPos 能一路收到 1x1。
+ * 所以动画期间临时摘掉这两位，预览结束再写回原样式。
+ *
+ * ⚠️ 副作用：WS_POPUP 没有 DWM 投影与 Win11 圆角，所以只在「终点会小于系统最小尺寸」时调用
+ * （见 ExitOverlay/shell.ts），位移型主题（turnstile）不碰它。
+ */
+let savedStyle: number | null = null;
+
+export async function setWindowFrameUnlocked(unlocked: boolean): Promise<void> {
+	if (process.platform !== 'win32') return;
+
+	try {
+		// @ts-ignore 同上：不为 bun:ffi 写全局 declare module
+		const ffi: any = await import('bun:ffi');
+		const user32 = ffi.dlopen('user32.dll', {
+			FindWindowA: { args: ['ptr', 'ptr'], returns: 'ptr' },
+			GetWindowLongPtrW: { args: ['ptr', 'i32'], returns: 'i64' },
+			SetWindowLongPtrW: { args: ['ptr', 'i32', 'i64'], returns: 'i64' },
+			SetWindowPos: { args: ['ptr', 'ptr', 'i32', 'i32', 'i32', 'i32', 'u32'], returns: 'i32' },
+		});
+		const { FindWindowA, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos } = user32.symbols;
+
+		const hwnd = locateWindow(FindWindowA, WINDOW_TITLE);
+		if (!hwnd) return;
+
+		if (unlocked) {
+			if (savedStyle !== null) return;	// 已经解过，别把 WS_POPUP 当成原样式存下来
+			const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE)) >>> 0;
+			savedStyle = style;
+			const popup = ((style & ~(WS_CAPTION | WS_THICKFRAME)) | WS_POPUP) >>> 0;
+			SetWindowLongPtrW(hwnd, GWL_STYLE, BigInt(popup));
+		} else {
+			if (savedStyle === null) return;
+			SetWindowLongPtrW(hwnd, GWL_STYLE, BigInt(savedStyle));
+			savedStyle = null;
+		}
+
+		// 必须带 SWP_FRAMECHANGED，否则系统不会按新样式重算非客户区（最小尺寸限制也就还在）
+		SetWindowPos(hwnd, null, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+		logMsg(`[win32] 退场动画${unlocked ? '解除' : '恢复'}窗口最小尺寸限制`);
+	} catch (e) {
+		logMsg(`[win32] 窗口解限不可用（退场动画会停在系统最小尺寸）: ${(e as Error).message}`);
+	}
+}
+
+// #endregion
 
 /**
  * 给主窗口补回系统窗口样式位（Windows 专属；其他平台直接跳过）。
@@ -65,22 +151,7 @@ export async function patchFramelessWindowFrame(windowTitle: string): Promise<vo
 		});
 		const { FindWindowA, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos } = user32.symbols;
 
-		// 定位窗口：先按标题找；electrobun 注册的窗口类名是 BasicWindowClass，作为兜底
-		const titleBuf = Buffer.from(`${windowTitle}\0`, 'utf8');
-		let hwnd: any = null;
-		try {
-			hwnd = FindWindowA(null, titleBuf);
-		} catch {
-			hwnd = null;
-		}
-		if (!hwnd) {
-			const classBuf = Buffer.from('BasicWindowClass\0', 'utf8');
-			try {
-				hwnd = FindWindowA(classBuf, null);
-			} catch {
-				hwnd = null;
-			}
-		}
+		const hwnd = locateWindow(FindWindowA, windowTitle);
 		if (!hwnd) {
 			logMsg('[win32] 未定位到主窗口，跳过窗口样式补丁');
 			return;

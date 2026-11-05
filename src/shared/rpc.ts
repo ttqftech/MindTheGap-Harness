@@ -98,9 +98,21 @@ export interface AppRPC {
                 params: { x: number; y: number; width: number; height: number };
                 response: RpcResult<void>;
             };
-            /** 前端告知：退场动画 + 外壳动效都走完了，可以停后端退出了 */
-            exitFinished: {
-                params: undefined;
+            /**
+             * 退场动画专用：临时解除 / 恢复窗口的系统最小尺寸限制。
+             * Win32 会把带标题栏·可缩放边框的窗口钳在 SM_CXMINTRACK（实测 ~131x36），转成 WS_POPUP 才能收到 1x1。见 desktop/windowsPatch.ts
+             */
+            windowSetFrameUnlocked: {
+                params: { unlocked: boolean };
+                response: RpcResult<void>;
+            };
+            /**
+             * 前端报告退场进度（全程只有这一条，别再为每个时点加一条 RPC）。
+             *   'collapse' = 外壳开始收、画面已进入尾声 → 主进程先停会话与 Service
+             *   'finished' = 动画放完 → 主进程关窗口、退进程
+             */
+            exitStage: {
+                params: { stage: 'collapse' | 'finished' };
                 response: RpcResult<void>;
             };
         };

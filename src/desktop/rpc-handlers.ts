@@ -13,7 +13,8 @@ import { Utils } from "electrobun/main";
 import type { BrowserWindow } from "electrobun/main";
 import type { RpcResult } from "@shared/rpc";
 import { version } from "@shared/buildInfo";
-import { notifyExitFinished } from "./exitSequence";
+import { reportExitStage } from "./exitSequence";
+import { setWindowFrameUnlocked } from "./windowsPatch";
 import type { ServiceHandle } from "./service";
 
 // #region 主窗口引用（见文件头说明）
@@ -154,10 +155,27 @@ export const windowHandlers = {
 			mainWindow?.setFrame(params.x, params.y, Math.max(1, params.width), Math.max(1, params.height));
 		}),
 
-	/** 前端退场动画 + 外壳动效都已走完 → 收尾退出 */
-	exitFinished: (): RpcResult<void> =>
+	/**
+	 * 退场动画解限：系统会把带 caption/thickframe 的窗口钳在最小跟踪尺寸（~131x36），
+	 * 收不到 1x1。这里临时把窗口转成 WS_POPUP，动画结束（预览）再还原。
+	 */
+	windowSetFrameUnlocked: async (params: { unlocked: boolean }): Promise<RpcResult<void>> => {
+		try {
+			await setWindowFrameUnlocked(params.unlocked);
+			return ok(undefined);
+		} catch (e: any) {
+			return fail(e?.message ?? String(e));
+		}
+	},
+
+	/**
+	 * 前端报告退场进度。只有这一个入口（不再为每个时点加一条 RPC）：
+	 *   collapse = 外壳开始收 → 先停会话与 Service，窗口留着放完动画
+	 *   finished = 动画放完 → 关窗、退进程
+	 */
+	exitStage: (params: { stage: 'collapse' | 'finished' }): RpcResult<void> =>
 		safe(() => {
-			notifyExitFinished();
+			reportExitStage(params.stage);
 		}),
 
 	windowIsMaximized: (): RpcResult<boolean> =>
@@ -181,7 +199,8 @@ export function buildRpcHandlers() {
 			windowIsMaximized: windowHandlers.windowIsMaximized,
 			windowGetFrame: windowHandlers.windowGetFrame,
 			windowSetFrame: windowHandlers.windowSetFrame,
-			exitFinished: windowHandlers.exitFinished,
+			windowSetFrameUnlocked: windowHandlers.windowSetFrameUnlocked,
+			exitStage: windowHandlers.exitStage,
 		},
 		messages: {
 			log: ({ level, msg }: { level: string; msg: string }) => {

@@ -55,11 +55,35 @@ export async function createShellAnimator(preview: boolean): Promise<ShellAnimat
 	let frame0: Frame | null = null;
 	const frame = async (): Promise<Frame> => (frame0 ??= await getWindowFrame());
 
+	/** 本次退场是否解过锁（主进程侧解/还原都是幂等的，这里只是省一次 RPC） */
+	let unlocked = false;
+
+	/** 外壳是否已经开始动（= 已经通知主进程「可以先停后端了」） */
+	let moved = false;
+
 	return {
 		preview,
 
 		async run(shape: FrameShape, durationMs: number) {
-			const f0 = await frame();
+			const f0 = await frame();	// 动画开始时窗口的外形尺寸
+			const end = shape(1, f0);	// 动画结束时窗口的外形尺寸
+
+			// 外壳第一次动起来 = 退场进入尾声（该演的画面已经演完），先让主进程停会话与后端，窗口留着放完剩下的动画。
+			// 不 await：停后端不耽误这一帧。预览只是看效果、应用还要继续用，绝不能真去停后端。
+			if (!preview && !moved) {
+				moved = true;
+				void rpc.request.exitStage({ stage: 'collapse' });
+			}
+
+			if (!unlocked && (end.width < 200 || end.height < 120)) {
+				// 终点低于系统最小尺寸（实测 ~131x36）时需要临时解限（这会临时使投影消失）
+				try {
+					unlocked = (await rpc.request.windowSetFrameUnlocked({ unlocked: true })).ok;
+				} catch {
+					unlocked = false;
+				}
+			}
+
 			return new Promise<void>((resolve) => {
 				const t0 = Date.now();
 				const timer = setInterval(() => {
@@ -75,6 +99,14 @@ export async function createShellAnimator(preview: boolean): Promise<ShellAnimat
 		},
 
 		async restore() {
+			if (unlocked) {
+				unlocked = false;
+				try {
+					await rpc.request.windowSetFrameUnlocked({ unlocked: false });
+				} catch {
+					/* 预览收尾失败无所谓：下次预览会重新解/还原 */
+				}
+			}
 			void rpc.request.windowSetFrame(clamp(await frame()));
 		},
 	};

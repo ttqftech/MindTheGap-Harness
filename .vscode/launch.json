@@ -18,13 +18,6 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Hutch Dev",
-			"type": "node",
-			"request": "launch",
-			"program": "${workspaceFolder}/scripts/devWindows.cjs",
-			"console": "integratedTerminal"
-		},
-		{
 			"name": "Debug Service (:18999，代码中指定的默认端口)",
 			"type": "node",
 			"request": "launch",
@@ -53,6 +46,13 @@
 			"resolveSourceMapLocations": ["${workspaceFolder}/dist/MTGService/**/*.mjs"],
 			"skipFiles": ["<node_internals>/**"],
 			"console": "integratedTerminal"
-		}
+		},
+		{
+			"name": "Hutch Dev（解决 Windows vscode 终端启动 hutch 会卡住的问题）",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/scripts/devWindows.cjs",
+			"console": "integratedTerminal"
+		},
 	]
 }

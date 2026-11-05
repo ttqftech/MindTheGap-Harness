@@ -1,7 +1,7 @@
 import { BrowserWindow, BrowserView, Updater } from 'electrobun/main';
 import { buildRpcHandlers, setMainWindow, setServiceHandle } from './rpc-handlers';
-import { installExitSequence } from './exitSequence';
-import { ensureService, cancelAllRuns, stopService, type ServiceHandle } from './service';
+import { attachExit } from './exitSequence';
+import { ensureService } from './service';
 import { patchFramelessWindowFrame } from './windowsPatch';
 import { logMsg } from '../shared/utils';
 import type { AppRPC } from '../shared/rpc';
@@ -27,7 +27,6 @@ const rpc = BrowserView.defineRPC<AppRPC>({
 
 // 创建主窗口
 let mainWindow: BrowserWindow | null = null;
-let MTGService: ServiceHandle | null = null;
 
 async function createMainWindow() {
 	async function getMainViewUrl(): Promise<string> {
@@ -83,21 +82,12 @@ async function createMainWindow() {
 	// 窗口控制类 RPC 需要实例，创建后再注入（详见 rpc-handlers.ts 文件头）
 	setMainWindow(mainWindow);
 
-	// 关闭拦截：所有关闭路径（右上角 / Alt+F4 / 系统菜单 / 任务栏）都先走退场序列
-	installExitSequence({
-		getWindow: () => mainWindow,
-		notifyFrontend: () => {
-			rpc.send.exitSequence({});	// 通过 RPC 通知前端退出序列
-			mainWindow?.webview.executeJavascript('window.__mtgExitSequence?.()');	// 直接往页面打脚本 —— dev 下 HMR 换掉模块后 Electroview 不会重建，message handler 可能还是旧的（没注册 exitSequence），需要手动调用
-		},
-		// 停会话 / 停服务都走 HTTP：主进程不 import 任何 service 代码（见 service.ts 文件头）
-		stopAllRuns: () => {
-			void cancelAllRuns();
-		},
-		stopServer: () => {
-			// 只停自己 spawn 的那个；adopt 的调试服务（开发者手动起的）不碰
-			void stopService(MTGService);
-		},
+	// 关闭拦截：所有关闭路径（右上角 / Alt+F4 / 系统菜单 / 任务栏）都先走退场序列。
+	// notifyFrontend 打两条路：RPC message（正常路径）+ 直接往页面打脚本
+	// （dev 下 HMR 换掉模块后 Electroview 不会重建，message handler 可能还是旧的，得手动调）
+	attachExit(mainWindow, () => {
+		rpc.send.exitSequence({});
+		mainWindow?.webview.executeJavascript('window.__mtgExitSequence?.()');
 	});
 
 	// Windows：给无边框窗口补回系统窗口样式位，拿回投影 / 圆角 / snap（详见 windowsPatch.ts 文件头）
@@ -113,9 +103,8 @@ async function createMainWindow() {
 // 反过来（先建窗后起服务）会让前端首波 HTTP 请求撞上一个还没监听的服务。
 // 主进程自己不读设置 —— settings 由 Service 进程自己加载（src/service/index.ts）。
 logMsg('[main] 正在启动 Service');
-ensureService({ channel: channel ?? 'unknown', isDev: isDevChannel }).then((service) => {
-	MTGService = service;
-	setServiceHandle(MTGService);	// 把托管句柄交给 RPC：前端要能问「这服务是本应用起的，还是接入的现有服务」
-});
+ensureService({ channel: channel ?? 'unknown', isDev: isDevChannel }).then(setServiceHandle);
+// setServiceHandle：把托管句柄交给 RPC，前端要能问「这服务是本应用起的，还是接入的现有服务」
+// （退场要停的那个句柄由 service.ts 自己记，见 ownService）
 
 await createMainWindow();

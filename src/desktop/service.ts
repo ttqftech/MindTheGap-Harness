@@ -33,6 +33,9 @@ export interface ServiceHandle {
 	child?: ChildProcess;
 }
 
+/** 本进程 spawn 的那个（adopt 的不记）：退场时只收自己的，调试用的外部服务不碰 */
+let ownService: ServiceHandle | null = null;
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** 探活：可达且回 { ok: true } 才算健康。不用 AbortController —— Cottontail 的 fetch 是自研实现， race 兜底更稳 */
@@ -149,7 +152,8 @@ export async function ensureService(options: { channel: string; isDev: boolean }
 		}
 		if (await probeHealth(1000)) {
 			logMsg(`[service] Service 就绪（pid=${child.pid}）`);
-			return { mode: 'spawned', child };
+			ownService = { mode: 'spawned', child };
+			return ownService;
 		}
 		await sleep(READY_INTERVAL_MS);
 	}
@@ -196,8 +200,9 @@ export async function cancelAllRuns(): Promise<number> {
  * ⚠️ 不能只靠 kill：Windows 上 child.kill() 是 TerminateProcess，
  *    优雅停机里的 flushAll / stopAll 都不会跑，丢 700ms 防抖窗内的写盘、留 MCP 孤儿。
  */
-export async function stopService(handle: ServiceHandle | null): Promise<void> {
-	if (!handle || handle.mode !== 'spawned' || !handle.child) return;
+export async function stopService(): Promise<void> {
+	const handle = ownService;
+	if (!handle?.child) return;
 	const child = handle.child;
 	if (child.exitCode !== null) return;
 

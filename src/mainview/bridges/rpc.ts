@@ -50,7 +50,8 @@ const mockHandlers = {
 		data: { x: 0, y: 0, width: 1280, height: 800 },
 	}),
 	windowSetFrame: (): RpcResult<void> => ({ ok: true, data: undefined }),
-	exitFinished: (): RpcResult<void> => ({ ok: true, data: undefined }),
+	windowSetFrameUnlocked: (): RpcResult<void> => ({ ok: true, data: undefined }),
+	exitStage: (): RpcResult<void> => ({ ok: true, data: undefined }),
 };
 
 // #endregion
@@ -76,7 +77,8 @@ interface RpcApi {
 		windowIsMaximized: RequestFn<undefined, RpcResult<boolean>>;
 		windowGetFrame: RequestFn<undefined, RpcResult<{ x: number; y: number; width: number; height: number }>>;
 		windowSetFrame: RequestFn<{ x: number; y: number; width: number; height: number }, RpcResult<void>>;
-		exitFinished: RequestFn<undefined, RpcResult<void>>;
+		windowSetFrameUnlocked: RequestFn<{ unlocked: boolean }, RpcResult<void>>;
+		exitStage: RequestFn<{ stage: 'collapse' | 'finished' }, RpcResult<void>>;
 	};
 	send: {
 		log: (payload: { level: 'info' | 'warn' | 'error'; msg: string }) => void;
