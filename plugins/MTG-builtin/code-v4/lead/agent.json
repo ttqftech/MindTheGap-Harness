@@ -1,0 +1,19 @@
+{
+	"id": "lead",
+	"name": "负责人",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": "[mode.rLead]",
+	"delegatable": "[mode.rootAgents]",
+	"ability": {
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search", "shell",
+				"task_list_read", "task_list_write",
+				"ask_user",
+				"delegate", "resume_pending_child", "resume_completed_child", "ask_child"
+			],
+			"deny": "[mode.denyTools]"
+		}
+	}
+}

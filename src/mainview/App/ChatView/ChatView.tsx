@@ -11,9 +11,10 @@
    设计稿：docs/设计-ctx唯一真相与动态投影.md（§5.3 是 SSE → 条目的翻译表）
    ========================================================================== */
 
-import { createEffect, createMemo, createSignal, Show, onCleanup } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
-import type { Folder, ModelConfig } from '@shared/agent';
+import type { Folder, ModelConfig, ModeParamControl, ParamValue } from '@shared/agent';
+import { findOption, resolveModeParams, sameParamValue } from '@shared/modeParams';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/logic/projection';
 import type { RenderAgentNode } from '@mainview/logic/projection';
@@ -279,6 +280,54 @@ export default function ChatView() {
 
 	// #endregion
 
+	// #region 模式参数（mode.json 的 form → 输入框下方的动态控件）
+
+	/** 当前模式的表单定义（`form`）与默认变量表（`params`），都来自 mode.json */
+	const currentMode = () => appState.modes.find((m) => m.id === appState.currentModeId);
+	/** 真要渲染的控件：`hidden` 的只当变量用，不出现在界面上 */
+	const paramControls = createMemo(() => (currentMode()?.form ?? []).filter((c) => !c.hidden && c.options.length > 0));
+	/**
+	 * 本次生效的变量表 + 每个控件的落点。
+	 *
+	 * 口径与后端完全一致（同一个 `resolveModeParams`）：控件取自己存的值（没有就 `default` /
+	 * `params` / 第一个选项），按 `form` 顺序写进变量表；存的值可以**不在选项里**（来自另一档的联动）。
+	 * 选中那档承诺的变量如果和最终表对不上，`overridden` 为真，界面上打 `*`（只影响显示）。
+	 */
+	const paramState = createMemo(() => resolveModeParams(currentMode() ?? {}, appState.ui.modeParams[appState.currentModeId] ?? {}));
+	const paramVars = () => paramState().vars;
+
+	/** 控件当前值的显示文本：能对上选项就用它的 label（值可能来自别的参数，不一定是用户点过的那项） */
+	const paramLabel = (control: ModeParamControl): string => {
+		const option = findOption(control, paramVars()[control.key]);
+		if (option) return option.label;
+		const raw = paramVars()[control.key];
+		if (raw === undefined) return '—';
+		return typeof raw === 'string' ? raw : JSON.stringify(raw);
+	};
+
+	/** 这一项选中的那档被后面的参数改过没 */
+	const isOverridden = (control: ModeParamControl): boolean => paramState().byKey[control.key]?.overridden ?? false;
+
+	const openParamMenu = (control: ModeParamControl, el: HTMLElement) => {
+		const current = paramVars()[control.key];
+		const menu: MenuItem[] = control.options.map((opt, index) => ({
+			type: 'radio' as const,
+			value: String(index),
+			label: opt.label,
+			tooltip: opt.description,
+			checked: sameParamValue(opt.value, current),
+		}));
+		openChipMenu(menu, (picked) => {
+			const opt = control.options[Number(picked)];
+			if (opt) actions.setModeParam(appState.currentModeId, control.key, opt.value);
+		}, el);
+	};
+
+	/** 本轮 run 带给后端的参数：只发**用户显式选过**的，其余由后端按 mode.json 的默认值算 */
+	const runParams = (): Record<string, ParamValue> => appState.ui.modeParams[appState.currentModeId] ?? {};
+
+	// #endregion
+
 	// #region 内置 mock 开关（开发用）
 
 	/** 剧本下拉：选项由后端给（`GET /api/settings/mock` 里带 scenarios），前端不重复维护 */
@@ -417,6 +466,7 @@ export default function ChatView() {
 			modeId: appState.currentModeId,
 			runningDir,
 			model: modelConfig,
+			params: runParams(),
 		});
 	};
 
@@ -642,6 +692,33 @@ export default function ChatView() {
 							</button>
 						</Show>
 					</div>
+
+					{/* 模式参数：由当前 mode.json 的 form 动态生成，选项通过变量覆盖 Agent 配置与提示词 */}
+					<Show when={paramControls().length > 0}>
+						<div class={styles['input-params']}>
+							<For each={paramControls()}>
+								{(control) => (
+									<button
+										class={styles['param-chip']}
+										title={control.description ?? `${control.label}（覆盖变量 ${control.key}）`}
+										disabled={isGenerating()}
+										onclick={(e) => openParamMenu(control, e.currentTarget)}
+									>
+										<span class={styles['param-chip-label']}>{control.label}</span>
+										<span class={styles['param-chip-value']}>{paramLabel(control)}</span>
+										<Show when={isOverridden(control)}>
+											<span
+												class={styles['param-chip-star']}
+												title="这一档承诺的配置被后面的参数改过（表单里越靠后优先级越高）"
+											>
+												*
+											</span>
+										</Show>
+									</button>
+								)}
+							</For>
+						</div>
+					</Show>
 				</div>
 
 				<div class={styles['input-hint']}>enter 发送 · shift + enter 换行 · esc 中断运行</div>

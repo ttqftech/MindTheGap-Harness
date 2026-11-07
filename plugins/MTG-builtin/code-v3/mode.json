@@ -1,0 +1,160 @@
+{
+	"id": "code-v3",
+	"name": "编码 v3",
+	"description": "按任务规模换角色：小活一个人从头做到尾，大活才分层协作。工具安全性控制写入类工具",
+	"rootAgent": "[rootAgentId]",
+	"maxDepth": "[maxDepth]",
+	"taskList": { "enabled": "[taskList]", "writable": "[taskList]" },
+	"mcpDisabled": false,
+	"limits": { "totalRounds": "[totalRounds]", "agentInstanceRounds": "[agentInstanceRounds]", "warnAtRemaining": 3 },
+	"params": {
+		"intensity": "medium",
+		"safety": "guarded",
+		"rootAgentId": "lead",
+		"maxDepth": 2,
+		"totalRounds": 40,
+		"agentInstanceRounds": 14,
+		"rLead": 1,
+		"rEngineer": 1,
+		"rPlan": 0,
+		"rReview": 0,
+		"taskList": true,
+		"rootAgents": ["engineer", "verify"],
+		"engineerAgents": [],
+		"hasPlan": false,
+		"hasReview": false,
+		"staged": false,
+		"readOnly": false,
+		"denyTools": ["file_delete", "file_rename"]
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "小改动一个人做完最省；跨模块、有隐性约定、要保证不回归的任务才值得加人",
+			"options": [
+				{
+					"label": "低 · 一个人",
+					"value": "low",
+					"description": "单实例从读到改到验，没有子 Agent。适合改文案、调常量、修一个明确报错、单文件功能",
+					"vars": {
+						"rootAgentId": "solo",
+						"maxDepth": 1,
+						"totalRounds": 24,
+						"agentInstanceRounds": 14,
+						"rLead": 0,
+						"rEngineer": 0,
+						"rPlan": 0,
+						"rReview": 0,
+						"taskList": false,
+						"rootAgents": [],
+						"engineerAgents": [],
+						"hasPlan": false,
+						"hasReview": false,
+						"staged": false
+					}
+				},
+				{
+					"label": "中 · 分工",
+					"value": "medium",
+					"description": "负责人只读 + 判断，执行交工程师，独立验一遍。适合多文件改动、要跑构建/测试的任务",
+					"vars": {
+						"rootAgentId": "lead",
+						"maxDepth": 2,
+						"totalRounds": 40,
+						"agentInstanceRounds": 14,
+						"rLead": 1,
+						"rEngineer": 1,
+						"rPlan": 0,
+						"rReview": 0,
+						"taskList": true,
+						"rootAgents": ["engineer", "verify"],
+						"engineerAgents": [],
+						"hasPlan": false,
+						"hasReview": false,
+						"staged": false
+					}
+				},
+				{
+					"label": "高 · 先谋",
+					"value": "high",
+					"description": "加探索与计划：先查清现状和影响面，按阶段改，最后审一遍。适合陌生模块、跨层改动",
+					"vars": {
+						"rootAgentId": "lead",
+						"maxDepth": 3,
+						"totalRounds": 70,
+						"agentInstanceRounds": 18,
+						"rLead": 1,
+						"rEngineer": 2,
+						"rPlan": 1,
+						"rReview": 1,
+						"taskList": true,
+						"rootAgents": ["explore", "plan", "engineer", "verify", "review"],
+						"engineerAgents": ["explore"],
+						"hasPlan": true,
+						"hasReview": true,
+						"staged": true
+					}
+				},
+				{
+					"label": "极高 · 兜底",
+					"value": "ultra",
+					"description": "分阶段推进、每阶段增量验证、需求逐条回读。适合上线前的大改、动数据结构或公共接口",
+					"vars": {
+						"rootAgentId": "lead",
+						"maxDepth": 4,
+						"totalRounds": 110,
+						"agentInstanceRounds": 22,
+						"rLead": 2,
+						"rEngineer": 3,
+						"rPlan": 1,
+						"rReview": 1,
+						"taskList": true,
+						"rootAgents": ["explore", "plan", "engineer", "verify", "review"],
+						"engineerAgents": ["explore", "engineer"],
+						"hasPlan": true,
+						"hasReview": true,
+						"staged": true
+					}
+				}
+			]
+		},
+		{
+			"key": "safety",
+			"label": "工具安全性",
+			"type": "select",
+			"description": "按「移除哪些写盘工具」控制风险",
+			"options": [
+				{
+					"label": "只读",
+					"value": "readonly",
+					"description": "移除写入、编辑、新建、删除、改名：只出结论与补丁文本",
+					"vars": {
+						"readOnly": true,
+						"denyTools": ["file_write", "file_edit", "file_create", "file_delete", "file_rename"]
+					}
+				},
+				{
+					"label": "可控",
+					"value": "guarded",
+					"description": "可写可改可新建，删除与改名不可用",
+					"vars": {
+						"readOnly": false,
+						"denyTools": ["file_delete", "file_rename"]
+					}
+				},
+				{
+					"label": "完全",
+					"value": "full",
+					"description": "全开，删除与改名由提示词里的确认规则兜底",
+					"vars": {
+						"readOnly": false,
+						"denyTools": []
+					}
+				}
+			]
+		}
+	],
+	"ui": { "icon": "🧩", "accent": "blue" }
+}

@@ -10,9 +10,11 @@
  * 注意：主进程运行时是 Cottontail（JSC），不是 Bun。所以必须用 node:* 系列 API，不能用 Bun.xxx。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync, openSync, readSync, closeSync, rmSync } from 'node:fs';
 import { resolve, dirname, join, isAbsolute, relative, extname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { FromSchema } from 'json-schema-to-ts';
 import type {
 	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool,
@@ -138,8 +140,12 @@ export function clearDynamicTools(sourceId: string): void {
  * - MCP 工具按 mcpDisabled 过滤（agent 级优先，否则回退 mode 级，默认开放）
  */
 export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefinition: AgentDefinition, mode: ModeDefinition): AgentTool[] {
-	const allow = agentDefinition.ability.tools?.allow;
-	const deny = new Set(agentDefinition.ability.tools?.deny ?? []);
+	// ⚠️ 这两个字段可能是「模式参数引用」（`"[mode.writeTools]"`）：加载期是字符串，
+	//    运行时才被 `applyModeVars` 换成数组。这里必须按数组判，别对字符串做 includes / new Set（会退化成字符级）。
+	const rawAllow = agentDefinition.ability.tools?.allow as unknown;
+	const rawDeny = agentDefinition.ability.tools?.deny as unknown;
+	const allow = Array.isArray(rawAllow) ? (rawAllow as string[]) : undefined;
+	const deny = new Set(Array.isArray(rawDeny) ? (rawDeny as string[]) : []);
 	const depthExhausted = agentInstance.depth >= mode.maxDepth;
 
 	const builtin = Array.from(toolRegistry.values()).filter((t) => {
@@ -361,6 +367,52 @@ function controlRatio(buf: Buffer): number {
 		else if (b === 0x7f) n++;
 	}
 	return n / buf.length;
+}
+
+/**
+ * 写回前的语法体检。
+ *
+ * 行替换（`file_edit`）最容易出的错是「改完少了半个括号/引号」——文件一坏，整个项目的测试全挂，而模型要花好几轮才意识到是自己刚刚那次编辑造成的。
+ * 这里在落盘之前先体检一遍，语法坏了就**不写**并返回错误，磁盘上的文件保持原样。一次 `node --check` 远比一轮 LLM 便宜。
+ */
+function syntaxCheck(path: string, content: string): { ok: true } | { ok: false; message: string } {
+	const ext = extname(path).toLowerCase();
+	if (ext === '.json') {
+		try {
+			JSON.parse(content);
+			return { ok: true };
+		} catch (e) {
+			return { ok: false, message: `JSON 解析失败：${(e as Error).message}` };
+		}
+	}
+	// 只拦 node 自己能静态检查的扩展名；TS/TSX 不是 JS 的子集，跳过
+	if (!['.js', '.mjs', '.cjs'].includes(ext)) return { ok: true };
+
+	const tmp = join(tmpdir(), `mtg-syntax-${randomUUID()}${ext}`);
+	try {
+		writeFileSync(tmp, content, 'utf-8');
+		const res = spawnSync(process.execPath, ['--check', tmp], { encoding: 'utf-8', timeout: 10_000, windowsHide: true });
+		if (res.status === 0) return { ok: true };
+		const raw = String(res.stderr || '');
+		const lines = raw.split('\n').filter(Boolean);
+		// node --check 的报错是「文件名:行号 / 源码行 / 脱字符 / SyntaxError: … / 堆栈」。
+		// 只取前面那半截——堆栈全是 node 内部帧，占了行数会把真正有用的源码行挤出去。
+		const errAt = lines.findIndex((l) => /^\s*(Syntax)?Error\b/.test(l));
+		const frame = (errAt >= 0 ? lines.slice(Math.max(0, errAt - 3), errAt + 1) : lines.slice(0, 4)).join('\n');
+		const line = raw.match(/:(\d+)\s*$/m)?.[1] ?? raw.match(/:(\d+)\n/)?.[1];
+		// 把出事那几行的内容一起给回去：否则模型为了看清自己刚刚写了什么，会先浪费一轮重新读文件。
+		const around = line ? content.split('\n').slice(Math.max(0, Number(line) - 3), Number(line) + 1).map((l, i) => ` ${Math.max(1, Number(line) - 2) + i}| ${l}`).join('\n') : '';
+		return {
+			ok: false,
+			message: `会让 ${path} 语法错误${line ? `（第 ${line} 行附近）` : ''}：\n${frame}${around ? `\n写入后那段长这样：\n${around}` : ''}`,
+		};
+	} catch {
+		return { ok: true }; // 体检本身失败时不阻塞写入
+	} finally {
+		try {
+			rmSync(tmp, { force: true });
+		} catch {}
+	}
 }
 
 /**
@@ -918,11 +970,59 @@ registerTool({
 			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 			// 已存在的文件沿用其行尾（整份覆盖不该把 CRLF 文件改成 LF）；新文件用给定的内容
 			const text = guard.exists ? applyEol(args.content as string, guard.eol) : (args.content as string);
+			const bad = syntaxCheck(path, text);
+			if (!bad.ok) {
+				return {
+					success: false,
+					content: `放弃写入：${bad.message}\n磁盘上的 ${path} 没动，请修好后重发整份内容。`,
+					error: 'SYNTAX_ERROR',
+				};
+			}
 			writeFileSync(path, encodeBuffer(text, guard.encoding, guard.bom));
 			const tail = guard.encoding === 'utf-8' ? '' : `（沿用原编码 ${guard.encoding}）`;
 			return { success: true, content: `File written: ${path}${tail}` };
 		} catch (err) {
 			return { success: false, content: `Failed to write file: ${(err as Error).message}`, error: (err as { code?: string }).code ?? 'WRITE_FAILED' };
+		}
+	},
+});
+
+registerTool({
+	name: 'file_append',
+	description:
+		'把一段文本追加到文件末尾（新调试用例、新条目这类「加在最后」的场景专用）。',
+		// '跟 file_edit 的区别：不需要先 file_read 数行号，一次调用就完事——省一轮，也省下那份文件内容常驻上下文。' +
+		// '插入中间某一行时不要用这个，用 file_edit。',
+	parameters: {
+		type: 'object',
+		properties: {
+			path: { type: 'string', description: '相对或绝对路径' },
+			content: { type: 'string', description: '要追加的内容' },
+		},
+		required: ['path', 'content'],
+	},
+	async execute(args, ctx) {
+		const path = resolvePath(args.path as string, ctx.runningDir);
+		try {
+			const guard = guardWritableFile(path);
+			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
+			const tail = (args.content as string).replace(/\r?\n$/, '');
+			// 原文件非空且没换行结尾时补一个，否则会把新内容粘到最后一行的屁股上
+			const prev = guard.exists ? readFileSync(path, guard.encoding === 'utf-8' ? 'utf-8' : guard.encoding as BufferEncoding) : '';
+			const lead = prev && !/\r?\n$/.test(prev) ? guard.eol : '';
+			const text = applyEol(prev + lead + tail + guard.eol, guard.eol);
+			const bad = syntaxCheck(path, text);
+			if (!bad.ok) {
+				return {
+					success: false,
+					content: `放弃写入：${bad.message}\n磁盘上的 ${path} 没动，请修好后重新追加。`,
+					error: 'SYNTAX_ERROR',
+				};
+			}
+			writeFileSync(path, encodeBuffer(text, guard.encoding, guard.bom));
+			return { success: true, content: `Appended ${tail.split('\n').length} lines to ${path}（现 ${text.split('\n').length - 1} 行）` };
+		} catch (err) {
+			return { success: false, content: `Failed to append file: ${(err as Error).message}`, error: (err as { code?: string }).code ?? 'APPEND_FAILED' };
 		}
 	},
 });
@@ -936,7 +1036,7 @@ registerTool({
 			path: { type: 'string', description: '相对或绝对路径' },
 			startLine: { type: 'integer', description: '起始行号（从 1 开始）' },
 			endLine: { type: 'integer', description: '结束行号（含）' },
-			newContent: { type: 'string', description: '替换后的新内容（可能是多行）' },
+			newContent: { type: 'string', description: '替换后的新内容（可能是多行）（整行覆盖，因此需带上原有的缩进（tab 或空格））' },
 		},
 		required: ['path', 'startLine', 'endLine', 'newContent'],
 	},
@@ -972,11 +1072,24 @@ registerTool({
 			const result = [...lines.slice(0, start), ...replacement, ...lines.slice(end)]
 				.map((l) => l.body + l.eol)
 				.join('');
+			const bad = syntaxCheck(path, result);
+			if (!bad.ok) {
+				return {
+					success: false,
+					content: `放弃写入：${bad.message}\n磁盘上的 ${path} 没动，请缩小要替换的行范围重来（通常是多删了个括号/引号，或 newContent 少了一行）。`,
+					error: 'SYNTAX_ERROR',
+				};
+			}
 			writeFileSync(path, encodeBuffer(result, guard.encoding, guard.bom));
 
+			const written = result.length === 0 ? [] : splitLines(result).slice(start, start + newLines.length);
+			const preview = written.map((l, i) => ` ${start + 1 + i}→${l.body}`).join('\n');
 			return {
 				success: true,
-				content: `Edited lines ${start + 1}-${end} in ${path}. Old: ${end - start} lines, New: ${newLines.length} lines.`,
+				content:
+					`Edited lines ${start + 1}-${end} in ${path}. Old: ${end - start} lines, New: ${newLines.length} lines.\n` +
+					`现在这一段的实际内容：\n${preview}`,
+				structured: { path, startLine: start + 1, endLine: end, lines: newLines.length },
 			};
 		} catch (err) {
 			return { success: false, content: `Failed to edit file: ${(err as Error).message}`, error: (err as { code?: string }).code ?? 'EDIT_FAILED' };
@@ -1068,11 +1181,14 @@ registerTool({
 	name: 'shell',
 	description: `在运行目录中执行 shell 命令。${
 		process.platform === 'win32'
-			? '当前运行环境是 Windows（shell 为 cmd.exe），请使用 Windows 兼容命令（如 dir、type、echo），不要用 Unix 专属命令（如 ls、date +%Y、grep -r）。'
+			? [
+					'当前运行环境是 Windows（shell 为 cmd.exe），请使用 Windows 兼容命令（如 dir、type、echo），不要用 Unix 专属命令（如 ls、date +%Y、grep -r）。',
+					// '实测踩过的坑，照下面写：临时环境变量要用 `set X=1 && node a.mjs`（写成 `X=1 node a.mjs` 会报「不是内部或外部命令」）；多条命令按顺序用 `&&` 串，不要用 `;`（不是分隔符）也不要用单个 `&`（会把前一条扔到后台，输出跟后一条搅在一起）；退出码在结果末尾（形如 [exit 2]），不要自己去 echo %ERRORLEVEL% 或 $?（拿不到）；不要试图用 `echo ... >> 文件` 写多行内容，换行会被截断、中文还会乱码——要往文件里写超过一行的东西就用 file_write / file_create。',
+				].join('\n')
 			: process.platform === 'darwin'
 				? '当前运行环境是 macOS（shell 为 /bin/sh），请使用 Unix 兼容命令（如 ls、cat、echo、grep）。'
 				: '当前运行环境是 Linux（shell 为 /bin/sh），请使用 Unix 兼容命令（如 ls、cat、echo、grep）。'
-	}`,
+		}\n超过一行的脚本先用 file_create 写成文件再运行——命令行里的换行会被截断。`,
 	parameters: {
 		type: 'object',
 		properties: {
@@ -1086,18 +1202,28 @@ registerTool({
 		const timeout = (args.timeout as number) ?? 180;
 
 		try {
-			const output = execSync(cmd, {
+			const res = spawnSync(cmd, {
 				cwd: ctx.runningDir && existsSync(ctx.runningDir) ? ctx.runningDir : undefined,
 				encoding: 'utf-8',
 				timeout: timeout * 1000,
-				stdio: ['pipe', 'pipe', 'pipe'],
+				shell: true,
+				windowsHide: true,
 			});
-
-			return { success: true, content: output || '(no output)' };
+			if (res.error) {
+				const msg = res.signal
+					? `执行超时或被终止（${res.signal}）`
+					: res.error.message;
+				return { success: false, content: msg, error: msg };
+			}
+			const parts: string[] = [];
+			if (res.stdout?.trim()) parts.push(res.stdout.trimEnd());
+			if (res.stderr?.trim()) parts.push(`[stderr]\n${res.stderr.trimEnd()}`);
+			parts.push(`[exit ${res.status}]`);	// 退出码
+			return { success: true, content: parts.join('\n') };
 		} catch (err: any) {
 			return {
 				success: false,
-				content: `Command failed (exit ${err.status}):\n${err.stderr ?? err.message}`,
+				content: `执行失败：${err.message}`,
 				error: err.message,
 			};
 		}

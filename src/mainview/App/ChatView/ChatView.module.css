@@ -330,6 +330,56 @@
 				justify-content: center;
 			}
 		}
+		/* ---------- 模式参数（mode.json 的 form 动态生成，贴着工具栏下方一行） ---------- */
+		.input-params {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			flex-wrap: wrap;
+			padding-top: 8px;
+			border-top: 1px dashed var(--border);
+			.param-chip {
+				display: inline-flex;
+				align-items: center;
+				gap: 5px;
+				height: 22px;
+				max-width: 220px;
+				padding: 0 8px;
+				border-radius: var(--r-sm);
+				background-color: var(--bg-chip);
+				border: 1px solid var(--border);
+				transition: background-color var(--dur-fast), border-color var(--dur-fast);
+				&:hover:not(:disabled) {
+					background-color: var(--bg-active);
+					border-color: var(--border-input);
+				}
+				&:disabled {
+					opacity: 0.5;
+					cursor: not-allowed;
+				}
+				.param-chip-label {
+					font-size: var(--fs-xxs);
+					color: var(--text-tip);
+					white-space: nowrap;
+				}
+				.param-chip-value {
+					font-family: var(--font-mono);
+					font-size: var(--fs-xxs);
+					color: var(--accent);
+					white-space: nowrap;
+					overflow: hidden;
+					text-overflow: ellipsis;
+				}
+				/* 这一档承诺的配置被后面的参数改过（顺序即优先级，见 shared/modeParams.ts） */
+				.param-chip-star {
+					font-family: var(--font-mono);
+					font-size: var(--fs-xxs);
+					line-height: 1;
+					color: var(--warning);
+					white-space: nowrap;
+				}
+			}
+		}
 	}
 	/* 框外的快捷键提示行 */
 	.input-hint {

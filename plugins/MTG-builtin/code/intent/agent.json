@@ -3,7 +3,7 @@
 	"name": "意图分析",
 	"promptFile": "prompt.md",
 	"statePromptFile": "prompt.state.md",
-	"reflectionCount": 1,
+	"reflectionCount": "[mode.rIntent]",
 	"delegatable": ["explore", "plan", "engineer", "verify", "review", "websearch"],
 	"model": "standard",
 	"ability": {

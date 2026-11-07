@@ -1,0 +1,12 @@
+{
+	"id": "tuner",
+	"name": "调参助手",
+	"promptFile": "prompt.md",
+	"model": "standard",
+	"reflectionCount": "[mode.r]",
+	"ability": {
+		"tools": {
+			"allow": "[mode.writeTools]"
+		}
+	}
+}

@@ -12,10 +12,11 @@
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/bridges/localBridge';
 import * as agentBridge from '@mainview/bridges/agentBridge';
-import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, Permission } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
 import { createEmptyOverlay, type OverlayCtx } from '@mainview/logic/projection';
+import { sameParamValue } from '@shared/modeParams';
 import { setExitThemeId } from '@mainview/App/ExitOverlay';
 import type { ExitThemeId } from '@mainview/App/ExitOverlay/types';
 
@@ -104,6 +105,13 @@ export type UIState = {
 	 *   run 结束时由 `endRun()` 加入（用户正看着这个会话则不加），点开该会话时移除。
 	 */
 	unreadConversationIds: string[];
+	/**
+	 * Composer 输入框下方「模式参数」表单的选择，按 modeId 分组：`{ [modeId]: { [controlKey]: 选项 value } }`。
+	 *
+	 * ⚠️ 纯前端偏好（localStorage）：后端只认 `AgentRunRequest.params` 里那一次选择，
+	 *   自己不去记住「用户上次选了什么强度」。换模式再换回来时靠这份表恢复。
+	 */
+	modeParams: Record<string, Record<string, ParamValue>>;
 };
 
 export type AppState = {
@@ -153,6 +161,7 @@ const initialUI: UIState = {
 	activeSettingsTab: '通用',
 	viewMode: 'chat',
 	unreadConversationIds: [],
+	modeParams: {},
 };
 
 export const defaultState: AppState = {
@@ -341,6 +350,7 @@ function saveLocalSettings() {
 		conversationSort: state.ui.conversationSort,
 		viewMode: state.ui.viewMode,
 		unreadConversationIds: state.ui.unreadConversationIds,
+		modeParams: state.ui.modeParams,
 	});
 	localSettings.set('themeMode', state.themeMode);
 	localSettings.set('currentModeId', state.currentModeId);
@@ -813,6 +823,29 @@ export const actions = {
 	/** 切换当前模式（第一层的 chip）。纯前端状态，只落本地偏好，不惊动后端设置 */
 	setCurrentModeId(modeId: string) {
 		setState('currentModeId', modeId);
+		saveLocalSettings();
+	},
+	/**
+	 * 设置某个模式参数（Composer 下方由 `mode.json` 的 `form` 动态生成的控件）。
+	 *
+	 * 存的是「**每个控件当前的值**」，不是「用户点过什么」：选一档 = 把它的 `value`
+	 * 连同它 `vars` 里那些**有控件的 key** 一起写进去（= 这一档重新刷新自己负责的那片）。
+	 * 所以强度改完，反思次数那格就是新的值（哪怕不在它的选项里）；反过来手调反思次数
+	 * 只覆盖它自己，强度那档的承诺对不上就打 `*`。没有「手选优先」，也没有清除项。
+	 */
+	setModeParam(modeId: string, key: string, value: ParamValue) {
+		const form = state.modes.find((m) => m.id === modeId)?.form ?? [];
+		const option = form.find((c) => c.key === key)?.options.find((o) => sameParamValue(o.value, value));
+		const controlKeys = new Set(form.map((c) => c.key));
+		setState('ui', 'modeParams', produce((all) => {
+			const next: Record<string, ParamValue> = { ...(all[modeId] ?? {}), [key]: value };
+			// 只落「有控件的 key」：没有控件的变量（totalRounds 之类）每次读的时候由选项 vars 现算，
+			// 存下来只会变成改配置后的陈旧值
+			for (const [k, v] of Object.entries(option?.vars ?? {})) {
+				if (k !== key && controlKeys.has(k)) next[k] = v;
+			}
+			all[modeId] = next;
+		}));
 		saveLocalSettings();
 	},
 	/**

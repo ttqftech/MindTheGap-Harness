@@ -128,6 +128,9 @@ function toModeSummary(mode: ModeDefinition): ModeSummary {
 		ui: mode.ui,
 		// 模式配置就是 mode.json 顶层的这几个字段，不再有 settings 覆盖层
 		limits: mode.limits,
+		// 模式参数：默认变量表 + Composer 下方的动态表单（前端据此渲染控件）
+		params: mode.params,
+		form: mode.form,
 		modeJson: mode.modeJsonText,
 		modeJsonPath: mode.modeJsonPath,
 		overridden: overriddenModeIds.includes(mode.id),

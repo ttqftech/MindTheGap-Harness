@@ -31,7 +31,7 @@ import {
 	markConversationUnread,
 } from '@mainview/stores';
 import type { OverlayCtx } from '@mainview/logic/projection';
-import type { AgentInstanceMessage, AgentStreamEvent, ModelConfig, ToolResult, UsageEntry } from '@shared/agent';
+import type { AgentInstanceMessage, AgentStreamEvent, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
 
 // #region 订阅集合
 
@@ -439,6 +439,8 @@ export interface StartRunParams {
 	modeId: string;
 	runningDir?: string;
 	model: ModelConfig;
+	/** Composer 下方动态表单的选择（覆盖 mode.json 的 params 默认值），见 shared/modeParams.ts */
+	params?: Record<string, ParamValue>;
 }
 
 /**
@@ -459,6 +461,7 @@ export async function startRun(params: StartRunParams): Promise<void> {
 			modeId: params.modeId,
 			runningDir: params.runningDir,
 			model: params.model,
+			params: params.params,
 		});
 		if (!result.ok) {
 			runErrorActions.set(conversationId, `❌ Agent 错误: ${result.error}`);

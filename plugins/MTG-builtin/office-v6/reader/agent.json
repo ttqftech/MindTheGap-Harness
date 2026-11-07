@@ -1,0 +1,13 @@
+{
+	"id": "reader",
+	"name": "材料抽取",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": 0,
+	"ability": {
+		"tools": {
+			"allow": ["file_read", "file_list", "file_search", "shell", "finish"],
+			"deny": "[mode.denyTools]"
+		}
+	}
+}

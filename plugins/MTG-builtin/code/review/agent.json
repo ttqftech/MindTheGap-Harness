@@ -3,7 +3,7 @@
 	"name": "代码审查",
 	"promptFile": "prompt.md",
 	"statePromptFile": "prompt.state.md",
-	"reflectionCount": 1,
+	"reflectionCount": "[mode.rReview]",
 	"ability": {
 		"tools": {
 			"allow": ["file_read", "file_list", "file_search", "shell", "finish"]

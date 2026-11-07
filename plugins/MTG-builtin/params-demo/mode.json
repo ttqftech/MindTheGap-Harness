@@ -1,0 +1,52 @@
+{
+	"id": "params-demo",
+	"name": "参数演示",
+	"description": "演示 mode.json 的 params + form：输入框下方的下拉选项通过变量覆盖 Agent 配置、预算与提示词（本模式只为验证功能）",
+	"rootAgent": "tuner",
+	"maxDepth": 0,
+	"taskList": { "enabled": false, "writable": false },
+	"mcpDisabled": true,
+	"limits": { "totalRounds": "[totalRounds]", "agentInstanceRounds": 8, "warnAtRemaining": 2 },
+	"params": {
+		"intensity": "medium",
+		"r": 0,
+		"totalRounds": 12,
+		"writeTools": ["file_read", "file_list", "finish"]
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "一个参数覆盖多个变量：反思次数 r、总预算 totalRounds、提示词里的 {{ intensity }}",
+			"options": [
+				{ "label": "low", "value": "low", "description": "不反思，预算 6 轮", "vars": { "r": 0, "totalRounds": 6 } },
+				{ "label": "medium", "value": "medium", "description": "反思 1 次，预算 12 轮", "vars": { "r": 1, "totalRounds": 12 } },
+				{ "label": "high", "value": "high", "description": "反思 2 次，预算 20 轮", "vars": { "r": 2, "totalRounds": 20 } },
+				{ "label": "ultracode", "value": "ultracode", "description": "反思 4 次，预算 30 轮", "vars": { "r": 4, "totalRounds": 30 } }
+			]
+		},
+		{
+			"key": "r",
+			"label": "反思次数",
+			"type": "select",
+			"description": "直接覆盖 agent.json 的 reflectionCount（写的是 \"[mode.r]\"）。手动选过之后不再被强度联动覆盖",
+			"options": [
+				{ "label": "0（不反思）", "value": 0 },
+				{ "label": "1", "value": 1 },
+				{ "label": "3", "value": 3 }
+			]
+		},
+		{
+			"key": "writeTools",
+			"label": "工具白名单",
+			"type": "select",
+			"description": "整段替换 ability.tools.allow：把数组当变量用，关掉写入类工具只需换一份清单",
+			"options": [
+				{ "label": "只读", "value": ["file_read", "file_list", "finish"] },
+				{ "label": "可写", "value": ["file_read", "file_list", "file_write", "file_edit", "finish"] }
+			]
+		}
+	],
+	"ui": { "icon": "🎛️", "accent": "violet" }
+}

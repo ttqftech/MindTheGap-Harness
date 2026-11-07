@@ -230,6 +230,8 @@ export interface PromptContext {
 	mode: ModeDefinition;
 	/** 基座提示词（settings.basePrompt，由调用方传入；模板里不写 `{{ basePrompt }}` 就不进入 system prompt） */
 	basePrompt: string;
+	/** 本次 run 生效的模式参数（Composer 动态表单 → 覆盖 mode.json 的 params） */
+	params?: Record<string, unknown>;
 	runningDir: string;
 	/** 会话目录（workspace / docs / backups 的根）。缺省时对应变量为空串 */
 	conversationDir?: string;
@@ -347,6 +349,7 @@ function childEntry(agentInstance: AgentInstance): Record<string, unknown> {
  * | `hasBudget` `budgetTotalLeft` `budgetAgentInstanceLeft` `budgetWarn` `budgetExhausted` | 循环预算 |
  * | `mcpSection` `hasMcp` | MCP 外部工具说明 |
  * | `backgroundTasks` `hasBackgroundTasks` | 后台任务（占位，恒空 / 恒 false） |
+ * | `params` `mode.<var>` `<var>` | 模式参数（mode.json 的 `params` 被 Composer 表单覆盖后的结果，三种写法等价；平铺时内置变量优先） |
  *
  * `children` / `unfinished` 的每一项：`agentInstanceId` `agentId` `agentName` `depth`
  * `status` `statusLabel` `taskLine` `interruptReason`。
@@ -436,6 +439,16 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		backgroundTasks: [],
 		hasBackgroundTasks: false,
 	};
+
+	// ⭐ 模式参数（mode.json 的 params + Composer 下方表单的选择）。三种写法都认：
+	//    `{{ r }}`（平铺） / `{{ params.r }}` / `{{ mode.r }}`
+	// ⚠️ 平铺时**内置变量优先**：参数起名 `time` / `tools` 盖不掉内建语义，要用自己的就写 `{{ params.time }}`。
+	const params = ctx.params ?? {};
+	scope.params = params;
+	scope.mode = { id: ctx.mode.id, name: ctx.mode.name, ...params };
+	for (const [key, value] of Object.entries(params)) {
+		if (!(key in scope)) scope[key] = value;
+	}
 
 	// stateChanged：把当前 scope 快照与上轮逐键比对，供 prompt.state.md 用 `{{#if stateChanged.xxx}}` 消费。
 	// **边沿语义**：只在值跟上轮不同时为真 —— 模板里判断「当前是什么状态」要用 `budgetWarn` / `hasTaskList`

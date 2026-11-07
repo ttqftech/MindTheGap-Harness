@@ -20,7 +20,8 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import type { AgentDefinition, AbilityPolicy, ModeDefinition, PluginManifest } from '@shared/agent';
+import type { AgentDefinition, AbilityPolicy, ModeDefinition, ModeParamControl, ModeParamOption, ParamValue, PluginManifest } from '@shared/agent';
+import { collectParamRefs, knownParamNames } from '@shared/modeParams';
 
 /** 反思提示词的文件名（模式级 / Agent 级同名，按目录位置区分语义） */
 const REFLECTION_FILE = 'reflection.md';
@@ -154,6 +155,91 @@ export function resolveReflectionPrompt(mode: ModeDefinition, agentDefinition?: 
 
 // #endregion
 
+// #region 模式参数（mode.json 的 params + form）
+
+/**
+ * `params` —— 变量默认值表。只接受普通对象；值必须是 JSON 允许的东西（不做深校验，
+ * 反正它最终会被 `[x]` 取走或塞进模板）。
+ */
+function normalizeParams(raw: unknown, errors: PluginLoadError[], ctx: { pluginId: string; modeId: string }): Record<string, ParamValue> | undefined {
+	if (raw === undefined) return undefined;
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+		errors.push({ level: 'error', ...ctx, message: 'params 必须是对象，形如 {"r":0,"writeTools":["file_read"]}' });
+		return undefined;
+	}
+	return raw as Record<string, ParamValue>;
+}
+
+/**
+ * `form` —— Composer 下方的动态表单。
+ * 坏掉的控件只丢自己（warn/error 都记），不让整个模式加载失败。
+ */
+function normalizeForm(raw: unknown, errors: PluginLoadError[], ctx: { pluginId: string; modeId: string }): ModeParamControl[] | undefined {
+	if (raw === undefined) return undefined;
+	if (!Array.isArray(raw)) {
+		errors.push({ level: 'error', ...ctx, message: 'form 必须是数组，每项形如 {"key":"strength","label":"强度","options":[…]}}' });
+		return undefined;
+	}
+	const out: ModeParamControl[] = [];
+	raw.forEach((item, index) => {
+		const where = `form[${index}]`;
+		if (!item || typeof item !== 'object' || Array.isArray(item)) {
+			errors.push({ level: 'error', ...ctx, message: `${where} 必须是对象` });
+			return;
+		}
+		const c = item as Partial<ModeParamControl>;
+		if (!c.key || typeof c.key !== 'string') {
+			errors.push({ level: 'error', ...ctx, message: `${where} 缺 key（变量名）` });
+			return;
+		}
+		if (!Array.isArray(c.options) || c.options.length === 0) {
+			errors.push({ level: 'error', ...ctx, message: `${where}（${c.key}）的 options 必须是非空数组` });
+			return;
+		}
+		if (c.type !== undefined && c.type !== 'select') {
+			errors.push({ level: 'warn', ...ctx, message: `${where}（${c.key}）的 type="${String(c.type)}" 暂不支持，按 select 处理` });
+		}
+		const options: ModeParamOption[] = [];
+		c.options.forEach((opt, oi) => {
+			if (!opt || typeof opt !== 'object' || (opt as ModeParamOption).value === undefined) {
+				errors.push({ level: 'error', ...ctx, message: `${where}（${c.key}）的 options[${oi}] 缺 value` });
+				return;
+			}
+			options.push({
+				label: opt.label ?? String((opt as ModeParamOption).value),
+				value: (opt as ModeParamOption).value,
+				description: opt.description,
+				vars: opt.vars,
+			});
+		});
+		if (options.length === 0) return;
+		out.push({
+			key: c.key,
+			label: c.label ?? c.key,
+			description: c.description,
+			type: 'select',
+			hidden: !!c.hidden,
+			default: c.default,
+			options,
+		});
+	});
+	return out;
+}
+
+/** 加载期把 `[x]` 引用跟声明的变量名对一遍，只 warn（可能是留给别的插件 / 手写常量） */
+function warnUnknownParamRefs(mode: ModeDefinition, errors: PluginLoadError[], ctx: { pluginId: string; modeId: string }): void {
+	const known = new Set(knownParamNames(mode));
+	if (known.size === 0) return;
+	const refs = collectParamRefs({ limits: mode.limits, maxDepth: mode.maxDepth, taskList: mode.taskList, agents: mode.agents });
+	for (const ref of refs) {
+		if (!known.has(ref)) {
+			errors.push({ level: 'warn', ...ctx, message: `参数引用 [${ref}] 未在 params / form 里声明` });
+		}
+	}
+}
+
+// #endregion
+
 // #region 加载
 
 /** 当前注册表（loadAllPlugins 之后有效） */
@@ -220,14 +306,20 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 		errors.push({ level: 'error', pluginId: plugin.id, modeId: id, message: 'mode.json 缺 rootAgent' });
 		return null;
 	}
-	if (!agents[rootAgent]) {
+	// rootAgent 也可以写成模式参数引用 `"[rootAgentId]"`：加载期它还是字符串（运行时才插值），
+	// 所以不能按 agent id 校验。写成引用就放行，解析后仍指向不存在的 agent 由 runner 明确报错。
+	const rootIsParamRef = /^\[[A-Za-z_$][\w$.]*\]$/.test(rootAgent);
+	if (!rootIsParamRef && !agents[rootAgent]) {
 		errors.push({ level: 'error', pluginId: plugin.id, modeId: id, message: `rootAgent 不存在: ${rootAgent}` });
 		return null;
 	}
 
 	// delegatable 引用校验
+	// ⚠️ 与 ability.tools.allow 同理：`delegatable` 可以写成模式参数引用 `"[mode.rootAgents]"`，
+	//    加载期它还是字符串，`for (const x of string)` 会按字符遍历、刷出一屏「不存在的 agent」假警告。
 	for (const def of Object.values(agents)) {
-		for (const target of def.delegatable ?? []) {
+		if (!Array.isArray(def.delegatable)) continue;
+		for (const target of def.delegatable) {
 			if (!agents[target]) {
 				errors.push({
 					level: 'warn',
@@ -243,7 +335,11 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 	// 模式级反思提示词（Agent 级在各 def.reflectionPrompt 里，查到时优先）
 	const modeReflection = findReflectionPrompt({ modeDir });
 
-	return {
+	// 模式参数：默认变量表 + Composer 下方的动态表单（用户选择覆盖默认值，见 shared/modeParams.ts）
+	const params = normalizeParams(raw.params, errors, { pluginId: plugin.id, modeId: id });
+	const form = normalizeForm(raw.form, errors, { pluginId: plugin.id, modeId: id });
+
+	const mode: ModeDefinition = {
 		id,
 		name: raw.name ?? id,
 		description: raw.description,
@@ -252,6 +348,8 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 		maxDepth: raw.maxDepth ?? 0,
 		taskList: raw.taskList ?? { enabled: false, writable: false },
 		mcpDisabled: raw.mcpDisabled ?? false,
+		params,
+		form,
 		limits: raw.limits,
 		ui: raw.ui,
 		// 反思提示词按 agent 级 > 模式级 解析（agent 级在 def.reflectionPrompt 里）
@@ -263,6 +361,8 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 		pluginName: plugin.name,
 		pluginDir,
 	};
+	warnUnknownParamRefs(mode, errors, { pluginId: plugin.id, modeId: id });
+	return mode;
 }
 
 /** 按指定的单个 Agent 目录地址，读取该 Agent 的定义 */
@@ -293,8 +393,10 @@ function loadAgentDefinition(agentDir: string, errors: PluginLoadError[], ctx: {
 
 	const ability: AbilityPolicy = raw.ability ?? {};
 	// 工具名校验：只 warn（可能是留给其他插件的动态工具 / MCP）
+	// ⚠️ 必须是数组才校验：`allow` 可以写成模式参数引用 `"[mode.writeTools]"`（加载期还是字符串，
+	//    运行时才被替换成数组），对它 for-of 会按字符遍历，刷一屏假警告。
 	if (ctx.knownToolNames) {
-		const allow = ability.tools?.allow ?? [];
+		const allow = Array.isArray(ability.tools?.allow) ? ability.tools.allow : [];
 		for (const name of allow) {
 			if (!ctx.knownToolNames.includes(name)) {
 				errors.push({
@@ -450,6 +552,27 @@ export function saveModeJson(modeId: string, jsonText: string): { ok: boolean; e
 	}
 	if (raw.taskList !== undefined && (!raw.taskList || typeof raw.taskList !== 'object' || Array.isArray(raw.taskList))) {
 		return { ok: false, error: 'taskList 必须是对象，形如 {"enabled":true,"writable":true}' };
+	}
+	// 模式参数（动态表单）：结构写坏会让 Composer 渲染不出来，直接在落盘前拦住
+	if (raw.params !== undefined && (!raw.params || typeof raw.params !== 'object' || Array.isArray(raw.params))) {
+		return { ok: false, error: 'params 必须是对象，形如 {"r":0,"writeTools":["file_read"]}' };
+	}
+	if (raw.form !== undefined) {
+		if (!Array.isArray(raw.form)) {
+			return { ok: false, error: 'form 必须是数组，每项形如 {"key":"strength","label":"强度","options":[{"label":"低","value":"low"}]}' };
+		}
+		for (let i = 0; i < raw.form.length; i++) {
+			const c = raw.form[i] as unknown as Partial<ModeParamControl> | null;
+			if (!c || typeof c !== 'object' || Array.isArray(c)) return { ok: false, error: `form[${i}] 必须是对象` };
+			if (!c.key || typeof c.key !== 'string') return { ok: false, error: `form[${i}] 缺 key（变量名）` };
+			if (!Array.isArray(c.options) || c.options.length === 0) return { ok: false, error: `form[${i}]（${c.key}）的 options 必须是非空数组` };
+			for (let oi = 0; oi < c.options.length; oi++) {
+				const opt = c.options[oi] as unknown as Partial<ModeParamOption> | null;
+				if (!opt || typeof opt !== 'object' || opt.value === undefined) {
+					return { ok: false, error: `form[${i}]（${c.key}）的 options[${oi}] 缺 value` };
+				}
+			}
+		}
 	}
 
 	const prevText = readText(target) ?? '';

@@ -1,0 +1,175 @@
+{
+	"id": "code-v2",
+	"name": "编码 v2",
+	"description": "两个旋钮的编码模式：强度决定协作结构 / 预算 / 深度 / 反思，工具安全性决定哪些写入类工具可用",
+	"rootAgent": "intent",
+	"maxDepth": "[maxDepth]",
+	"taskList": { "enabled": "[taskListEnabled]", "writable": "[taskListWritable]" },
+	"mcpDisabled": false,
+	"limits": { "totalRounds": "[totalRounds]", "agentInstanceRounds": "[agentInstanceRounds]", "warnAtRemaining": 3 },
+	"params": {
+		"intensity": "medium",
+		"tierName": "标准",
+		"safety": "guarded",
+		"maxDepth": 2,
+		"totalRounds": 50,
+		"agentInstanceRounds": 16,
+		"rIntent": 1,
+		"rPlan": 0,
+		"rEngineer": 1,
+		"rReview": 0,
+		"taskListEnabled": true,
+		"taskListWritable": true,
+		"isLite": false,
+		"isStandard": true,
+		"isDeep": false,
+		"isMax": false,
+		"isStaged": false,
+		"rootAgents": ["explore", "engineer", "verify"],
+		"engineerAgents": [],
+		"readOnly": false,
+		"denyTools": ["file_delete", "file_rename"]
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "一次覆盖：协作结构（探索 / 计划 / 审查）、循环预算、委托深度、反思次数。低档最便宜，极致档最彻底",
+			"options": [
+				{
+					"label": "低 · 直给",
+					"value": "low",
+					"description": "不探索不计划不验证，一次委托把活干完；30 轮 / 深度 1 / 不反思",
+					"vars": {
+						"tierName": "直给",
+						"maxDepth": 1,
+						"totalRounds": 30,
+						"agentInstanceRounds": 12,
+						"rIntent": 0,
+						"rPlan": 0,
+						"rEngineer": 0,
+						"rReview": 0,
+						"taskListEnabled": false,
+						"taskListWritable": false,
+						"isLite": true,
+						"isStandard": false,
+						"isDeep": false,
+						"isMax": false,
+						"isStaged": false,
+						"rootAgents": ["engineer"],
+						"engineerAgents": []
+					}
+				},
+				{
+					"label": "中 · 标准",
+					"value": "medium",
+					"description": "探索 → 执行 → 验证，不写计划文档；50 轮 / 深度 2 / 反思 1",
+					"vars": {
+						"tierName": "标准",
+						"maxDepth": 2,
+						"totalRounds": 50,
+						"agentInstanceRounds": 16,
+						"rIntent": 1,
+						"rPlan": 0,
+						"rEngineer": 1,
+						"rReview": 0,
+						"taskListEnabled": true,
+						"taskListWritable": true,
+						"isLite": false,
+						"isStandard": true,
+						"isDeep": false,
+						"isMax": false,
+						"isStaged": false,
+						"rootAgents": ["explore", "engineer", "verify"],
+						"engineerAgents": []
+					}
+				},
+				{
+					"label": "高 · 深度",
+					"value": "high",
+					"description": "并行探索 → 写计划 → 分阶段执行 → 审查 + 验证；85 轮 / 深度 3 / 反思 2",
+					"vars": {
+						"tierName": "深度",
+						"maxDepth": 3,
+						"totalRounds": 85,
+						"agentInstanceRounds": 20,
+						"rIntent": 2,
+						"rPlan": 1,
+						"rEngineer": 2,
+						"rReview": 1,
+						"taskListEnabled": true,
+						"taskListWritable": true,
+						"isLite": false,
+						"isStandard": false,
+						"isDeep": true,
+						"isMax": false,
+						"isStaged": true,
+						"rootAgents": ["explore", "plan", "engineer", "verify", "review"],
+						"engineerAgents": ["explore", "engineer"]
+					}
+				},
+				{
+					"label": "极致 · 穷举",
+					"value": "ultra",
+					"description": "阶段化推进 + 每阶段增量验证 + 全文审查 + 需求逐条回读；140 轮 / 深度 4 / 反思 3",
+					"vars": {
+						"tierName": "穷举",
+						"maxDepth": 4,
+						"totalRounds": 140,
+						"agentInstanceRounds": 26,
+						"rIntent": 3,
+						"rPlan": 2,
+						"rEngineer": 3,
+						"rReview": 1,
+						"taskListEnabled": true,
+						"taskListWritable": true,
+						"isLite": false,
+						"isStandard": false,
+						"isDeep": false,
+						"isMax": true,
+						"isStaged": true,
+						"rootAgents": ["explore", "plan", "engineer", "verify", "review"],
+						"engineerAgents": ["explore", "engineer"]
+					}
+				}
+			]
+		},
+		{
+			"key": "safety",
+			"label": "工具安全性",
+			"type": "select",
+			"description": "按「去掉写入类工具」控制风险：只读 = 只出方案不动盘；标准 = 可写但不许删 / 移；完全 = 全开",
+			"options": [
+				{
+					"label": "只读",
+					"value": "readonly",
+					"description": "去掉 file_write / file_edit / file_create / file_delete / file_rename：只分析、出方案与补丁文本",
+					"vars": {
+						"readOnly": true,
+						"denyTools": ["file_write", "file_edit", "file_create", "file_delete", "file_rename"]
+					}
+				},
+				{
+					"label": "标准",
+					"value": "guarded",
+					"description": "可写可改可新建，但 file_delete / file_rename 不可用（要删改由用户自己动手）",
+					"vars": {
+						"readOnly": false,
+						"denyTools": ["file_delete", "file_rename"]
+					}
+				},
+				{
+					"label": "完全",
+					"value": "full",
+					"description": "不裁剪任何工具：删除 / 移动都可用，风险靠提示词的「高风险先问用户」兜底",
+					"vars": {
+						"readOnly": false,
+						"denyTools": []
+					}
+				}
+			]
+		}
+	],
+	"ui": { "icon": "🛠️", "accent": "blue" }
+}

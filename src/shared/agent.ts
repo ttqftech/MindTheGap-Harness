@@ -69,6 +69,48 @@ export interface AgentDefinition {
 }
 
 /**
+ * 模式参数的值：只允许 JSON 里的东西（标量 / 数组 / 对象）。
+ *
+ * 允许数组与对象是因为参数要能**整段替换**配置：例如「关掉写入类工具」= 用一整份
+ * 新的白名单数组覆盖 `ability.tools.allow`（`"allow": "[writeTools]"`）。
+ */
+export type ParamValue = string | number | boolean | null | ParamValue[] | { [key: string]: ParamValue };
+
+/** 动态表单里一个下拉选项 */
+export interface ModeParamOption {
+	label: string;
+	/** 选中该项时写进变量表 `params[<control.key>]` 的值 */
+	value: ParamValue;
+	description?: string;
+	/**
+	 * 选中该项时**额外**覆盖的变量 —— 「一个参数影响多处」就靠它：
+	 * 例如「强度 = ultracode」顺带把 `r`（反思次数）、`totalRounds` 一起顶掉。
+	 *
+	 * ⚠️ 用户手选过的变量不受它覆盖（见 `shared/modeParams.ts` 的两遍规则）。
+	 */
+	vars?: Record<string, ParamValue>;
+}
+
+/**
+ * Composer 输入框下方的动态表单项（目前只有下拉，`type` 留作扩展）。
+ *
+ * 值会写进变量表：`vars[control.key] = 选中项的 value`，然后被
+ * `mode.json` / `agent.json` 的 `"[key]"` 与提示词的 `{{ key }}` 消费。
+ */
+export interface ModeParamControl {
+	key: string;
+	label: string;
+	description?: string;
+	/** 目前只支持 'select'；不写等同于 select */
+	type?: 'select';
+	/** 不在 Composer 下方渲染（只作为变量参与插值），用于纯内部开关 */
+	hidden?: boolean;
+	/** 默认选中项的值；不写时依次取 `params[key]`、第一个选项 */
+	default?: ParamValue;
+	options: ModeParamOption[];
+}
+
+/**
  * 循环预算 —— mode.json 顶层 `limits`。
  * 三个字段都可不写，兜底值（200 / 50 / 3）在 runner.limits() 里。
  */
@@ -91,9 +133,19 @@ export interface ModeDefinition {
 	taskList?: { enabled: boolean; writable: boolean };
 	/** 该模式是否关闭 MCP 工具（默认 false = 开放） */
 	mcpDisabled?: boolean;
+	/**
+	 * 变量默认值表 —— `{ "r": 0, "writeTools": ["file_read"] }`。
+	 * 会被 Composer 下方的 `form` 选择覆盖，得到本次 run 生效的变量表（`ModeDefinition.vars`）。
+	 * 消费方式见 `shared/modeParams.ts` 顶部说明。
+	 */
+	params?: Record<string, ParamValue>;
+	/** Composer 输入框下方的动态表单（覆盖 `params` 默认值用），由 mode.json 声明 */
+	form?: ModeParamControl[];
 	/** 循环预算（缺省时用 runner 里的默认值） */
 	limits?: ModeLimits;
 	ui?: { icon?: string; accent?: string };
+	/** ↓ 由运行时填充：本次 run 生效的变量（默认值 + 表单选择 + 选项 vars），见 runner.createRunner */
+	vars?: Record<string, ParamValue>;
 	/**
 	 * 模式级反思提示词（`<modeId>/reflection.md` → 内置默认 逐级回退，
 	 * agent 级 reflection.md 存在时整份替换它）。下面两个字段由加载器填充。
@@ -122,6 +174,9 @@ export interface ModeSummary {
 	ui?: ModeDefinition['ui'];
 	/** mode.json 顶层字段（就是生效配置，没有覆盖层） */
 	limits?: ModeLimits;
+	/** 模式参数：默认变量表 + Composer 下方的动态表单（定义，不是当前选择） */
+	params?: Record<string, ParamValue>;
+	form?: ModeParamControl[];
 	/** mode.json 源码文本 / 路径 —— 设置页的编辑器直接编辑它 */
 	modeJson?: string;
 	modeJsonPath?: string;
@@ -454,6 +509,11 @@ export interface AgentRunRequest {
 	modeId: string;
 	runningDir?: string;
 	model: ModelConfig;
+	/**
+	 * Composer 下方动态表单的选择（`{ [controlKey]: 选项 value }`）。
+	 * 后端用它覆盖 `mode.json` 的 `params` 默认值；不传 = 全用默认。
+	 */
+	params?: Record<string, ParamValue>;
 }
 
 /** ask_user 中单个问题的定义 */

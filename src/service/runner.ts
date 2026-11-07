@@ -25,10 +25,58 @@ import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt }
 import { conversations, ensureConversationDir, settings } from './storage';
 import { logMsg } from '../shared/utils';
 import { renderSystemPrompt, renderStatePrompt } from './prompt';
+import { applyModeVars, resolveModeVars, type ModeParamSelections } from '../shared/modeParams';
 import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
 const now = () => Date.now();
+
+/**
+ * 上游「喘口气」就把整轮任务打死，是实测里最贵的一类失败。
+ *
+ * 网关 idle timeout、502、429 这些都是**瞬时**故障：重试一次基本就过。所以这里统一包一层重试：**所有 callLlm 调用点都走它**（包括反思、finish 解析）。
+ * 只在「看起来是瞬时的」错误上重试——参数错、鉴权失败、用户取消都要立刻往外抛，重试试不出来还会让用户在界面上多等半分钟。
+ */
+const TRANSIENT_LLM_ERROR = /(timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|socket hang up|fetch failed|terminated|bad gateway|service unavailable|internal server error|InternalServerError|Too Many Requests|\b(429|500|502|503|504)\b)/i;
+const LLM_TRANSIENT_RETRIES = 2;
+const LLM_TRANSIENT_BACKOFF_MS = [1500, 6000];
+
+const isTransientLlmError = (e: unknown) => {
+	const err = e as Error & { name?: string; status?: number };
+	if (!err) return false;
+	// 用户自己取消的不要重试：signal 已经断了，重试只会立刻再断一次
+	if (err.name === 'AbortError' || err.name === 'TimeoutError') return false;
+	if (typeof err.status === 'number' && err.status >= 400 && err.status < 500 && err.status !== 429) return false;
+	return TRANSIENT_LLM_ERROR.test(err.message || '');
+};
+
+const callLlmWithRetry: typeof callLlm = async (...args) => {
+	let lastErr: unknown;
+	for (let attempt = 0; attempt <= LLM_TRANSIENT_RETRIES; attempt++) {
+		if (attempt > 0) {
+			const wait = LLM_TRANSIENT_BACKOFF_MS[attempt - 1] ?? 6000;
+			logMsg.error(`[Runner] LLM 调用出错（${(lastErr as Error)?.message?.slice(0, 90)}），${wait}ms 后第 ${attempt} 次重试`);
+			await new Promise((r) => setTimeout(r, wait));
+		}
+		try {
+			return await callLlm(...args);
+		} catch (e) {
+			lastErr = e;
+			if (!isTransientLlmError(e)) throw e;
+		}
+	}
+	throw lastErr;
+};
+
+/**
+ * 预算见底时塞给模型的那一句。
+ *
+ * 原来预算一到就直接 `endPath(forced)`：一句机器生成的「[预算耗尽]」贴上去，实例标 failed，**模型自己做的那些改动没有任何交代**——用户看到的是失败，实际东西都改对了
+ * 现在改成分两步：先用这句话换一**轮真正的收尾**（它看得懂、也能真的把交付说明写出来），下一次再超预算才强制结束。
+ */
+const BUDGET_LAST_CALL =
+	'预算只剩最后一轮了。别再发起任何工具调用，直接把已经做的事交代清楚：' +
+	'改了哪些文件、怎么验的（命令 + 关键输出）、还有哪些没做完或需要用户拍板的。没跑过的别说跑过。';
 
 /**
  * 一个挂在 `pendingCallIds` 里的 call 在等什么。
@@ -96,9 +144,57 @@ function noticeEntry(content: string): AgentInstanceMessage {
  * ⚠️ 所有 callLlm 调用点都必须经过本函数 —— 直接 map instance.messages 会把 UI 专用内容塞给模型。
  */
 function toLlmMessages(entries: AgentInstanceMessage[]): LlmMessage[] {
-	return entries
+	const base = entries
 		.filter((m) => !m.uiOnly)
 		.map(({ id: _id, updatedAt: _updatedAt, uiOnly: _uiOnly, kind: _kind, data: _data, usages: _usages, ...rest }) => rest);
+	// ⚠️ 压缩必须在这里做（而不是写回 messages）：界面、落盘、sub-agent 回填都读同一份 messages，
+	// 只有「发给模型」这一份可以被裁剪。详见 compactContext 的注释。
+	// return compactContext(base);
+	return base;	// TODO AI 写了个 compact，我觉得没有必要
+}
+
+/**
+ * 「上下文的视图」——每次请求重新算一份给模型看的视图，历史本身一个字节都不改。
+ *
+ * 起因很直白：**落在上下文里的东西，从那一刻起每一轮都要再付一次钱**。
+ * Task C 一次跑下来：tool 结果累计 31.6k 字符、助手自己的思考累计 26.7k 字符，
+ * 而它们要在接下来的十几轮里反复被送回去。
+ *
+ * 实测过的三条路，按性价比排序：
+ * ① **历史思考不回传**（本次采用）：老轮次的 `reasoningContent` 丢掉，只留最近 N 条。纯赚 ——
+ *    思考的结论已经落在 tool_calls / content 里，provider 也不检查；探活确认 dots3 对
+ *    「不回传 reasoning」的请求照样 200。省下的是上下文里最大的一块。
+ * ② 老工具结果压成一行（v11 试过，`KEEP_RECENT_RESULTS=4`）：**净亏**。省下的字符被
+ *    「回头重读同一个文件」吐回去了，而且有一次把 cli.mjs 改错接线——单元测试全绿、真实跑起来
+ *    环境变量不生效。想再试就从 KEEP_RECENT=10 起步。
+ * ③ 超大结果留头尾：便宜，且真的撞上 20k 时才有意义，保留。
+ *
+ * ⚠️ 全程不动 `instance.messages`：它既是 LLM 上下文也是界面转写和落盘真相，这里只改「发给模型的那一份副本」。
+ */
+const KEEP_REASONING_TURNS = 1;
+const HUGE_RESULT_CHARS = 20_000;
+
+function compactContext(msgs: LlmMessage[]): LlmMessage[] {
+	const assistantAt: number[] = [];
+	for (let i = 0; i < msgs.length; i++) if (msgs[i].role === 'assistant') assistantAt.push(i);
+	const keepReasoningFrom = assistantAt.length - KEEP_REASONING_TURNS;
+
+	return msgs.map((m, i) => {
+		// ① 除最近几轮外，不回传自己的思考过程
+		if (m.role === 'assistant' && m.reasoningContent) {
+			if (assistantAt.indexOf(i) < keepReasoningFrom) {
+				const { reasoningContent: _思考已裁剪, ...rest } = m;
+				return rest;
+			}
+			return m;
+		}
+		// ③ 超大结果：留头 + 留尾（尾部常是退出码 / 结论所在），中间省掉
+		if (m.role === 'tool' && (m.content?.length ?? 0) > HUGE_RESULT_CHARS) {
+			const text = m.content;
+			return { ...m, content: `${text.slice(0, 16_000)}\n…[中间 ${text.length - 20_000} 字符已省略]\n${text.slice(-4_000)}` };
+		}
+		return m;
+	});
 }
 
 function mergeTokens(prev: TokenUsage | undefined, usage: TokenUsage): TokenUsage {
@@ -176,7 +272,10 @@ export interface RunnerOptions {
 
 export class AgentRunner {
 	readonly conversationId: string;
+	/** **本次 run 生效的**模式定义：`mode.json` 已经过 `[var]` 插值（见 createRunner） */
 	private mode: ModeDefinition;
+	/** 本次 run 生效的模式参数（`params` 默认值 + Composer 表单选择），提示词里以 `{{ r }}` 可见 */
+	private vars: ModeParamSelections;
 	private model: ModelConfig;
 	private runningDir: string;
 	private ctx: AgentCtx;
@@ -203,9 +302,10 @@ export class AgentRunner {
 	private doneResolve: (() => void) | null = null;
 	private donePromise: Promise<void>;
 
-	constructor(params: { request: AgentRunRequest; mode: ModeDefinition; ctx: AgentCtx; options?: RunnerOptions }) {
+	constructor(params: { request: AgentRunRequest; mode: ModeDefinition; ctx: AgentCtx; vars?: ModeParamSelections; options?: RunnerOptions }) {
 		this.conversationId = params.request.conversationId;
 		this.mode = params.mode;
+		this.vars = params.vars ?? {};
 		this.model = params.request.model;
 		this.runningDir = params.request.runningDir ?? '';
 		this.ctx = params.ctx;
@@ -476,15 +576,25 @@ export class AgentRunner {
 			instance.rounds += 1;
 			this.ctx.budget.spent += 1;
 
-			// 预算耗尽 → 强制收尾（把「因预算耗尽中止」交还父实例判断，而不是静默丢弃）
+			// 预算耗尽 → 先给一轮「收尾」的机会，下一轮还超预算才强制收尾
+			// （把「因预算耗尽中止」交还父实例判断，而不是静默丢弃）
 			if (instance.rounds > limits.agentInstanceRounds || this.ctx.budget.spent > limits.totalRounds) {
-				const reason = instance.rounds > limits.agentInstanceRounds ? '本实例循环上限' : '总循环预算';
-				nextTrigger = await this.endPath(instance, `[预算耗尽] 因${reason}中止。已完成部分见此前消息；未完成项需父 Agent 决定是否继续。`, { forced: true });
-				return;
+				const alreadyWarned = instance.messages.some((m) => m.role === 'system' && !m.uiOnly && m.content === BUDGET_LAST_CALL);
+				if (!alreadyWarned) {
+					instance.messages.push(message({ role: 'system', content: BUDGET_LAST_CALL }));
+					instance.lastUpdatedAt = now();
+					// 落到这里继续走正常的 LLM 调用，等于把最后一轮花在「把话交代清楚」上
+				} else {
+					const reason = instance.rounds > limits.agentInstanceRounds ? '本实例循环上限' : '总循环预算';
+					nextTrigger = await this.endPath(instance, `[预算耗尽] 因${reason}中止。已完成部分见此前消息；未完成项需父 Agent 决定是否继续。`, { forced: true });
+					return;
+				}
 			}
 
 			const def = this.getAgentDefinitionByInstance(instance);
-			const tools = getToolsForAgentInstance(instance, def, this.mode);
+			// 收尾轮不给工具：手上没有工具，它就只能输出文本 —— 也就只能交代，不可能又开工一轮
+			const lastCall = instance.messages.some((m) => m.role === 'system' && m.content === BUDGET_LAST_CALL);
+			const tools = lastCall ? [] : getToolsForAgentInstance(instance, def, this.mode);
 
 			const systemPrompt = this.buildSystemPrompt(instance, tools);
 			// 空 prompt → 不下发 system message（「空」模式的 prompt.md 就是空的）
@@ -514,7 +624,7 @@ export class AgentRunner {
 			//    流式 chunk 只能靠这个 id 归属到同一条消息（条目本身要等调用结束才有完整内容），
 			//    反过来做就只能让前端按「尾部是不是 assistant」猜 —— 那条路在「文本→工具→文本」时会拆错。
 			const assistantEntryId = newMessageId();
-			const result = await callLlm(
+			const result = await callLlmWithRetry(
 				{
 					config: this.model,
 					messages: llmMessages,
@@ -809,7 +919,7 @@ export class AgentRunner {
 
 		if (!responseFormat) {
 			try {
-				const result = await callLlm({ config: this.model, messages, tools: [], signal }, meta);
+				const result = await callLlmWithRetry({ config: this.model, messages, tools: [], signal }, meta);
 				this.chargeSubLlm(instance, result);
 				return { ok: true, text: result.text };
 			} catch (err) {
@@ -818,7 +928,7 @@ export class AgentRunner {
 		}
 
 		try {
-			const result = await callLlm({ config: this.model, messages, tools: [], signal, responseFormat }, meta);
+			const result = await callLlmWithRetry({ config: this.model, messages, tools: [], signal, responseFormat }, meta);
 			this.chargeSubLlm(instance, result);
 			return { ok: true, text: result.text };
 		} catch (err) {
@@ -830,7 +940,7 @@ export class AgentRunner {
 				return { ok: false, text: '', error: first };
 			}
 			try {
-				const retry = await callLlm({ config: this.model, messages, tools: [], signal }, meta);
+				const retry = await callLlmWithRetry({ config: this.model, messages, tools: [], signal }, meta);
 				this.chargeSubLlm(instance, retry);
 				return { ok: true, text: retry.text };
 			} catch (err2) {
@@ -974,7 +1084,7 @@ export class AgentRunner {
 
 		const prompt = `${ASK_CHILD_FIXED_PROMPT}\n\n# 提问\n${question}`;
 		try {
-			const result = await callLlm(
+			const result = await callLlmWithRetry(
 				{
 					config: this.model,
 					messages: [{ role: 'system', content: prompt }, ...history],
@@ -1135,7 +1245,7 @@ export class AgentRunner {
 		if (!prompt) return { text: '' };
 
 		const initialSystem = instance.messages.find((m) => m.role === 'system' && !m.uiOnly)?.content ?? '';
-		const result = await callLlm(
+		const result = await callLlmWithRetry(
 			{
 				config: this.model,
 				messages: [
@@ -1301,6 +1411,7 @@ export class AgentRunner {
 			agentInstance: instance,
 			def,
 			mode: this.mode,
+			params: this.vars,
 			basePrompt: settings.basePrompt ?? '',
 			runningDir: this.runningDir,
 			conversationDir: ensureConversationDir(this.conversationId),
@@ -1431,10 +1542,18 @@ export function ensurePluginsLoaded(): void {
 export function createRunner(request: AgentRunRequest, options: RunnerOptions = {}): { runner?: AgentRunner; error?: string } {
 	ensurePluginsLoaded();
 
-	const mode = getMode(request.modeId);
-	if (!mode) {
+	const loadedMode = getMode(request.modeId);
+	if (!loadedMode) {
 		const available = listModes().map((m) => m.id).join(', ') || '(无)';
 		return { error: `模式不存在: ${request.modeId}。目前已加载的所有模式：${available}` };
+	}
+
+	// ⭐ 模式参数：Composer 的选择覆盖 mode.json 的 params，然后把 `[var]` 灌进**一份副本**。
+	// ⚠️ 必须是副本 —— `getMode()` 返回的是加载器里的全局共享对象，就地改会让「甲会话的强度」污染乙会话。
+	const vars = resolveModeVars(loadedMode, request.params ?? {});
+	const mode = applyModeVars(loadedMode, vars);
+	if (request.params && Object.keys(request.params).length > 0) {
+		logMsg(`[Runner] 模式参数 ${mode.id}: ${JSON.stringify(request.params)} → ${JSON.stringify(vars)}`);
 	}
 
 	const conversation = conversations[request.conversationId];
@@ -1451,7 +1570,7 @@ export function createRunner(request: AgentRunRequest, options: RunnerOptions = 
 	ctx.modeId = mode.id;
 
 	return {
-		runner: new AgentRunner({ request, mode, ctx, options }),
+		runner: new AgentRunner({ request, mode, vars, ctx, options }),
 	};
 }
 

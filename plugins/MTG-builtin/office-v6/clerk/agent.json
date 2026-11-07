@@ -1,0 +1,14 @@
+{
+	"id": "clerk",
+	"name": "办公助理",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": "[mode.rClerk]",
+	"delegatable": "[mode.clerkAgents]",
+	"ability": {
+		"tools": {
+			"allow": "[mode.clerkTools]",
+			"deny": "[mode.denyTools]"
+		}
+	}
+}

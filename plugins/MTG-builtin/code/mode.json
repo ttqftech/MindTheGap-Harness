@@ -6,6 +6,40 @@
 	"maxDepth": 3,
 	"taskList": { "enabled": true, "writable": true },
 	"mcpDisabled": false,
-	"limits": { "totalRounds": 45, "agentInstanceRounds": 15, "warnAtRemaining": 3 },
+	"limits": { "totalRounds": "[totalRounds]", "agentInstanceRounds": "[agentInstanceRounds]", "warnAtRemaining": 3 },
+	"params": {
+		"intensity": "medium",
+		"rIntent": 1,
+		"rPlan": 1,
+		"rEngineer": 2,
+		"rReview": 1,
+		"totalRounds": 45,
+		"agentInstanceRounds": 15
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "同时覆盖循环预算与各 Agent 的反思次数（agent.json 里写的是 \"[mode.rXxx]\"）",
+			"options": [
+				{ "label": "low", "value": "low", "description": "不反思，总预算 25 轮", "vars": { "rIntent": 0, "rPlan": 0, "rEngineer": 0, "rReview": 0, "totalRounds": 25, "agentInstanceRounds": 10 } },
+				{ "label": "medium", "value": "medium", "description": "默认：默认预算 + 每实例 1~2 次反思", "vars": { "rIntent": 1, "rPlan": 1, "rEngineer": 2, "rReview": 1, "totalRounds": 45, "agentInstanceRounds": 15 } },
+				{ "label": "high", "value": "high", "description": "反思加一档，总预算 70 轮", "vars": { "rIntent": 2, "rPlan": 2, "rEngineer": 3, "rReview": 2, "totalRounds": 70, "agentInstanceRounds": 20 } },
+				{ "label": "ultracode", "value": "ultracode", "description": "反思最勤，总预算 110 轮", "vars": { "rIntent": 3, "rPlan": 3, "rEngineer": 4, "rReview": 3, "totalRounds": 110, "agentInstanceRounds": 30 } }
+			]
+		},
+		{
+			"key": "rEngineer",
+			"label": "工程反思次数",
+			"type": "select",
+			"description": "单独覆盖 engineer 的 reflectionCount；手动选过之后不再被强度联动覆盖",
+			"options": [
+				{ "label": "0（不反思）", "value": 0 },
+				{ "label": "2（默认）", "value": 2 },
+				{ "label": "4", "value": 4 }
+			]
+		}
+	],
 	"ui": { "icon": "🧭", "accent": "blue" }
 }
