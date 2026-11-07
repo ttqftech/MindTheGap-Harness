@@ -299,6 +299,17 @@
 				border-color: var(--accent-soft-border);
 				background-color: var(--accent-soft);
 			}
+			/* 安全性 chip：只读两档标成「受限」，无防护档标成强调（都是提醒，不是禁用） */
+			.safety-chip.is-warn {
+				color: var(--text-2);
+				border-color: var(--border-2);
+				background-color: var(--bg-2);
+			}
+			.safety-chip.is-on {
+				color: var(--warn, var(--accent));
+				border-color: var(--accent-soft-border);
+				background-color: var(--accent-soft);
+			}
 			.input-send-btn {
 				width: 30px;
 				height: 30px;

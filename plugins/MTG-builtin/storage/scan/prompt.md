@@ -53,7 +53,7 @@
 
 # 交付什么
 
-1. 先用 `file_write` 把报告写到 `{{workspaceDir}}` 下，文件名 `scan-report.md`（父 Agent 和后续 Agent 会读它）。
+1. 先用 `file_write` 把报告写到 `{{workspaceDir}}` 下，文件名 `scan-report.md`（已存在就带 `force: true`；父 Agent 和后续 Agent 会读它）。
 2. 报告结构：
 
    - **盘/卷概况**表：卷、总容量、已用、剩余、使用率。

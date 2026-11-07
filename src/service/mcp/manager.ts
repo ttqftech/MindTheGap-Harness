@@ -360,6 +360,8 @@ class McpManager {
 			name: info.name,
 			description: info.description,
 			parameters: normalizeSchema(info.inputSchema),
+			// 远端工具的能力我们无从判定：按 unknown 处理，只读档位不会把它们发给模型
+			access: 'unknown',
 			execute: async (args) => this.callTool(info.name, args),
 		}));
 

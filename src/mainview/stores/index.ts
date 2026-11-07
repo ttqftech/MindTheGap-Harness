@@ -138,6 +138,8 @@ export type AppState = {
 	usage: UsageStats;	// 设置页用量统计（TODO 收归到设置页本身，不直接存储在 AppState 中）
 	mcpServers: McpServerConfig[];	// MCP 服务器配置（持久化在后端 settings.json）
 	mcpStatus: McpServerStatus[];	// MCP 运行态（后端内存维护，不持久化）
+	/** 工具安全性档位（后端 settings.safety）。**全局开关**，所有模式 / 插件共用一份，不是模式配置 */
+	safety: agentBridge.ToolSafety;
 	/** 内置 mock 开关（后端 settings.debug.mock）。开发用：LLM 走假模型，**工具仍真实执行** */
 	mock: { enabled: boolean; scenario: string; scenarios: { id: string; label: string }[] };
 };
@@ -201,6 +203,7 @@ export const defaultState: AppState = {
 	},
 	mcpServers: [],
 	mcpStatus: [],
+	safety: 'normal',
 	mock: { enabled: false, scenario: 'web', scenarios: [] },
 };
 
@@ -412,7 +415,7 @@ async function saveBackendSettings() {
 export async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, mock] = await Promise.all([
+	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, safety, mock] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getModes(),
@@ -421,6 +424,7 @@ export async function loadBackendState(): Promise<void> {
 		agentBridge.getMcpServers(),
 		agentBridge.getBasePrompt(),
 		agentBridge.health(),
+		agentBridge.getSafety(),
 		agentBridge.getMock(),
 	]);
 
@@ -439,6 +443,7 @@ export async function loadBackendState(): Promise<void> {
 	}
 	if (folders.length > 0) setState('folders', folders);
 	setState('mcpServers', mcpServers);
+	setState('safety', safety);
 	setState('mock', mock);
 
 	if (conversations.length > 0) {
@@ -882,6 +887,17 @@ export const actions = {
 	/** 回答 ask_user 提问卡片 */
 	async answerToolCall(conversationId: string, toolCallId: string, result: string) {
 		return agentBridge.answerToolCall({ conversationId, toolCallId, result });
+	},
+
+	/**
+	 * 切换工具安全性档位（全局开关）。
+	 * 只影响**之后**开始的 run（后端在开跑时固化档位），所以不做 409 守卫；
+	 * 仍然只有后端接受了才更新本地状态，失败原样返回给调用方提示。
+	 */
+	async setSafety(safety: agentBridge.ToolSafety) {
+		const result = await agentBridge.setSafety(safety);
+		if (result.ok) setState('safety', safety);
+		return result;
 	},
 
 	/**

@@ -120,6 +120,25 @@ export interface ModeLimits {
 	warnAtRemaining?: number;		// 剩余多少次时开始注入告警提示词
 }
 
+/**
+ * 工具安全性档位 —— **全局设置**（`settings.safety`），不是模式配置。
+ *
+ * 它是横切所有插件 / 模式的一道闸门：换模式不换档位，改档位对所有会话生效。
+ * 落点是工具执行层（`service/safety.ts`），与各 Agent 的 `ability.tools` 名单**正交**：
+ * 名单决定「这个角色该有哪些工具」（工作流），档位决定「这批工具里有副作用的那部分能不能真跑」。
+ *
+ * | 档位 | 可见工具 | shell | 删除 |
+ * |---|---|---|---|
+ * | readonly-strict | 只读 + 编排 | 不提供 | 不提供 |
+ * | readonly-smart  | 只读 + shell | 每次 LLM 审核，只放行无副作用命令 | 不提供 |
+ * | normal          | 全部 | 直通 | → 系统回收站，无则会话 backups/ |
+ * | smart           | 全部 | LLM 审核（拦不可逆 / 越界 / 危险脚本） | → 回收站 |
+ * | off             | 全部 | 直通 | 真删 |
+ *
+ * 提示词里通过 `buildPromptScope` 的内置变量读它：`{{ safety }}` / `{{#if safetyReadOnly}}`。
+ */
+export type ToolSafety = 'readonly-strict' | 'readonly-smart' | 'normal' | 'smart' | 'off';
+
 /** <modeId>/mode.json —— 模式配置的唯一来源（没有 settings 覆盖层，设置页直接编辑这个文件） */
 export interface ModeDefinition {
 	id: string;				// 'code' | 'empty'
@@ -547,6 +566,7 @@ export type LlmPurpose =
 	| 'reflection'		// 反思轮
 	| 'ask_child'		// ask_child 的一次性问答
 	| 'web_rank'		// web_search 内部的相关性打分（工具发起的独立请求）
+	| 'safety_review'	// 工具安全闸门里的 shell 命令审核（工具发起的独立请求）
 	| 'other';
 
 /** 什么导致了这次请求 */
@@ -852,6 +872,11 @@ export interface ServiceSettings {
 	 * **没有默认值**：没填就是空串，空串是合法状态（等于不提供基座），代码不会拿任何硬编码文案去补。
 	 */
 	basePrompt: string;
+	/**
+	 * 工具安全性档位。**全局开关**：所有模式 / 所有插件共用一份，不是 mode.json 的字段。
+	 * 缺字段（老 settings.json）按 `normal` 处理，见 `service/safety.ts` 的 `normalizeSafety`。
+	 */
+	safety: ToolSafety;
 	folders: Folder[];
 	mcpServers: McpServerConfig[];
 	/** 用户列表（见 §11）。缺字段时按「空用户名的管理员、无密码、全权限」处理 */

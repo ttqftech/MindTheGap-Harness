@@ -16,7 +16,6 @@
 	},
 	"params": {
 		"intensity": "medium",
-		"safety": "guarded",
 		"rootAgentId": "lead",
 		"maxDepth": 2,
 		"totalRounds": 40,
@@ -34,11 +33,6 @@
 		"hasPlan": false,
 		"hasReview": false,
 		"staged": false,
-		"readOnly": false,
-		"denyTools": [
-			"file_delete",
-			"file_rename"
-		],
 		"rSolo": 0,
 		"hasReflect": false
 	},
@@ -154,50 +148,6 @@
 						"hasPlan": true,
 						"hasReview": true,
 						"staged": true
-					}
-				}
-			]
-		},
-		{
-			"key": "safety",
-			"label": "工具安全性",
-			"type": "select",
-			"description": "按「移除哪些写盘工具」控制风险",
-			"options": [
-				{
-					"label": "只读",
-					"value": "readonly",
-					"description": "移除写入、编辑、新建、删除、改名：只出结论与补丁文本",
-					"vars": {
-						"readOnly": true,
-						"denyTools": [
-							"file_write",
-							"file_edit",
-							"file_create",
-							"file_delete",
-							"file_rename"
-						]
-					}
-				},
-				{
-					"label": "可控",
-					"value": "guarded",
-					"description": "可写可改可新建，删除与改名不可用",
-					"vars": {
-						"readOnly": false,
-						"denyTools": [
-							"file_delete",
-							"file_rename"
-						]
-					}
-				},
-				{
-					"label": "完全",
-					"value": "full",
-					"description": "全开，删除与改名由提示词里的确认规则兜底",
-					"vars": {
-						"readOnly": false,
-						"denyTools": []
 					}
 				}
 			]

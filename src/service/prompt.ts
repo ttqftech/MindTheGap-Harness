@@ -20,7 +20,8 @@
    ========================================================================== */
 
 import { join } from 'node:path';
-import type { AgentDefinition, AgentInstance, ModeDefinition } from '@shared/agent';
+import type { AgentDefinition, AgentInstance, ModeDefinition, ToolSafety } from '@shared/agent';
+import { isReadonlySafety } from './safety';
 
 // #region 模板引擎
 
@@ -232,8 +233,15 @@ export interface PromptContext {
 	basePrompt: string;
 	/** 本次 run 生效的模式参数（Composer 动态表单 → 覆盖 mode.json 的 params） */
 	params?: Record<string, unknown>;
+	/**
+	 * 工作目录（文件相对路径的基准 + shell 的 cwd）。
+	 * 用户选了文件夹就是那个；没选时 = 本会话的临时工作空间（`conversationDir/workspace`），
+	 * 由 Runner 在开跑时算好传进来 —— **不用进程 cwd 兜底**。
+	 */
 	runningDir: string;
-	/** 会话目录（workspace / docs / backups 的根）。缺省时对应变量为空串 */
+	/** 工具安全性档位（全局设置，Runner 开跑时固化）。提示词里以 {{ safety }} / {{#if safetyReadOnly}} 读 */
+	safety: ToolSafety;
+	/** 会话目录 = **内务区**（ctx.json / requestLog.jsonl / backups/），不是模型作业区。缺省时对应变量为空串 */
 	conversationDir?: string;
 	/** 该实例实际可见的工具（已按白名单过滤） */
 	tools: PromptToolInfo[];
@@ -260,9 +268,8 @@ const TOOL_USAGE: Record<string, string> = {
 	file_read: '读取文件内容（支持 offset/limit 分段）',
 	file_list: '列出目录内容',
 	file_search: '按关键词 / 正则搜索文件内容',
-	file_write: '写入文件（覆盖，不存在则创建）',
+	file_write: '写入文件（默认只新建；整份覆盖已有文件要传 force=true）',
 	file_edit: '按行号区间替换文件内容',
-	file_create: '创建新文件',
 	file_delete: '删除文件',
 	file_rename: '重命名 / 移动文件（高风险操作请先 ask_user）',
 	shell: '执行 shell 命令（Windows 下为 cmd.exe；git / 构建 / 跑脚本等）',
@@ -337,8 +344,10 @@ function childEntry(agentInstance: AgentInstance): Record<string, unknown> {
  * | `agentId` `agentName` `agentInstanceId` | 本实例是谁 |
  * | `modeId` `modeName` `depth` `maxDepth` | 所处模式与层级 |
  * | `isRoot` `isSubAgent` `parentAgentInstanceId` | 树上位置（根实例没有父任务） |
- * | `platform` `shell` `time` `runningDir` | 运行环境 |
- * | `conversationDir` `workspaceDir` `docsDir` `backupsDir` `tmpDir` `mtgBinaryDir` | 会话目录（由调用方传入，缺省为空串）、二进制目录 |
+ * | `platform` `shell` `time` | 运行环境 |
+ * | `runningDir` `workspaceDir` `docsDir` `tmpDir` | 工作目录（用户选的；没选时 = 临时工作空间）、临时工作空间（会话里的 workspace）与其建议子目录 |
+ * | `conversationDir` `backupsDir` | 会话目录（**内务区**：ctx.json / 日志）与删除兜底目录；`conversationDir` 缺省时相关变量为空串 |
+ * | `mtgBinaryDir` | MTG 自己的安装目录（**不是**模型的工作区，写盘别往这儿） |
  * | `basePrompt` | 基座提示词正文（**模板里不写这个占位符就不会出现在 system prompt 里**） |
  * | `parentPrompt` `hasParentPrompt` | 父 Agent 下发的任务 |
  * | `tools` `hasTools` `hasTool` | 工具清单（`hasTool.finish` / `hasTool.delegate` …） |
@@ -386,12 +395,23 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		platform: platformLabel(),
 		shell: shellLabel(),
 		time: nowLabel(),
+		// 两个目录概念，够用了：
+		//   runningDir   —— **工作目录**（文件相对路径基准 + shell cwd）。用户选了文件夹就是它；
+		//                   没选时 = 本会话的临时工作空间，所以它和 workspaceDir 会是同一个路径。
+		//   workspaceDir —— **临时工作空间**（会话目录下的 workspace，模型的作业区）
+		// ⚠️ 两者都**不再**回退 process.cwd()（那是 MTG 自己的安装目录）。
 		runningDir: ctx.runningDir || '(未指定)',
+		safety: ctx.safety,
+		safetyReadOnly: isReadonlySafety(ctx.safety),
+		safetyShellReview: ctx.safety === 'readonly-smart' || ctx.safety === 'smart',
+		readOnly: isReadonlySafety(ctx.safety),
 		...(ctx.conversationDir ? {
+			// conversationDir 是**内务区**（ctx.json / requestLog.jsonl / backups/），只读地告诉模型「别动」
 			conversationDir: ctx.conversationDir,
 			workspaceDir: join(ctx.conversationDir, 'workspace'),
+			// docs / tmp 只是「建议落点」：workspace 下不预建子目录，模型写文件时自动创建
 			docsDir: join(ctx.conversationDir, 'workspace', 'docs'),
-			backupsDir: join(ctx.conversationDir, 'workspace', 'backups'),
+			backupsDir: join(ctx.conversationDir, 'backups'),
 			tmpDir: join(ctx.conversationDir, 'workspace', 'tmp'),
 		} : {}),
 		mtgBinaryDir: process.cwd(),

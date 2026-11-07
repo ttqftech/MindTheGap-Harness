@@ -10,7 +10,6 @@
 	"params": {
 		"intensity": "medium",
 		"tierName": "标准",
-		"safety": "guarded",
 		"maxDepth": 2,
 		"totalRounds": 50,
 		"agentInstanceRounds": 16,
@@ -26,9 +25,7 @@
 		"isMax": false,
 		"isStaged": false,
 		"rootAgents": ["explore", "engineer", "verify"],
-		"engineerAgents": [],
-		"readOnly": false,
-		"denyTools": ["file_delete", "file_rename"]
+		"engineerAgents": []
 	},
 	"form": [
 		{
@@ -131,41 +128,6 @@
 						"isStaged": true,
 						"rootAgents": ["explore", "plan", "engineer", "verify", "review"],
 						"engineerAgents": ["explore", "engineer"]
-					}
-				}
-			]
-		},
-		{
-			"key": "safety",
-			"label": "工具安全性",
-			"type": "select",
-			"description": "按「去掉写入类工具」控制风险：只读 = 只出方案不动盘；标准 = 可写但不许删 / 移；完全 = 全开",
-			"options": [
-				{
-					"label": "只读",
-					"value": "readonly",
-					"description": "去掉 file_write / file_edit / file_create / file_delete / file_rename：只分析、出方案与补丁文本",
-					"vars": {
-						"readOnly": true,
-						"denyTools": ["file_write", "file_edit", "file_create", "file_delete", "file_rename"]
-					}
-				},
-				{
-					"label": "标准",
-					"value": "guarded",
-					"description": "可写可改可新建，但 file_delete / file_rename 不可用（要删改由用户自己动手）",
-					"vars": {
-						"readOnly": false,
-						"denyTools": ["file_delete", "file_rename"]
-					}
-				},
-				{
-					"label": "完全",
-					"value": "full",
-					"description": "不裁剪任何工具：删除 / 移动都可用，风险靠提示词的「高风险先问用户」兜底",
-					"vars": {
-						"readOnly": false,
-						"denyTools": []
 					}
 				}
 			]

@@ -446,6 +446,56 @@ export async function setBasePrompt(basePrompt: string): Promise<boolean> {
 
 // #endregion
 
+// #region 设置 — 工具安全性（全局开关，所有模式共用）
+
+/**
+ * 工具安全性档位。
+ * ⚠️ 这是**全局设置**（后端 `settings.safety`），不是模式配置：换模式不影响它，
+ * 改它影响之后所有 run。闸门在后端工具执行层，前端只负责选。
+ */
+export type ToolSafety = 'readonly-strict' | 'readonly-smart' | 'normal' | 'smart' | 'off';
+
+/** 档位清单（label / description 与后端语义一一对应；前端不擅自增删） */
+export const SAFETY_OPTIONS: { value: ToolSafety; label: string; description: string }[] = [
+	{ value: 'readonly-strict', label: '只读（严格）', description: '只有读取类工具，无 shell' },
+	{ value: 'readonly-smart', label: '只读（智能）', description: '只有读取类工具；shell 每次调用先过 LLM 审核，只放行无副作用的命令' },
+	{ value: 'normal', label: '普通', description: '全部工具可用；删除移入回收站（没有回收站则落到会话 backups/）' },
+	{ value: 'smart', label: '智能', description: '全部工具可用 + 删除进回收站；shell 调用过 LLM 审核，拦不可逆 / 越界 / 危险脚本' },
+	{ value: 'off', label: '无防护', description: '全部工具可用，无防护无审核' },
+];
+
+export async function getSafety(): Promise<ToolSafety> {
+	try {
+		const r = await httpFetch<{ safety: ToolSafety }>('/api/settings/safety');
+		return r.safety;
+	} catch {
+		return 'normal';
+	}
+}
+
+export async function setSafety(safety: ToolSafety): Promise<{ ok: boolean; error?: string }> {
+	try {
+		return await httpFetch('/api/settings/safety', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ safety }),
+		});
+	} catch (e: any) {
+		const raw = String(e?.message ?? e);
+		const json = raw.match(/\{.*\}$/)?.[0];
+		if (json) {
+			try {
+				return { ok: false, error: (JSON.parse(json) as { error?: string }).error ?? raw };
+			} catch {
+				// 解析失败就用原文
+			}
+		}
+		return { ok: false, error: raw };
+	}
+}
+
+// #endregion
+
 // #region 设置 — 内置 mock（开发用：LLM 走假模型，工具仍真实执行）
 
 export interface MockState {

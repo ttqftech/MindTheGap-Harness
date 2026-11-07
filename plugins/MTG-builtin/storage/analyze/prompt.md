@@ -24,7 +24,7 @@
 
 # 输出什么
 
-用 `file_write` 写到 `{{workspaceDir}}` 下，文件名 `cleanup-plan.md`，结构是三张表 + 汇总：
+用 `file_write` 写到 `{{workspaceDir}}` 下，文件名 `cleanup-plan.md`（已存在就带 `force: true`），结构是三张表 + 汇总：
 
 每条写清：**路径 / 体积 / 类别（A·B·C）/ 删除方式 / 风险与代价 / 判断依据**
 

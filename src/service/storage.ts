@@ -10,7 +10,12 @@
        conversations/<conversationId>/
          ctx.json                                # 全量：meta + modeId + agentCtx（唯一真相）
          requestLog.jsonl                        # LLM 层账本（诊断日志，可删）
-         workspace/{docs,backups,tmp/llm}/       # AI 工作产出
+         backups/                                # 内务区：删除兜底（没有回收站时）
+         workspace/                              # 模型的临时作业区，子目录由需要时现建
+
+   ⚠️ 内务区（ctx.json / requestLog.jsonl / backups）与作业区（workspace）是两种东西：
+   前者是应用自己的数据，后者是模型可以随便写的地方。**不做路径级拦截**（用户取舍），
+   但提示词里只把 workspace 指给模型。
 
    ⚠️ ctx.json 里**没有 UI 消息**（2026-09-14 起）：界面内容由 `mainview/logic/projection.ts`
    从 agentCtx 现算，不再持久化一份投影。
@@ -39,9 +44,14 @@ const CONVERSATIONS_DIR = join(DATA_DIR, 'conversations');
 /** 落盘防抖时长（ms） */
 const SAVE_DEBOUNCE_MS = 700;
 
-/** 会话目录（workspace / requestLog 的根） */
+/** 会话目录（workspace / backups / requestLog 的根） */
 export function conversationDir(conversationId: string): string {
 	return join(CONVERSATIONS_DIR, conversationId);
+}
+
+/** 会话的删除兜底目录（不属于模型作业区） */
+export function conversationBackupsDir(conversationId: string): string {
+	return join(conversationDir(conversationId), 'backups');
 }
 
 /** 会话的 ctx.json 路径 */
@@ -49,10 +59,14 @@ export function conversationCtxPath(conversationId: string): string {
 	return join(conversationDir(conversationId), 'ctx.json');
 }
 
-/** 确保会话目录与 workspace 子目录存在 */
+/**
+ * 确保会话目录与内务子目录存在。
+ * ⚠️ 只建 `workspace/`（模型作业区）与 `backups/`（删除兜底），**不预建 docs / tmp** ——
+ *    模型写文件时父目录会自动创建，目录结构由任务现场决定。
+ */
 export function ensureConversationDir(conversationId: string): string {
 	const dir = conversationDir(conversationId);
-	for (const sub of ['', 'workspace', join('workspace', 'docs'), join('workspace', 'backups'), join('workspace', 'tmp')]) {
+	for (const sub of ['', 'workspace', 'backups']) {
 		const target = sub ? join(dir, sub) : dir;
 		if (!existsSync(target)) mkdirSync(target, { recursive: true });
 	}
@@ -221,6 +235,8 @@ const defaultSettings: ServiceSettings = {
 	// 基座提示词没有默认值：唯一来源是 settings.basePrompt，没填就是空串（空串是合法状态）。
 	// 这里列出来只是为了让缺字段的老 settings.json 补上一个空键，免得读侧到处判 undefined。
 	basePrompt: '',
+	// 工具安全性：全局开关，所有模式共用。缺字段的老 settings.json 走这里（normal = 全开 + 删除进回收站）
+	safety: 'normal',
 	folders: [{ id: 'local', isLocal: true }],
 	mcpServers: defaultMcpServers(),
 	// 默认只有一个「空用户名 = 管理员、无密码、全权限」的账号（见 auth.ts）。

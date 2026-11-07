@@ -6,8 +6,7 @@
 	"reflectionCount": 0,
 	"ability": {
 		"tools": {
-			"allow": ["file_read", "file_list", "file_search", "shell", "finish"],
-			"deny": "[mode.denyTools]"
+			"allow": ["file_read", "file_list", "file_search", "shell", "finish"]
 		}
 	}
 }

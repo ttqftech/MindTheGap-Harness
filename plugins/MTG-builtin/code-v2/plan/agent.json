@@ -10,8 +10,7 @@
 			"allow": [
 				"file_read", "file_list", "file_search", "file_write", "shell",
 				"ask_user", "delegate", "finish"
-			],
-			"deny": "[mode.denyTools]"
+			]
 		}
 	}
 }

@@ -16,7 +16,7 @@
 
 ## shell
 
-已经在 `{{runningDir}}` 里执行，命令里不用 `cd`。超过一行的脚本先 `file_create` 写成文件再跑。
+已经在 `{{runningDir}}` 里执行，命令里不用 `cd`。超过一行的脚本先 `file_write` 写成文件再跑。
 
 ## 写文件
 

@@ -9,11 +9,12 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, RequestLogLevel, UserConfig } from '@shared/agent';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './runner';
 import * as auth from './auth';
 import { getBuiltinToolNames } from './tools';
+import { normalizeSafety, SAFETY_VALUES } from './safety';
 import { setMockResolver } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequest, readRequests, setRequestLogOptions } from './llm/requestLog';
@@ -557,6 +558,31 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				}
 				settings.basePrompt = basePrompt;
 				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// #endregion
+
+			// #region 设置 — 工具安全性（全局开关）
+
+			// 一份设置管所有模式 / 插件。运行中的 run 在开跑时已经固化了档位，这里改**不影响在飞的 run**，
+			// 所以不像 mock 那样需要 409 —— 半路换档位最多是「下一轮的工具表与这一轮不同」，
+			// 而闸门判定用的是 Runner 里那份固化的值，不会中途翻转。
+			if (req.method === 'GET' && path === '/api/settings/safety') {
+				sendJson(res, 200, { safety: normalizeSafety(settings.safety) });
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/safety') {
+				const body = await readBody(req);
+				const { safety } = JSON.parse(body || '{}') as { safety?: unknown };
+				if (typeof safety !== 'string' || !SAFETY_VALUES.includes(safety as ToolSafety)) {
+					sendJson(res, 400, { ok: false, error: `safety 必须是 ${SAFETY_VALUES.join(' / ')} 之一` });
+					return;
+				}
+				settings.safety = safety as ToolSafety;
+				logMsg(`[HttpServer] 工具安全性：${settings.safety}`);
+				sendJson(res, 200, { ok: true, safety: settings.safety });
 				return;
 			}
 

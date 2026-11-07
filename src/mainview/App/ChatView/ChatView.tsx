@@ -328,6 +328,30 @@ export default function ChatView() {
 
 	// #endregion
 
+	// #region 工具安全性（全局开关，不属于任何模式）
+
+	/** 当前档位的显示名 */
+	const safetyLabel = () => agentBridge.SAFETY_OPTIONS.find((o) => o.value === appState.safety)?.label ?? appState.safety;
+
+	/** 档位菜单：全局一份，与模式无关；改完对**之后**的 run 生效 */
+	const safetyMenu = createMemo<MenuItem[]>(() =>
+		agentBridge.SAFETY_OPTIONS.map((o) => ({
+			type: 'radio' as const,
+			value: o.value,
+			label: o.label,
+			tooltip: o.description,
+			checked: appState.safety === o.value,
+		})),
+	);
+
+	const applySafety = async (value: string) => {
+		if (value === appState.safety) return;
+		const result = await actions.setSafety(value as agentBridge.ToolSafety);
+		if (!result.ok) void alertMsgbox('切换工具安全性失败', result.error ?? '未知错误');
+	};
+
+	// #endregion
+
 	// #region 内置 mock 开关（开发用）
 
 	/** 剧本下拉：选项由后端给（`GET /api/settings/mock` 里带 scenarios），前端不重复维护 */
@@ -655,6 +679,19 @@ export default function ChatView() {
 						>
 							<span class={styles['state-dot']} />
 							<span class={styles['ctx-chip-text']}>{currentModelDisplay()}</span>
+						</button>
+
+						{/* 工具安全性（全局开关：与模式无关，所有插件共用） */}
+						<button
+							class={`${styles['ctx-chip']} ${styles['safety-chip']}`}
+							classList={{
+								[styles['is-on']]: appState.safety === 'off',
+								[styles['is-warn']]: appState.safety === 'readonly-strict' || appState.safety === 'readonly-smart',
+							}}
+							title="工具安全性：全局开关，换模式不影响它；改完对之后的运行生效"
+							onclick={(e) => openChipMenu(safetyMenu(), applySafety, e.currentTarget)}
+						>
+							<span class={styles['ctx-chip-text']}>安全性 · {safetyLabel()}</span>
 						</button>
 
 						{/* 内置 mock（开发用） */}

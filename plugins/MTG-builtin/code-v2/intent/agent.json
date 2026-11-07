@@ -12,8 +12,7 @@
 				"task_list_read", "task_list_write",
 				"ask_user",
 				"delegate", "resume_pending_child", "resume_completed_child", "ask_child"
-			],
-			"deny": "[mode.denyTools]"
+			]
 		}
 	}
 }

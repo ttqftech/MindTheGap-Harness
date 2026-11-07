@@ -1,0 +1,16 @@
+{
+	"id": "solo",
+	"name": "工程师",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": "[rSolo]",
+	"ability": {
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search",
+				"file_write", "file_edit", "file_create", "file_delete", "file_rename",
+				"shell", "web_fetch", "ask_user"
+			]
+		}
+	}
+}

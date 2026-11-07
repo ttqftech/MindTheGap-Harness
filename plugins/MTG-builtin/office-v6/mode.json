@@ -16,7 +16,6 @@
 	},
 	"params": {
 		"intensity": "medium",
-		"safety": "guarded",
 		"rootAgentId": "clerk",
 		"maxDepth": 2,
 		"totalRounds": 28,
@@ -47,12 +46,7 @@
 			"delegate"
 		],
 		"hasReader": false,
-		"staged": false,
-		"readOnly": false,
-		"denyTools": [
-			"file_delete",
-			"file_rename"
-		]
+		"staged": false
 	},
 	"form": [
 		{
@@ -192,50 +186,6 @@
 						],
 						"hasReader": true,
 						"staged": true
-					}
-				}
-			]
-		},
-		{
-			"key": "safety",
-			"label": "工具安全性",
-			"type": "select",
-			"description": "按「移除哪些写盘工具」控制风险",
-			"options": [
-				{
-					"label": "只读",
-					"value": "readonly",
-					"description": "移除写入、编辑、新建、删除、改名：产出以对话正文形式给出，不落盘",
-					"vars": {
-						"readOnly": true,
-						"denyTools": [
-							"file_write",
-							"file_edit",
-							"file_create",
-							"file_delete",
-							"file_rename"
-						]
-					}
-				},
-				{
-					"label": "可控",
-					"value": "guarded",
-					"description": "可新建与修改，删除和改名不可用",
-					"vars": {
-						"readOnly": false,
-						"denyTools": [
-							"file_delete",
-							"file_rename"
-						]
-					}
-				},
-				{
-					"label": "完全",
-					"value": "full",
-					"description": "全开，删除与改名由提示词里的确认规则兜底",
-					"vars": {
-						"readOnly": false,
-						"denyTools": []
 					}
 				}
 			]

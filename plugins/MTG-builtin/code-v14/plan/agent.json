@@ -1,0 +1,13 @@
+{
+	"id": "plan",
+	"name": "计划",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": "[mode.rPlan]",
+	"delegatable": ["explore"],
+	"ability": {
+		"tools": {
+			"allow": ["file_read", "file_list", "file_search", "shell", "ask_user", "delegate", "finish"]
+		}
+	}
+}

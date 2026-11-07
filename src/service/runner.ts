@@ -18,7 +18,8 @@
  * 状态全部在 ctx 里；本类只在一次 run 期间做「内存中的调度缓存」（busy 集合、delegate 分组、挂起原因），进程重启后这些缓存可以安全地重新推导。
  */
 
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, ConversationRunStatus, LlmMessage, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, UsageEntry } from '@shared/agent';
+import { join } from 'node:path';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, ConversationRunStatus, LlmMessage, LlmPurpose, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
 import { callLlm } from './llm/model';
 import { mcpManager } from './mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
@@ -26,6 +27,7 @@ import { conversations, ensureConversationDir, settings } from './storage';
 import { logMsg } from '../shared/utils';
 import { renderSystemPrompt, renderStatePrompt } from './prompt';
 import { applyModeVars, resolveModeVars, type ModeParamSelections } from '../shared/modeParams';
+import { normalizeSafety } from './safety';
 import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
@@ -277,7 +279,10 @@ export class AgentRunner {
 	/** 本次 run 生效的模式参数（`params` 默认值 + Composer 表单选择），提示词里以 `{{ r }}` 可见 */
 	private vars: ModeParamSelections;
 	private model: ModelConfig;
+	/** 工作目录：用户指定的那个；没指定时 = 本会话的临时工作空间 */
 	private runningDir: string;
+	/** 工具安全性档位：全局设置（settings.safety），开跑时固化，运行中改设置不影响本次 run */
+	private safety: ToolSafety;
 	private ctx: AgentCtx;
 	private options: RunnerOptions;
 
@@ -307,7 +312,8 @@ export class AgentRunner {
 		this.mode = params.mode;
 		this.vars = params.vars ?? {};
 		this.model = params.request.model;
-		this.runningDir = params.request.runningDir ?? '';
+		this.runningDir = params.request.runningDir?.trim() || join(ensureConversationDir(this.conversationId), 'workspace');	// // 工作目录 = 用户指定的那个；没指定就用本会话的临时工作空间。
+		this.safety = normalizeSafety(settings.safety);
 		this.ctx = params.ctx;
 		this.options = params.options ?? {};
 		this.donePromise = new Promise((resolve) => {
@@ -594,7 +600,7 @@ export class AgentRunner {
 			const def = this.getAgentDefinitionByInstance(instance);
 			// 收尾轮不给工具：手上没有工具，它就只能输出文本 —— 也就只能交代，不可能又开工一轮
 			const lastCall = instance.messages.some((m) => m.role === 'system' && m.content === BUDGET_LAST_CALL);
-			const tools = lastCall ? [] : getToolsForAgentInstance(instance, def, this.mode);
+			const tools = lastCall ? [] : getToolsForAgentInstance(instance, def, this.mode, this.safety);
 
 			const systemPrompt = this.buildSystemPrompt(instance, tools);
 			// 空 prompt → 不下发 system message（「空」模式的 prompt.md 就是空的）
@@ -776,6 +782,7 @@ export class AgentRunner {
 				reason,
 				def,
 				mode: this.mode,
+				safety: this.safety,
 				signal: this.abortController.signal,
 				delegate: async (agentId, task) => this.primitiveDelegate(instance, call.id, agentId, task, call.name),
 				finish: async (summary) => ({
@@ -892,9 +899,10 @@ export class AgentRunner {
 	 * 这里独立成一次 purpose=web_rank 的请求，账本里一眼可见。
 	 */
 	private async toolSubLlm(instance: AgentInstance, req: ToolLlmRequest): Promise<ToolLlmResult> {
+		const purpose = (req.purpose ?? 'web_rank') as LlmPurpose;
 		const meta = {
 			conversationId: this.conversationId,
-			purpose: 'web_rank' as const,
+			purpose,
 			agentInstanceId: instance.agentInstanceId,
 			agentId: instance.agentId,
 			agentName: instance.agentName,
@@ -920,7 +928,7 @@ export class AgentRunner {
 		if (!responseFormat) {
 			try {
 				const result = await callLlmWithRetry({ config: this.model, messages, tools: [], signal }, meta);
-				this.chargeSubLlm(instance, result);
+				this.chargeSubLlm(instance, result, { purpose });
 				return { ok: true, text: result.text };
 			} catch (err) {
 				return { ok: false, text: '', error: (err as Error)?.message ?? String(err) };
@@ -929,7 +937,7 @@ export class AgentRunner {
 
 		try {
 			const result = await callLlmWithRetry({ config: this.model, messages, tools: [], signal, responseFormat }, meta);
-			this.chargeSubLlm(instance, result);
+			this.chargeSubLlm(instance, result, { purpose });
 			return { ok: true, text: result.text };
 		} catch (err) {
 			const first = (err as Error)?.message ?? String(err);
@@ -941,7 +949,7 @@ export class AgentRunner {
 			}
 			try {
 				const retry = await callLlmWithRetry({ config: this.model, messages, tools: [], signal }, meta);
-				this.chargeSubLlm(instance, retry);
+				this.chargeSubLlm(instance, retry, { purpose });
 				return { ok: true, text: retry.text };
 			} catch (err2) {
 				return { ok: false, text: '', error: (err2 as Error)?.message ?? String(err2) };
@@ -1415,6 +1423,7 @@ export class AgentRunner {
 			basePrompt: settings.basePrompt ?? '',
 			runningDir: this.runningDir,
 			conversationDir: ensureConversationDir(this.conversationId),
+			safety: this.safety,
 			tools: tools.map((t) => ({ name: t.name, description: t.description })),
 			parentPrompt: instance.task,
 			childAgentInstances: children,

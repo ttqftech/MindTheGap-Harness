@@ -5,12 +5,12 @@
  * - 编排类工具（delegate / finish / resume_* / ask_child / ask_user / task_list_*）的实现就是调用 Runner 注入的编排原语，自己不碰 ctx 的状态机。
  * - `reason` 由工具层统一注入 JSON Schema 的 required，执行前再从 args 里剥离。
  *
- * 能力过滤：AgentDefinition.ability.tools 白名单 + mcpDisabled 策略（见 getToolsForAgentInstance）。
+ * 能力过滤：AgentDefinition.ability.tools 白名单（工作流）+ 全局安全档位（settings.safety，安全）+ mcpDisabled 策略（见 getToolsForAgentInstance）。
  *
  * 注意：主进程运行时是 Cottontail（JSC），不是 Bun。所以必须用 node:* 系列 API，不能用 Bun.xxx。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync, statSync, openSync, readSync, closeSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, statSync, openSync, readSync, closeSync, rmSync, copyFileSync } from 'node:fs';
 import { resolve, dirname, join, isAbsolute, relative, extname } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -18,11 +18,12 @@ import { randomUUID } from 'node:crypto';
 import { FromSchema } from 'json-schema-to-ts';
 import type {
 	AgentCtx, AgentDefinition, AgentInstance, AskUserArgs, LlmTool,
-	ModeDefinition, ToolResult,
+	ModeDefinition, ToolResult, ToolSafety,
 } from '@shared/agent';
 import { fetchMany, fetchUrl, type FetchFormat, type RenderPolicy } from './web/fetch';
 import { searchEngines } from './web/engines';
 import { rankCandidates, type RankInput } from './web/rank';
+import { deleteFileSafely, isReadonlySafety, normalizeSafety, reviewShellCommand } from './safety';
 
 // #region 类型
 
@@ -33,13 +34,20 @@ import { rankCandidates, type RankInput } from './web/rank';
 export interface ToolContext {
 	ctx: AgentCtx;
 	agentInstanceId: string;
+	/**
+	 * 模型的工作目录：文件相对路径的基准 + shell 的 cwd。
+	 * = 用户指定的工作目录；没指定时 = 本会话的临时工作空间（conversationDir/workspace）。
+	 * ⚠️ 绝不用 process.cwd() 兜底 —— 那是 MTG 自己的安装目录，模型不该往那儿写。
+	 */
 	runningDir: string;
-	/** 会话目录（workspace / docs / backups 的根） */
+	/** 会话目录 = 内务区（ctx.json / requestLog.jsonl / backups/），不是模型的作业区 */
 	conversationDir: string;
 	/** 本次调用的理由（已从 args 剥离） */
 	reason: string;
 	def: AgentDefinition;
 	mode: ModeDefinition;
+	/** 本次 run 的工具安全性档位（全局设置，Runner 开跑时固化；工具层只管用） */
+	safety: ToolSafety;
 	/** 本轮 run 的中断信号（工具内部发起的网络 / LLM 请求都该跟着它一起断） */
 	signal: AbortSignal;
 	// ---- 编排原语 ----
@@ -71,6 +79,8 @@ export interface ToolLlmRequest {
 	 */
 	jsonSchema?: { name: string; schema: Record<string, unknown> };
 	signal?: AbortSignal;
+	/** 账本里的用途标签（默认 web_rank；如安全审核传 safety_review） */
+	purpose?: string;
 }
 
 export interface ToolLlmResult {
@@ -79,11 +89,25 @@ export interface ToolLlmResult {
 	error?: string;
 }
 
+/**
+ * 工具的副作用等级 —— 安全闸门（`service/safety.ts`）按它决定可见性与放行条件。
+ * - `read`：不落盘、不起进程（含编排类：delegate / finish / ask_user / task_list_*）
+ * - `write`：改盘（file_write / file_append / file_edit / file_delete / file_rename）
+ * - `exec`：可以干任何事（shell）
+ * - `unknown`：能力不可判定（MCP 远端工具）
+ *
+ * ⚠️ 它与 `agent.json` 的 `ability.tools` 名单是**两件事**：名单是「这个角色有哪些工具」（工作流），
+ * 这里是「这批工具里带副作用的那部分能不能真跑」（安全）。
+ */
+export type ToolAccess = 'read' | 'write' | 'exec' | 'unknown';
+
 /** 工具定义 */
 export interface AgentTool<TArgs extends Record<string, unknown> = Record<string, unknown>> {
 	name: string;
 	description: string;
 	parameters: Record<string, unknown>;
+	/** 副作用等级，见 ToolAccess。缺省按 `unknown` 处理（保守） */
+	access: ToolAccess;
 	execute: (args: TArgs, ctx: ToolContext) => Promise<ToolResult>;
 }
 
@@ -138,8 +162,13 @@ export function clearDynamicTools(sourceId: string): void {
  * - 不写 allow = 全部内置（减去 deny）；写了 = 只保留 allow 内且不在 deny 内的
  * - 编排类工具（delegate）在达到 maxDepth 时被移除
  * - MCP 工具按 mcpDisabled 过滤（agent 级优先，否则回退 mode 级，默认开放）
+ * - **安全档位再裁一层**（全局 `settings.safety`，由 Runner 传进来）：只读两档只留 `read`，strict 连 `exec` 也不给；
+ *   MCP 工具能力不可判定（`unknown`），只读两档一律不给
+ *
+ * ⚠️ allow / deny 是「这个角色该有哪些工具」（工作流），档位是「带副作用的那部分能不能真跑」，
+ *    两层是**叠加**的：先名单、后档位。别把两者混成一个概念。
  */
-export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefinition: AgentDefinition, mode: ModeDefinition): AgentTool[] {
+export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefinition: AgentDefinition, mode: ModeDefinition, safetyInput: ToolSafety): AgentTool[] {
 	// ⚠️ 这两个字段可能是「模式参数引用」（`"[mode.writeTools]"`）：加载期是字符串，
 	//    运行时才被 `applyModeVars` 换成数组。这里必须按数组判，别对字符串做 includes / new Set（会退化成字符级）。
 	const rawAllow = agentDefinition.ability.tools?.allow as unknown;
@@ -147,6 +176,10 @@ export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefi
 	const allow = Array.isArray(rawAllow) ? (rawAllow as string[]) : undefined;
 	const deny = new Set(Array.isArray(rawDeny) ? (rawDeny as string[]) : []);
 	const depthExhausted = agentInstance.depth >= mode.maxDepth;
+	const safety = normalizeSafety(safetyInput);
+	const readonly = isReadonlySafety(safety);
+	// 只读智能档保留 shell（每次调用过 LLM 审核）；只读严格档连 shell 也不给
+	const keepExec = safety === 'readonly-smart';
 
 	const builtin = Array.from(toolRegistry.values()).filter((t) => {
 		if (allow && !allow.includes(t.name)) return false;
@@ -155,11 +188,13 @@ export function getToolsForAgentInstance(agentInstance: AgentInstance, agentDefi
 		// 模式没开任务清单 → 不展示对应工具
 		if (t.name.startsWith('task_list_') && !mode.taskList?.enabled) return false;
 		if (t.name === 'task_list_write' && !mode.taskList?.writable) return false;
+		if (readonly && t.access !== 'read' && !(keepExec && t.access === 'exec')) return false;
 		return true;
 	});
 
 	const mcpDisabled = agentDefinition.ability.mcpDisabled ?? (mode.mcpDisabled ?? false);
-	const mcpTools = mcpDisabled ? [] : Array.from(dynamicToolSources.values()).flat().filter((t) => t.name.startsWith('mcp__'));
+	// 只读两档连 MCP 也不给：远端工具的能力我们无从判定，不能按「只读」放行
+	const mcpTools = mcpDisabled || readonly ? [] : Array.from(dynamicToolSources.values()).flat().filter((t) => t.name.startsWith('mcp__'));
 	return [...builtin, ...mcpTools];
 }
 
@@ -180,7 +215,7 @@ export function withReasonParam(tool: AgentTool): LlmTool {
 		required?: string[];
 	};
 	params.properties = {
-		reason: { type: 'string', description: '简述你调用这个工具要做什么（会展示在界面上）' },
+		reason: { type: 'string', description: '简述你调用这个工具要做什么（描述将用于界面展示和权限审核）' },
 		...(params.properties ?? {}),
 	};
 	params.required = ['reason', ...(params.required ?? []).filter((r) => r !== 'reason')];
@@ -210,6 +245,35 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 	}
 
 	const { reason: _reason, ...rest } = args ?? {};
+
+	// 安全闸门 1：只读档不该出现写盘工具（工具表已经裁过，这里是兜底）
+	// ⚠️ 只读智能档保留 shell（exec），它要走下面的审核闸门，这里不能一并拦掉
+	const safety = normalizeSafety(ctx.safety);
+	const reviewableExec = safety === 'readonly-smart' && tool.access === 'exec';
+	if (isReadonlySafety(safety) && tool.access !== 'read' && !reviewableExec) {
+		return {
+			success: false,
+			content: `工具 \`${name}\` 不是只读工具，当前不允许执行。`,
+			error: 'SAFETY_DENIED',
+			structured: { safety: { verdict: 'deny', policy: safety, reason: '只读档位' } },
+		};
+	}
+
+	// 安全闸门 2：shell 在执行前过一遍 LLM 审核（只读智能 / 智能两档；其他档直接放行）
+	if (name === 'shell') {
+		const verdict = await reviewShellCommand(String(rest.command ?? ''), ctx);
+		if (!verdict.allow) {
+			return {
+				success: false,
+				content:
+					`命令未通过安全审核：${verdict.reason}\n` +
+					'换更保守的做法，或先用 ask_user 向用户说明你想跑什么。',
+				error: 'SAFETY_DENIED',
+				structured: { safety: { verdict: 'deny', policy: verdict.policy, reason: verdict.reason } },
+			};
+		}
+	}
+
 	try {
 		return await tool.execute(rest, ctx);
 	} catch (err) {
@@ -226,7 +290,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 // #region 路径安全
 
 function resolvePath(inputPath: string, runningDir: string): string {
-	// 相对路径 → 基于 runningDir
+	// 相对路径 → 基于 runningDir（用户工作目录，没指定时是会话的临时工作空间）
 	const base = isAbsolute(inputPath) ? inputPath : join(runningDir, inputPath);
 	// 沙箱已禁用：不做穿越检查（Harness 无沙箱 / 无权限 / 无还原机制，风险靠提示词约束）
 	return resolve(base);
@@ -536,26 +600,27 @@ function applyEol(text: string, eol: Eol): string {
 
 type WriteGuard =
 	| { ok: true; exists: boolean; encoding: TextEncoding; bom: boolean; eol: Eol }
-	| { ok: false; message: string };
+	| { ok: false; kind: 'directory' | 'binary'; message: string };
 
 /**
  * 写操作前的闸门：**二进制文件一律拒写**。
  * 文本写入把一张图毁掉是静默的（解码成 latin1 再编码回去，字节全变），而这种损坏既不可逆也看不出原因，所以宁可让工具直接失败。
- * 新文件（不存在）放行。
+ * 新文件（不存在）放行。`file_write` 的 `force: true` 可越过二进制这一条（会先备份）。
  */
 function guardWritableFile(path: string): WriteGuard {
 	if (!existsSync(path)) return { ok: true, exists: false, encoding: 'utf-8', bom: false, eol: '\n' };
 	const st = statSync(path);
-	if (st.isDirectory()) return { ok: false, message: `"${path}" 是目录，不是文件` };
+	if (st.isDirectory()) return { ok: false, kind: 'directory', message: `"${path}" 是目录，不是文件` };
 	const size = st.size;
 	const head = readRange(path, 0, Math.min(SNIFF_BYTES, size), size);
 	const sniff = sniffBuffer(head, size);
 	if (sniff.kind === 'binary') {
 		return {
 			ok: false,
+			kind: 'binary',
 			message:
 				`"${path}" 是二进制文件（${sniff.type}，${formatBytes(size)}，detected=${sniff.detected}），不应用文本方式写入。` +
-				'若要整体替换，先 file_delete 再 file_create。若需特殊操作请自行写脚本执行。',
+				'确实要拿文本盖掉它，用 file_write 并传 force=true（会把原文件备份成 .bak）。若需特殊操作请自行写脚本执行。',
 		};
 	}
 	// 行尾按文件头采样判断（头部 8KB 足够代表整个文件；真要判错也只影响整份覆盖写）
@@ -627,6 +692,7 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
 
 registerTool({
 	name: 'file_read',
+	access: 'read',
 	description:
 		'读取文件内容，自动识别文本/二进制与编码。',
 		// `文本模式：按行返回，**恒带行号与总行数**，默认 ${TEXT_DEFAULT_LIMIT} 行（上限 ${TEXT_MAX_LIMIT}），超长行会截断，末尾提示下一段 offset；二进制模式：不输出内容，只给类型/大小/hexdump（默认头尾各 ${BIN_PROBE_BYTES} 字节，用 offset+limit 可指定字节区间，单次上限 ${BIN_MAX_LIMIT} 字节）。` +
@@ -815,6 +881,7 @@ registerTool({
 
 registerTool({
 	name: 'file_list',
+	access: 'read',
 	description: '列出指定目录下的文件和子目录。',
 	parameters: {
 		type: 'object',
@@ -858,6 +925,7 @@ registerTool({
 
 registerTool({
 	name: 'file_search',
+	access: 'read',
 	description:
 		'按关键词或正则搜索文件内容（不依赖 ripgrep，纯 node:fs 遍历）。' +
 		'自动跳过 node_modules/.git/dist/build 等目录与二进制文件，单文件上限 1MB，最多返回 50 条。',
@@ -952,35 +1020,57 @@ registerTool({
 
 registerTool({
 	name: 'file_write',
-	description: '将文本写入指定文件（覆盖），沿用文件原有编码（UTF-8 / UTF-16 / BOM 都保持）。如果文件不存在会自动创建。覆盖前建议先用 file_rename 备份原文件。',
+	access: 'write',
+	description:
+		'将文本写入指定文件（覆盖），沿用文件原有编码（UTF-8 / UTF-16 / BOM）。',
 	parameters: {
 		type: 'object',
 		properties: {
 			path: { type: 'string', description: '相对或绝对路径' },
 			content: { type: 'string', description: '要写入的完整内容' },
+			force: { type: 'boolean', description: '默认 false。如需覆盖已有文件则传 true' },
 		},
 		required: ['path', 'content'],
 	},
 	async execute(args, ctx) {
 		const path = resolvePath(args.path as string, ctx.runningDir);
+		const force = args.force === true;
+		const content = args.content as string;
 		try {
 			const guard = guardWritableFile(path);
-			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
+			if (!guard.ok && guard.kind === 'directory') return { success: false, content: guard.message, error: 'IS_DIRECTORY' };
+
+			// 二进制：只有 force 才放行，且先把原文件留一份 .bak（文本写进去是不可逆的，恢复全靠它）
+			if (!guard.ok) {
+				if (!force) return { success: false, content: guard.message, error: 'BINARY_FILE' };
+				copyFileSync(path, `${path}.bak`);
+				const bad = syntaxCheck(path, content);
+				if (!bad.ok) return { success: false, content: `放弃写入：${bad.message}`, error: 'SYNTAX_ERROR' };
+				writeFileSync(path, Buffer.from(content, 'utf-8'));
+				return { success: true, content: `File overwritten: ${path}（二进制文件，原内容已备份到 ${path}.bak）` };
+			}
+			if (guard.exists && !force) {
+				return {
+					success: false,
+					content: `${path} 已存在，未覆盖。`,
+					error: 'ALREADY_EXISTS',
+				};
+			}
 			const dir = dirname(path);
 			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 			// 已存在的文件沿用其行尾（整份覆盖不该把 CRLF 文件改成 LF）；新文件用给定的内容
-			const text = guard.exists ? applyEol(args.content as string, guard.eol) : (args.content as string);
+			const text = guard.exists ? applyEol(content, guard.eol) : content;
 			const bad = syntaxCheck(path, text);
 			if (!bad.ok) {
 				return {
 					success: false,
-					content: `放弃写入：${bad.message}\n磁盘上的 ${path} 没动，请修好后重发整份内容。`,
+					content: `放弃写入：${bad.message}\n文件 ${path} 未改动，请修复内容后重试。`,
 					error: 'SYNTAX_ERROR',
 				};
 			}
 			writeFileSync(path, encodeBuffer(text, guard.encoding, guard.bom));
 			const tail = guard.encoding === 'utf-8' ? '' : `（沿用原编码 ${guard.encoding}）`;
-			return { success: true, content: `File written: ${path}${tail}` };
+			return { success: true, content: `${guard.exists ? 'File overwritten' : 'File created'}: ${path}${tail}` };
 		} catch (err) {
 			return { success: false, content: `Failed to write file: ${(err as Error).message}`, error: (err as { code?: string }).code ?? 'WRITE_FAILED' };
 		}
@@ -989,6 +1079,7 @@ registerTool({
 
 registerTool({
 	name: 'file_append',
+	access: 'write',
 	description:
 		'把一段文本追加到文件末尾（新调试用例、新条目这类「加在最后」的场景专用）。',
 		// '跟 file_edit 的区别：不需要先 file_read 数行号，一次调用就完事——省一轮，也省下那份文件内容常驻上下文。' +
@@ -1015,7 +1106,7 @@ registerTool({
 			if (!bad.ok) {
 				return {
 					success: false,
-					content: `放弃写入：${bad.message}\n磁盘上的 ${path} 没动，请修好后重新追加。`,
+					content: `放弃写入：${bad.message}\n文件 ${path} 未改动，请修复内容后重试。`,
 					error: 'SYNTAX_ERROR',
 				};
 			}
@@ -1029,6 +1120,7 @@ registerTool({
 
 registerTool({
 	name: 'file_edit',
+	access: 'write',
 	description: '编辑文本文件的指定行范围（startLine 到 endLine，含两端），替换为 newContent。行号与 file_read 输出的一致；写回沿用原编码。',
 	parameters: {
 		type: 'object',
@@ -1036,7 +1128,7 @@ registerTool({
 			path: { type: 'string', description: '相对或绝对路径' },
 			startLine: { type: 'integer', description: '起始行号（从 1 开始）' },
 			endLine: { type: 'integer', description: '结束行号（含）' },
-			newContent: { type: 'string', description: '替换后的新内容（可能是多行）（整行覆盖，因此需带上原有的缩进（tab 或空格））' },
+			newContent: { type: 'string', description: '替换后的新内容（可多行）（完全覆盖，因此需带上原有的缩进（tab 或空格））' },
 		},
 		required: ['path', 'startLine', 'endLine', 'newContent'],
 	},
@@ -1045,7 +1137,7 @@ registerTool({
 		try {
 			const guard = guardWritableFile(path);
 			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
-			if (!guard.exists) return { success: false, content: `文件不存在：${path}（新建请用 file_create）`, error: 'NOT_FOUND' };
+			if (!guard.exists) return { success: false, content: `文件不存在：${path}，请先新建。`, error: 'NOT_FOUND' };
 
 			const content = decodeBuffer(readFileSync(path), guard.encoding);
 			const lines = splitLines(content);
@@ -1098,36 +1190,9 @@ registerTool({
 });
 
 registerTool({
-	name: 'file_create',
-	description: '创建一个新文本文件。已存在的二进制文件不会被覆盖（会被拒绝）。',
-	parameters: {
-		type: 'object',
-		properties: {
-			path: { type: 'string', description: '文件路径' },
-			content: { type: 'string', description: '初始内容（可选）' },
-		},
-		required: ['path'],
-	},
-	async execute(args, ctx) {
-		const path = resolvePath(args.path as string, ctx.runningDir);
-		try {
-			const guard = guardWritableFile(path);
-			if (!guard.ok) return { success: false, content: guard.message, error: 'BINARY_FILE' };
-			const dir = dirname(path);
-			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-			const raw = (args.content as string) ?? '';
-			const text = guard.exists ? applyEol(raw, guard.eol) : raw;
-			writeFileSync(path, encodeBuffer(text, guard.encoding, guard.bom));
-			return { success: true, content: `Created file: ${path}` };
-		} catch (err) {
-			return { success: false, content: `Failed to create file: ${(err as Error).message}` };
-		}
-	},
-});
-
-registerTool({
 	name: 'file_delete',
-	description: '删除指定文件。高风险操作：删除前应先得到用户同意（ask_user），必要时先 file_rename 到 backups/。',
+	access: 'write',
+	description: '删除指定文件。落点由「工具安全性」档位决定：普通 / 智能档移入系统回收站（没有回收站则移到会话 backups/），无防护档才是真删。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -1137,20 +1202,16 @@ registerTool({
 	},
 	async execute(args, ctx) {
 		const path = resolvePath(args.path as string, ctx.runningDir);
-		try {
-			// Windows 上没有 rm，用 node:fs（跨平台）
-			unlinkSync(path);
-			return { success: true, content: `Deleted file: ${path}` };
-		} catch (err) {
-			return { success: false, content: `Failed to delete file: ${(err as Error).message}` };
-		}
+		// 档位决定落点：off 真删；普通 / 智能进回收站（无回收站则落到会话 backups/）
+		return deleteFileSafely(path, ctx);
 	},
 });
 
 registerTool({
 	name: 'file_rename',
+	access: 'write',
 	description:
-		'重命名或移动文件（也用于「重命名迁移」备份：把要改的原文件移到 workspace/backups/<时间戳>-<原名>，再写新内容，避免直接覆盖造成不可逆丢失）。',
+		'重命名或移动文件（也用于「重命名迁移」备份：把要改的原文件移到 backups/<时间戳>-<原名>，再写新内容，避免直接覆盖造成不可逆丢失）。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -1179,16 +1240,17 @@ registerTool({
 
 registerTool({
 	name: 'shell',
+	access: 'exec',
 	description: `在运行目录中执行 shell 命令。${
 		process.platform === 'win32'
 			? [
 					'当前运行环境是 Windows（shell 为 cmd.exe），请使用 Windows 兼容命令（如 dir、type、echo），不要用 Unix 专属命令（如 ls、date +%Y、grep -r）。',
-					// '实测踩过的坑，照下面写：临时环境变量要用 `set X=1 && node a.mjs`（写成 `X=1 node a.mjs` 会报「不是内部或外部命令」）；多条命令按顺序用 `&&` 串，不要用 `;`（不是分隔符）也不要用单个 `&`（会把前一条扔到后台，输出跟后一条搅在一起）；退出码在结果末尾（形如 [exit 2]），不要自己去 echo %ERRORLEVEL% 或 $?（拿不到）；不要试图用 `echo ... >> 文件` 写多行内容，换行会被截断、中文还会乱码——要往文件里写超过一行的东西就用 file_write / file_create。',
+					// '实测踩过的坑，照下面写：临时环境变量要用 `set X=1 && node a.mjs`（写成 `X=1 node a.mjs` 会报「不是内部或外部命令」）；多条命令按顺序用 `&&` 串，不要用 `;`（不是分隔符）也不要用单个 `&`（会把前一条扔到后台，输出跟后一条搅在一起）；退出码在结果末尾（形如 [exit 2]），不要自己去 echo %ERRORLEVEL% 或 $?（拿不到）；不要试图用 `echo ... >> 文件` 写多行内容，换行会被截断、中文还会乱码——要往文件里写超过一行的东西就用 file_write。',
 				].join('\n')
 			: process.platform === 'darwin'
 				? '当前运行环境是 macOS（shell 为 /bin/sh），请使用 Unix 兼容命令（如 ls、cat、echo、grep）。'
 				: '当前运行环境是 Linux（shell 为 /bin/sh），请使用 Unix 兼容命令（如 ls、cat、echo、grep）。'
-		}\n超过一行的脚本先用 file_create 写成文件再运行——命令行里的换行会被截断。`,
+		}\n超过一行的脚本先用 file_write 写成文件再运行——命令行里的换行会被截断。`,
 	parameters: {
 		type: 'object',
 		properties: {
@@ -1257,6 +1319,7 @@ const SEARCH_TOTAL_CHARS = 24000;
  */
 registerTool({
 	name: 'web_fetch',
+	access: 'read',
 	description:
 		'抓取一个 URL 的正文，支持转成 Markdown（自动剥掉导航、脚本、样式等噪声）或原样返回。',
 	parameters: {
@@ -1335,6 +1398,7 @@ registerTool({
  */
 registerTool({
 	name: 'web_search',
+	access: 'read',
 	description:
 		'多引擎网络搜索，返回最相关页面的**正文**。' +
 		'该工具将并发调用多个搜索引擎，合并去重后进行 AI 打分，并返回**经过相关性筛选、的正文材料**，不是链接列表。' +
@@ -1464,6 +1528,7 @@ registerTool({
 
 registerTool({
 	name: 'task_list_read',
+	access: 'read',
 	description: '读取当前任务清单全文。',
 	parameters: { type: 'object', properties: {}, required: [] },
 	async execute(_args, ctx) {
@@ -1487,6 +1552,7 @@ const taskListWriteSchema = {
 export type TaskListWriteArgs = FromSchema<typeof taskListWriteSchema>;
 registerTool({
 	name: 'task_list_write',
+	access: 'read',
 	description:
 		'修改任务清单。op 可选：add（追加一条）/ update（改第 index 条，可标记 done）/ remove（删除第 index 条）/ replace（整篇替换）。',
 	parameters: {
@@ -1518,6 +1584,7 @@ registerTool({
 
 registerTool({
 	name: 'delegate',
+	access: 'read',
 	description:
 		'把一个子任务委托给其他 Agent 执行。需要并行委托多个子任务时，请同时发起多个 delegate 调用。',
 	parameters: {
@@ -1546,6 +1613,7 @@ registerTool({
 
 registerTool({
 	name: 'finish',
+	access: 'read',
 	description:
 		'提交本次工作的总结并结束你这一轮。必须调用它来收尾，而不是把结论写在正文里。' +
 		'总结会被回填给父 Agent，并写进你自己的消息记录。',
@@ -1565,6 +1633,7 @@ registerTool({
 
 registerTool({
 	name: 'resume_pending_child',
+	access: 'read',
 	description:
 		'恢复一个被中断 / 挂起的子 Agent，让它接着干。一次调用只恢复一个：' +
 		'从直接子实例里挑「最深的、状态为 pending 或 interrupted」的那个。不要对同一个子 Agent 反复调用。',
@@ -1584,6 +1653,7 @@ registerTool({
 
 registerTool({
 	name: 'resume_completed_child',
+	access: 'read',
 	description:
 		'重新唤醒一个已经完成的子 Agent：保留它原来的消息历史，追加一条「被重新唤醒」的提示和你的补充任务。',
 	parameters: {
@@ -1604,6 +1674,7 @@ registerTool({
 
 registerTool({
 	name: 'ask_child',
+	access: 'read',
 	description:
 		'向某个子 Agent 提问。用固定提示词 + 它除首条 system 外的全部记录，做一次**不携带工具的 LLM 请求**。' +
 		'不会修改目标实例的消息、状态或 ctx。',
@@ -1625,6 +1696,7 @@ registerTool({
 
 registerTool({
 	name: 'ask_user',
+	access: 'read',
 	description:
 		'向用户提问并获得回答。注意：调用后你会**暂停**（进入等待），用户回答之后才继续。' +
 		'高风险操作（删除 / 覆盖 / 批量改名 / 有写效果的 git 操作）必须先问用户。',
