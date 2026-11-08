@@ -31,7 +31,6 @@ export interface RequestLogOptions {
 	includeToolNames: boolean;
 	maxBytes: number;
 	dumpPayload: boolean;
-	/** 'full' 时把本次请求的 messages 全文写进日志（见 model.ts 的落点） */
 	level: RequestLogLevel;
 }
 
@@ -206,7 +205,7 @@ export function readRequests(conversationId: string, opts: ReadRequestsOptions =
 }
 
 /**
- * 按 logId 取**一条**完整记录（`level: 'full'` 时才带 `request.messages`）。
+ * 按 logId 取**一条**完整记录（`level` ≥「仅输入」时才带 `request.messages`，'full' 还带 `response`）。
  *
  * 当前文件优先，找不到再看轮转历史（一次 run 跨过一次轮转也还能翻回来）。
  * 返回 null = 这条日志已经不在了（被清空 / 被轮转覆盖 / 根本没写过）。

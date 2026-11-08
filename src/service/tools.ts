@@ -87,6 +87,7 @@ export interface ToolLlmResult {
 	ok: boolean;
 	text: string;
 	error?: string;
+	logId?: string;	// 这次请求的日志 id（工具可以把它放进 structured，界面就能回放这次调用）
 }
 
 /**
@@ -260,22 +261,30 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 	}
 
 	// 安全闸门 2：shell 在执行前过一遍 LLM 审核（只读智能 / 智能两档；其他档直接放行）
+	let shellSafety: Record<string, unknown> | undefined;
 	if (name === 'shell') {
 		const verdict = await reviewShellCommand(String(rest.command ?? ''), ctx);
+		if (verdict.logId) {
+			// 审核过的命令（allow / deny 都算）把这次审核的 logId 带进 structured.safety，界面右键工具卡就能回放「审核员看到了什么、回了什么」。
+			shellSafety = { verdict: verdict.allow ? 'allow' : 'deny', policy: verdict.policy, reason: verdict.reason, logId: verdict.logId };
+		}
 		if (!verdict.allow) {
 			return {
 				success: false,
 				content:
 					`命令未通过安全审核：${verdict.reason}\n` +
-					'换更保守的做法，或先用 ask_user 向用户说明你想跑什么。',
+					'换更保守的做法，或带上用户需求作为背景重试，或先用 ask_user 向用户说明你想跑什么。',
 				error: 'SAFETY_DENIED',
-				structured: { safety: { verdict: 'deny', policy: verdict.policy, reason: verdict.reason } },
+				structured: { safety: shellSafety ?? { verdict: 'deny', policy: verdict.policy, reason: verdict.reason } },
 			};
 		}
 	}
 
 	try {
-		return await tool.execute(rest, ctx);
+		const result = await tool.execute(rest, ctx);
+		// 放行也要留痕（否则界面上完全看不出这条命令被审过）
+		if (shellSafety) return { ...result, structured: { ...result.structured, safety: shellSafety } };
+		return result;
 	} catch (err) {
 		return {
 			success: false,

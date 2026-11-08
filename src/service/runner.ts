@@ -925,34 +925,42 @@ export class AgentRunner {
 				? { type: 'json_object' }
 				: undefined;
 
+		// 失败也把 logId 带回去：审核请求挂掉时那一条日志才是排查依据
+		const fail = (err: unknown): ToolLlmResult => ({
+			ok: false,
+			text: '',
+			error: (err as Error)?.message ?? String(err),
+			logId: (err as { logId?: string })?.logId,
+		});
+
 		if (!responseFormat) {
 			try {
 				const result = await callLlmWithRetry({ config: this.model, messages, tools: [], signal }, meta);
 				this.chargeSubLlm(instance, result, { purpose });
-				return { ok: true, text: result.text };
+				return { ok: true, text: result.text, logId: result.logId };
 			} catch (err) {
-				return { ok: false, text: '', error: (err as Error)?.message ?? String(err) };
+				return fail(err);
 			}
 		}
 
 		try {
 			const result = await callLlmWithRetry({ config: this.model, messages, tools: [], signal, responseFormat }, meta);
 			this.chargeSubLlm(instance, result, { purpose });
-			return { ok: true, text: result.text };
+			return { ok: true, text: result.text, logId: result.logId };
 		} catch (err) {
 			const first = (err as Error)?.message ?? String(err);
 			// 有些 OpenAI 兼容端点不认 response_format（json_schema 尤其），会被 400 顶回来。
 			// 这类失败不该让「相关性打分」整条路作废：去掉约束字段再试一次，
 			// 形状由提示词兜住（提示词里已经写死了键名规则）。
 			if (!/response_format|json_schema|json_object|400|invalid[_ ]request/i.test(first)) {
-				return { ok: false, text: '', error: first };
+				return fail(err);
 			}
 			try {
 				const retry = await callLlmWithRetry({ config: this.model, messages, tools: [], signal }, meta);
 				this.chargeSubLlm(instance, retry, { purpose });
-				return { ok: true, text: retry.text };
+				return { ok: true, text: retry.text, logId: retry.logId };
 			} catch (err2) {
-				return { ok: false, text: '', error: (err2 as Error)?.message ?? String(err2) };
+				return fail(err2);
 			}
 		}
 	}

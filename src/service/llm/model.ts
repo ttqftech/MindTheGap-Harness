@@ -624,6 +624,9 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 	let usage: TokenUsage = {};
 	let producedToolCallIds: string[] = [];
 	let firstChunkSeen = false;
+	// 等级=完整时把响应正文也落进 record（「仅输入」只落 messages，这里累加但不写出）
+	let outputText = '';
+	let outputReasoning = '';
 
 	const wrappedOnChunk = (chunk: LlmResponseChunk) => {
 		if (!firstChunkSeen) {
@@ -632,6 +635,8 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		}
 		logMsg(`[model] chunk`, chunk);
 		if (chunk.usage) usage = { ...usage, ...chunk.usage };
+		if (chunk.textDelta) outputText += chunk.textDelta;
+		if (chunk.reasoningDelta) outputReasoning += chunk.reasoningDelta;
 		onChunk(chunk);
 	};
 
@@ -665,7 +670,9 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 			modelId: config.modelId,
 		};
 	} catch (e) {
-		const err = e as Error & { status?: number; name?: string };
+		const err = e as Error & { status?: number; name?: string; logId?: string };
+		// 失败也要能定位日志：把 logId 挂到错误上（安全审核失败时界面仍能点开那一份）
+		if (e && typeof e === 'object') err.logId = logId;
 		if (err?.name === 'AbortError' || signal?.aborted) {
 			status = 'aborted';
 		} else {
@@ -702,10 +709,14 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 				systemPromptHash: systemText ? hashString(systemText) : undefined,
 				totalChars: JSON.stringify(messages).length + JSON.stringify(tools).length,
 				stream: true,
-				// 等级 = 完整时把 messages 原文一起存下（界面上「导出详细信息」靠它）；
+				// 等级 ≥「仅输入」时把 messages 原文一起存下（界面上「导出详细信息」靠它）；
 				// 默认等级只留形状，日志体积与本项目历史上的 requestLog 一致。
-				messages: logOptions.level === 'full' ? messages : undefined,
+				messages: logOptions.level === 'default' ? undefined : messages,
 			},
+			// 只有「完整」才落输出：等级「仅输入」的语义就是「只看模型看到了什么」
+			response: logOptions.level === 'full'
+				? { text: outputText || undefined, reasoning: outputReasoning || undefined }
+				: undefined,
 			status,
 			usage: Object.keys(usage).length > 0 ? usage : undefined,
 			finishReason,

@@ -114,6 +114,7 @@ export interface RenderToolSub extends BlockBase {
 	/** 这次调用创建 / 唤醒的子实例，整块嵌套渲染（delegate 是挂载点） */
 	children?: RenderAgentNode[];
 	ask?: RenderAskInfo;	// ask_user 渲染成提问卡片而不是工具块
+	safetyLogId?: string;	// 这次调用过 shell 安全审核时，审核请求的 logId（`structured.safety.logId`）。界面上靠它右键回放审核员的入参 / 输出；没审过（其他档位 / 非 shell）就是 undefined。
 }
 
 /** 反思：它也是一次 LLM 调用，只是产出形态固定（一句追问），所以照样是 llm 块里的一个子块 */
@@ -479,6 +480,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 				output: resultEntry?.content ?? '',
 				error: resultInfo?.error,
 				children: children && children.length > 0 ? children : undefined,
+				safetyLogId: (resultInfo?.structured as { safety?: { logId?: string } } | undefined)?.safety?.logId,
 			});
 		}
 
@@ -619,6 +621,7 @@ function diffSubBlock(oldNode: RenderSubBlock, newNode: RenderSubBlock): RenderS
 				&& o.args === newNode.args
 				&& o.output === newNode.output
 				&& o.error === newNode.error
+				&& o.safetyLogId === newNode.safetyLogId
 				&& sameAsk(o.ask, newNode.ask)
 			) return oldNode;
 			return { ...newNode, children: children.length > 0 ? children : undefined };

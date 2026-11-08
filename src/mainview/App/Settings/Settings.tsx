@@ -115,23 +115,25 @@ function Segmented<T extends string>(props: {
 
 const REQUEST_LOG_LEVEL_OPTIONS = [
 	{ value: 'default', label: '默认' },
+	{ value: 'input', label: '仅输入' },
 	{ value: 'full', label: '完整' },
 ] as const;
 
 /**
  * LLM 请求日志等级。
- * 「完整」= 每次 LLM 调用都把 messages 全文写进 requestLog.jsonl ——
- * 渲染树上右键某个 LLM 块「导出详细信息」能看到的就是它。
+ * - 「仅输入」= 每次调用把 messages 全文写进 requestLog.jsonl（能看模型看到了什么）
+ * - 「完整」  = 再额外把响应的正文 / 思考也写进去（入参 + 输出）
+ * 渲染树上右键 LLM 块（或工具卡看安全审核）「导出详细信息」看到的就是它。
  * 只影响**之后**的请求，已有的日志不会补写。
  */
 function RequestLogLevelRow() {
-	const [level, setLevel] = createSignal<'default' | 'full'>('default');
+	const [level, setLevel] = createSignal<'default' | 'input' | 'full'>('default');
 
 	onMount(async () => {
 		setLevel(await getRequestLogLevel());
 	});
 
-	const change = async (next: 'default' | 'full') => {
+	const change = async (next: 'default' | 'input' | 'full') => {
 		const prev = level();
 		if (next === prev) return;
 		setLevel(next);	// 乐观更新：失败再回滚
@@ -147,7 +149,7 @@ function RequestLogLevelRow() {
 			<div class={styles['setting-row-label']}>
 				<span class={styles['setting-row-title']}>LLM 请求日志等级</span>
 				<span class={styles['setting-row-desc']}>
-					「完整」会把每次请求的 messages 全文写进日志（体积明显变大，仅调试用）；只影响之后的请求
+					「仅输入」记 messages 全文，「完整」再记响应正文（体积明显变大，仅调试用）；只影响之后的请求
 				</span>
 			</div>
 			<Segmented options={REQUEST_LOG_LEVEL_OPTIONS} value={level()} onChange={(v) => void change(v)} />

@@ -622,6 +622,15 @@ export interface LlmRequestRecord {
 	};
 
 	// ---- 结果 ----
+	/**
+	 * 模型这次**回了什么**（正文 / 思考全文）。
+	 * 只在 `settings.debug.requestLog.level === 'full'` 时记录 —— 等级「仅输入」只留 messages 不留它。
+	 */
+	response?: {
+		text?: string;
+		reasoning?: string;
+	};
+
 	status: 'success' | 'error' | 'aborted';
 	usage?: TokenUsage;
 	finishReason?: string;
@@ -642,7 +651,13 @@ export interface RequestLogConfig {
 	level?: RequestLogLevel;
 }
 
-export type RequestLogLevel = 'default' | 'full';
+/**
+ * 请求日志的详细程度：
+ * - `default`：只留形状（条数 / 字符数 / 用量），正文一概不落盘
+ * - `input`：额外落 `request.messages` 全文 —— 能看「模型看到了什么」，但看不到它回了什么
+ * - `full`：再额外落 `response.text` / `response.reasoning` —— 入参与输出都完整
+ */
+export type RequestLogLevel = 'default' | 'input' | 'full';
 
 // #endregion
 

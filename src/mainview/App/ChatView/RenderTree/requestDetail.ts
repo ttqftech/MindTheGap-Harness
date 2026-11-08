@@ -127,21 +127,30 @@ export function showRequestDetailMsgbox(conversationId: string, logId: string, s
 		if (!messages) {
 			// 最常见的「空手而归」：日志还在，但当时等级是「默认」，正文没落盘
 			state.phase = 'error';
-			state.text = '这条日志里没有 messages —— 当时「LLM 请求日志等级」是「默认」。把它改成「完整」后重新发一次请求，这一条才会带全文。';
+			state.text = '这条日志里没有 messages —— 当时「LLM 请求日志等级」是「默认」。把它改成「仅输入」或「完整」后重新发一次请求，这一条才会带全文。';
 			refresh();
 			return;
 		}
 
-		// 复制的是整条记录（含 messages 全文 + 归属 / 用量元信息）；预览从 messages 起，
-		// 这样一眼能认出「拿到的是发给模型的那份」
+		// 复制的是整条记录（含 messages 全文 + 输出 + 归属 / 用量元信息）；预览从 messages 起，
+		// 这样一眼能认出「拿到的是发给模型的那份」。等级「完整」时把模型回的内容接在后面。
 		state.payload = JSON.stringify(record, null, 2);
+		const response = record.response;
+		const hasOutput = !!(response?.text || response?.reasoning);
 		let preview = JSON.stringify(messages, null, 2);
+		if (hasOutput) {
+			preview += '\n\n—— 输出（模型回的内容）——\n';
+			if (response?.reasoning) preview += `[思考]\n${response.reasoning}\n\n`;
+			if (response?.text) preview += response.text;
+		}
 		if (preview.length > 20000) {
 			preview = preview.slice(0, 20000) + '(只显示前 20000 字个字符，超出部分请使用复制按钮查看)';
 		}
 		state.preview = preview;
 		state.phase = 'done';
-		state.text = `导出完成：#${record.seq} · ${messages.length} 条 messages · ${fmtSize(state.payload.length)}（点下面的按钮复制全文）`;
+		state.text = `导出完成：#${record.seq} · ${messages.length} 条 messages`
+			+ (hasOutput ? ' + 输出' : '（等级是「仅输入」，不记输出）')
+			+ ` · ${fmtSize(state.payload.length)}（点下面的按钮复制全文）`;
 		refresh();
 	})();
 }

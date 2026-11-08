@@ -6,7 +6,7 @@
 
      1. 归一化档位 + 回答「这档是不是只读」（`getToolsForAgentInstance` 用它裁工具表）
      2. shell 命令的 LLM 审核（只读智能 / 智能两档）—— 独立一次 LLM 请求，
-        账本里 `purpose=safety_review` 可见，跟反思同一条路子
+        logId 随被拦/放行的工具结果一起进 structured.safety，界面可右键回放
      3. 删除的兜底落点：系统回收站 → 会话 backups/（普通 / 智能两档）
 
    ⚠️ 与 `agent.json` 的 `ability.tools` 名单正交：
@@ -58,6 +58,7 @@ interface ReviewDecision {
 
 interface ShellVerdict extends ReviewDecision {
 	policy: 'none' | 'readonly' | 'balanced';
+	logId?: string;	// 这次审核请求的 requestLog 序号 id —— 界面上靠它回放「审核员看到了什么、回了什么」
 }
 
 const REVIEW_SCHEMA = {
@@ -162,7 +163,7 @@ export async function reviewShellCommand(command: string, ctx: ToolContext): Pro
 	}
 
 	logMsg(`[Safety] shell 审核(${policy}) ${decision.allow ? '放行' : '拦下'}：${decision.reason}｜命令：${command}｜理由：${ctx.reason || '(未说明)'}`);
-	return { ...decision, policy };
+	return { ...decision, policy, logId: result.logId };
 }
 
 // #endregion

@@ -746,13 +746,13 @@ export async function getRequestDetail(conversationId: string, logId: string): P
 
 // #region 设置 — LLM 请求日志等级
 
-export type RequestLogLevel = 'default' | 'full';
+export type RequestLogLevel = 'default' | 'input' | 'full';
 
 /** 读日志等级。读不到一律按『默认』（宁可少记，也不要意外把全文写进磁盘） */
 export async function getRequestLogLevel(): Promise<RequestLogLevel> {
 	try {
 		const resp = await httpFetch<{ level: RequestLogLevel }>('/api/settings/request-log');
-		return resp.level === 'full' ? 'full' : 'default';
+		return resp.level === 'full' ? 'full' : resp.level === 'input' ? 'input' : 'default';
 	} catch {
 		return 'default';
 	}

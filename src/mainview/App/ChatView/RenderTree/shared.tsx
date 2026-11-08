@@ -65,6 +65,7 @@ export const PURPOSE_LABEL: Record<string, string> = {
 	reflection: '反思',
 	ask_child: '询问子 Agent',
 	web_rank: '搜索结果打分',
+	safety_review: '工具安全审查',
 	other: '其他',
 };
 

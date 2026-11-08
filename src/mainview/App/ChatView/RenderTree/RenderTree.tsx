@@ -125,17 +125,55 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 * ⚠️ 参数是 accessor，不是值：同一个位置上流式更新（状态翻转、输出变长）时只有这几处表达式在动，
 	 *    卡片元素本身不重建 —— 否则每次 fold 都换掉整张卡，连它下面的子 Agent 子树一起重挂。
 	 */
+	/**
+	 * 工具卡的右键菜单：目前只有一个入口 —— 回放这条命令的**安全审核**请求。
+	 *
+	 * 安全审核也是一次独立的 LLM 调用，但它不是对话里的 LLM 块（它的产物是「放行 / 拦下」，不是消息），logId 藏在工具结果的 `structured.safety` 里，投影时取到 `safetyLogId`。
+	 * 所以挂载点和 LLM 块不同，**弹窗与 logId 用法完全一致**（同一个 `showRequestDetailMsgbox`）。
+	 */
+	const openToolCardMenu = (e: MouseEvent, tool: RenderToolSub) => {
+		const safetyLogId = tool.safetyLogId;
+		e.preventDefault();
+		e.stopPropagation();	// 工具卡在 `.block-llm` 内部，不拦就冒泡成「看这次 LLM 调用」的菜单
+		// 与 LLM 块同一套扫光反馈：让用户看清右键的是哪一张卡
+		const sweepTarget = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+		if (sweepTarget) {
+			sweepTarget.classList.remove(styles.sweep);
+			void sweepTarget.offsetWidth;
+			sweepTarget.classList.add(styles.sweep);
+		}
+		showMenu({
+			type: 'action',
+			triggerRect: { xMin: e.clientX, yMin: e.clientY, xMax: e.clientX, yMax: e.clientY },
+			menu: [
+				{
+					type: 'normal',
+					value: 'safety-review-detail',
+					label: safetyLogId ? '查看这次命令的安全审核…' : '（这次调用没有安全审查记录）',
+					disabled: !safetyLogId,
+					onClick: () => {
+						if (safetyLogId) showRequestDetailMsgbox(convId, safetyLogId);
+					},
+				},
+			],
+			onClose: () => {
+				sweepTarget?.classList.remove(styles.sweep);
+			}
+		});
+	};
+
 	const renderToolCard = (tool: () => RenderToolSub) => {
-		const mcp = () => parseMcpName(tool().name);
+		const mcpName = () => parseMcpName(tool().name);
 		return (
 			<details
 				class={styles['tool-card']}
 				classList={{
 					[styles['is-error']]: tool().status === 'error',
-					[styles['is-mcp']]: !!mcp(),
+					[styles['is-mcp']]: !!mcpName(),
 				}}
 				open={openOverrides.get(`tool:${tool().callId}`) ?? (tool().status === 'error' || (!!tool().output && tool().output.length <= 240))}
 				ontoggle={(e) => openOverrides.set(`tool:${tool().callId}`, e.currentTarget.open)}
+				oncontextmenu={(e) => openToolCardMenu(e, tool())}
 			>
 				<summary class={styles['tool-head']}>
 					<span class={styles['tool-head-caret']}>▶</span>
@@ -143,7 +181,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 						{tool().status === 'running' ? '⏳' : tool().status === 'success' ? '✓' : '✗'}
 					</span>
 					<Show
-						when={mcp()}
+						when={mcpName()}
 						fallback={<span class={styles['tool-name']}>{tool().name}</span>}
 					>
 						{(m) => (
@@ -163,10 +201,10 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 					<Show when={tool().reason}>
 						<span class={styles['tool-reason']}>{tool().reason}</span>
 					</Show>
-					<Show when={mcp()}>
+					<Show when={mcpName()}>
 						<span class={styles['tool-chip']}>JSON-RPC</span>
 					</Show>
-					<Show
+					{/* <Show
 						when={tool().output}
 						fallback={
 							<Show when={tool().status === 'running'}>
@@ -177,12 +215,12 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 						<span class={styles['tool-preview']}>
 							{tool().output.replace(/\s+/g, ' ').trim().slice(0, 120)}
 						</span>
-					</Show>
+					</Show> */}
 				</summary>
 				<div class={styles['tool-body']}>
 					{/* MCP 卡用设计稿的「→ request / ← response」行；普通工具用「入参 / 输出」小标 */}
 					<Show
-						when={mcp()}
+						when={mcpName()}
 						fallback={
 							<>
 								<Show when={tool().args}>

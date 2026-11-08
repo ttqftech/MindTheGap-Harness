@@ -636,12 +636,13 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				const body = await readBody(req);
 				const params = JSON.parse(body || '{}') as { level?: string };
 				const requested = params.level;
-				if (requested !== 'default' && requested !== 'full') {
-					sendJson(res, 400, { ok: false, error: "level 只能是 'default' 或 'full'" });
+				// 三档：默认（只留形状）/ 仅输入（messages 全文）/ 完整（入参 + 输出）
+				if (requested !== 'default' && requested !== 'input' && requested !== 'full') {
+					sendJson(res, 400, { ok: false, error: "level 只能是 'default' / 'input' / 'full'" });
 					return;
 				}
 				// 整份写回：老 settings.json 里可能连 requestLog 都没有，四要素由读侧兜底
-				const level: RequestLogLevel = requested === 'full' ? 'full' : 'default';
+				const level: RequestLogLevel = requested;
 				const next = { ...getRequestLogOptionsFromSettings(), level };
 				settings.debug = { ...settings.debug, requestLog: next };
 				// 立刻同步给 llm 层：下一次请求就按新等级记录
@@ -879,13 +880,14 @@ export function stopHttpServer(): void {
 // #endregion
 
 /**
- * 列表接口只给元信息：`request.messages`（等级 = 完整时才有）只在单条查询里返回。
+ * 列表接口只给元信息：`request.messages` / `response`（等级 ≥「仅输入」时才有）只在单条查询里返回。
  * 否则一次拉 50 条会把几十 MB 正文拖到设置面板里。
  */
 function stripRequestMessages(rec: LlmRequestRecord): LlmRequestRecord {
-	if (!rec.request?.messages) return rec;
+	if (!rec.request?.messages && !rec.response) return rec;
+	if (!rec.request?.messages) return { ...rec, response: undefined };
 	const { messages: _messages, ...rest } = rec.request;
-	return { ...rec, request: rest };
+	return { ...rec, request: rest, response: undefined };
 }
 
 /** 从 settings 里读 requestLog 配置（带默认值兜底） */
@@ -896,6 +898,6 @@ function getRequestLogOptionsFromSettings() {
 		includeToolNames: cfg?.includeToolNames ?? true,
 		maxBytes: cfg?.maxBytes ?? 8 * 1024 * 1024,
 		dumpPayload: cfg?.dumpPayload ?? false,
-		level: cfg?.level === 'full' ? ('full' as const) : ('default' as const),
+		level: cfg?.level === 'full' ? ('full' as const) : cfg?.level === 'input' ? ('input' as const) : ('default' as const),
 	};
 }
