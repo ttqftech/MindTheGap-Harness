@@ -1,0 +1,16 @@
+{
+	"id": "reader",
+	"name": "材料员",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": "[rCheck]",
+	"ability": {
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search",
+				"shell", "web_fetch", "web_search",
+				"finish"
+			]
+		}
+	}
+}

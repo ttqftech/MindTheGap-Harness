@@ -1,0 +1,117 @@
+{
+	"id": "work-v23",
+	"name": "日常 v23",
+	"description": "处理资料、表格与文档：把散乱材料变成能直接用的成果。强度只改预算、深度与尾部指令",
+	"rootAgent": "clerk",
+	"maxDepth": "[maxDepth]",
+	"taskList": {
+		"enabled": false,
+		"writable": false
+	},
+	"mcpDisabled": false,
+	"limits": {
+		"totalRounds": "[totalRounds]",
+		"agentInstanceRounds": "[agentInstanceRounds]",
+		"warnAtRemaining": "[warnAtRemaining]"
+	},
+	"params": {
+		"intensity": "medium",
+		"maxDepth": 2,
+		"totalRounds": 80,
+		"agentInstanceRounds": 32,
+		"warnAtRemaining": 9,
+		"rClerk": 1,
+		"rCheck": 0,
+		"isLow": false,
+		"isMedium": true,
+		"isHigh": false,
+		"isUltra": false,
+		"softRounds": 12
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "只影响预算、深度与「怎么做」的指令，不换人也不换系统提示词",
+			"options": [
+				{
+					"label": "低 · 一个人",
+					"value": "low",
+					"description": "读完材料直接产出。适合整理一份表、写一封邮件、按规则归档文件",
+					"vars": {
+						"maxDepth": 1,
+						"totalRounds": 50,
+						"agentInstanceRounds": 26,
+						"warnAtRemaining": 7,
+						"rClerk": 0,
+						"rCheck": 0,
+						"isLow": true,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": false,
+						"softRounds": 8
+					}
+				},
+				{
+					"label": "中 · 自查",
+					"value": "medium",
+					"description": "产出后自己把硬指标重算一遍，对不上就改，没有转述层",
+					"vars": {
+						"maxDepth": 2,
+						"totalRounds": 80,
+						"agentInstanceRounds": 32,
+						"warnAtRemaining": 9,
+						"rClerk": 1,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": true,
+						"isHigh": false,
+						"isUltra": false,
+						"softRounds": 12
+					}
+				},
+				{
+					"label": "高 · 先理清",
+					"value": "high",
+					"description": "材料多而杂时先抽成一张事实表，再据此产出，最后独立核对",
+					"vars": {
+						"maxDepth": 3,
+						"totalRounds": 130,
+						"agentInstanceRounds": 36,
+						"warnAtRemaining": 12,
+						"rClerk": 1,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": true,
+						"isUltra": false,
+						"softRounds": 16
+					}
+				},
+				{
+					"label": "极高 · 分阶段",
+					"value": "ultra",
+					"description": "分阶段产出、逐阶段核对、最后逐条回读用户要求。适合对外交付、涉及金额的报告",
+					"vars": {
+						"maxDepth": 4,
+						"totalRounds": 200,
+						"agentInstanceRounds": 44,
+						"warnAtRemaining": 16,
+						"rClerk": 2,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": true,
+						"softRounds": 24
+					}
+				}
+			]
+		}
+	],
+	"ui": {
+		"icon": "📋",
+		"accent": "green"
+	}
+}

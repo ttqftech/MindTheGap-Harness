@@ -66,6 +66,16 @@ export interface AgentDefinition {
 	statePromptFile?: string;
 	/** 由加载器读入的动态状态模板内容（没有文件时为空串） */
 	statePrompt?: string;
+	/**
+	 * 强度指令文件名（可选，相对 agent 目录）。文件存在时**整份替换**模式级 `effort.md`。
+	 *
+	 * 存在的理由：不同角色的能力范围不同（核对员没有写盘、勘查员不委托），
+	 * 一份通用的强度文案只能写到「大家都成立」的粒度；要按角色说事就在自己的目录里放一份。
+	 * 没有这个文件时仍然用模式级那份 —— 不需要按角色区分时一个字节都不用写。
+	 */
+	effortFile?: string;
+	/** 由加载器读入的 Agent 级强度指令模板（没有文件时为空串） */
+	effortPrompt?: string;
 }
 
 /**
@@ -112,11 +122,16 @@ export interface ModeParamControl {
 
 /**
  * 循环预算 —— mode.json 顶层 `limits`。
- * 三个字段都可不写，兜底值（200 / 50 / 3）在 runner.limits() 里。
+ * 三个字段都可不写，兜底值（1000 / 200 / 0）在 runner.getModeLimits() 里。
+ *
+ * ⚠️ 曾经有过 `subAgentInstanceRounds`（子 Agent 单独一道更紧的上限），2026-10-31 删掉：
+ * 它当初是为了兜住弱模型（dots3）子 Agent 独自烧 30 轮的失控，代价是「同一个工序两套预算」，
+ * 根实例与子 Agent 的价格观完全对不上。换到收敛正常的模型之后这个补丁是负资产 —— 弱模型应该
+ * 整体降一档强度（少轮数 + 强反思），而不是给子 Agent 单开一个数。
  */
 export interface ModeLimits {
 	totalRounds?: number;			// 一次 run 的总循环上限
-	agentInstanceRounds?: number;	// 单实例循环上限
+	agentInstanceRounds?: number;	// 单个实例（根 / 子一视同仁）的循环上限
 	warnAtRemaining?: number;		// 剩余多少次时开始注入告警提示词
 }
 
@@ -171,6 +186,17 @@ export interface ModeDefinition {
 	 */
 	reflectionPrompt?: string;
 	reflectionPromptPath?: string;
+	/**
+	 * 模式级「强度指令」模板（`<modeId>/effort.md`）。
+	 *
+	 * ⭐ 它渲染出来的内容**不进 system prompt**，而是每次 LLM 请求**尾部**追加的一条 `role:'system'` 消息
+	 * （与 `prompt.state.md` 同位置，排在它前面）。理由见 `docs/架构-插件与模式.md`：
+	 * 提示词缓存是「tools → system → messages」三层前缀，改 system 一个字 = 后面整段历史全部 miss；
+	 * 而改尾部消息只影响尾部自己。强度因此可以在会话中途切换而**不炸掉缓存**。
+	 *
+	 * 某个 Agent 目录下放了 `effortFile` 指定的文件时，**整份替换**这份（不做拼接）。
+	 */
+	effortPrompt?: string;
 	/** mode.json 的源码文本与绝对路径（设置页直接编辑这份 JSON） */
 	modeJsonText?: string;
 	modeJsonPath?: string;
@@ -611,6 +637,13 @@ export interface LlmRequestRecord {
 		toolNames?: string[];
 		systemPromptChars: number;
 		systemPromptHash?: string;
+		/**
+		 * 尾部 system 消息（effort.md 的强度指令 / prompt.state.md 的动态状态）的字数与哈希。
+		 * 它们拼在 messages 尾部，**不属于缓存前缀**，所以和 systemPromptHash 分开记 ——
+		 * 混在一起会把「尾部每轮正常变化」误判成「前缀失效」。
+		 */
+		tailSystemChars?: number;
+		tailSystemHash?: string;
 		totalChars: number;
 		stream: boolean;
 		/**

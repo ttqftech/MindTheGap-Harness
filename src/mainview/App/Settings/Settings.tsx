@@ -924,7 +924,7 @@ function ModeJsonEditor(props: { modeId: string }) {
 				<code>taskList</code>（任务清单开关 / 是否可写）· <code>mcp</code>（<code>none</code> /{' '}
 				<code>all</code> / 服务器 id 数组）·
 				<code>limits.totalRounds</code> / <code>limits.agentInstanceRounds</code> /{' '}
-				<code>limits.warnAtRemaining</code>（循环预算，缺省 200 / 50 / 3）· <code>ui</code>（图标 / 配色）。
+				<code>limits.warnAtRemaining</code>（循环预算，缺省 1000 / 200 / 0；根实例与子 Agent 同一个上限）· <code>ui</code>（图标 / 配色）。
 				<br />
 				反思提示词不在这个文件里：读 <code>&lt;模式&gt;/reflection.md</code> →{' '}
 				<code>&lt;Agent&gt;/reflection.md</code>（Agent 级存在即整份替换，都没有时用代码内置默认）。

@@ -112,6 +112,27 @@ export function fmtTokens(n?: number): string {
 	return `${Math.round(n / 1000)}k`;
 }
 
+/** 账本三个数字的符号：⟳ 命中缓存 · ↑ 新增输入 · ↓ 输出（改这里就够，别在各处散写） */
+export const USAGE_GLYPH = { cached: '⟳', input: '↑', output: '↓' };
+
+/**
+ * 一次调用（或一轮合计）的 token 三数：`⟳命中 ↑新增 ↓输出`。
+ *
+ * ⚠️ **别退回 `↑总量 ↓输出 · 缓存 X`**：缓存命中是输入的**子集**，两个 ↑ 并排看不出从属关系，
+ * 而中文标签夹在数字串里又会打断横向扫读。所以缓存位给一个循环箭头（⟳ = 复用），
+ * ↑ 从此只表示「这次真按原价计费的新增输入」，三个数字加起来才是总输入。
+ *
+ * cached 为 0 / 缺省时整段省略 —— 不支持缓存的模型不该多一个 `⟳0` 占位。
+ */
+export function fmtUsageTriple(input?: number, cached?: number, output?: number): string {
+	const hit = cached ?? 0;
+	const fresh = input === undefined ? undefined : Math.max(0, input - hit);
+	const parts = hit > 0 ? [`${USAGE_GLYPH.cached}${fmtTokens(hit)}`] : [];
+	parts.push(`${USAGE_GLYPH.input}${fmtTokens(fresh)}`);
+	parts.push(`${USAGE_GLYPH.output}${fmtTokens(output)}`);
+	return parts.join(' ');
+}
+
 export function fmtDuration(ms?: number): string {
 	if (!ms && ms !== 0) return '';
 	return ms < 100 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;

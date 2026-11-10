@@ -25,7 +25,7 @@ import { mcpManager } from './mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
 import { conversations, ensureConversationDir, settings } from './storage';
 import { logMsg } from '../shared/utils';
-import { renderSystemPrompt, renderStatePrompt } from './prompt';
+import { renderSystemPrompt, renderStatePrompt, renderEffortPrompt } from './prompt';
 import { applyModeVars, resolveModeVars, type ModeParamSelections } from '../shared/modeParams';
 import { normalizeSafety } from './safety';
 import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
@@ -49,6 +49,8 @@ const isTransientLlmError = (e: unknown) => {
 	// 用户自己取消的不要重试：signal 已经断了，重试只会立刻再断一次
 	if (err.name === 'AbortError' || err.name === 'TimeoutError') return false;
 	if (typeof err.status === 'number' && err.status >= 400 && err.status < 500 && err.status !== 429) return false;
+	// 我们自己的超时（`LlmTimeoutError`）明确按瞬时处理：判据用 `name` 不靠 message 里恰好有个英文 "timeout"
+	if (err.name === 'LlmTimeoutError') return true;
 	return TRANSIENT_LLM_ERROR.test(err.message || '');
 };
 
@@ -79,6 +81,26 @@ const callLlmWithRetry: typeof callLlm = async (...args) => {
 const BUDGET_LAST_CALL =
 	'预算只剩最后一轮了。别再发起任何工具调用，直接把已经做的事交代清楚：' +
 	'改了哪些文件、怎么验的（命令 + 关键输出）、还有哪些没做完或需要用户拍板的。没跑过的别说跑过。';
+
+/**
+ * 反思追问的信封。
+ *
+ * 反思是「把自己刚提交的总结再挑一遍刺」，但它是**以系统消息的形式追加在消息流末尾**的 ——
+ * 对模型来说这个位置和用户发言没有区别。裸的一句追问会让模型回一句自述
+ * （「我在上一轮已进行了时间工具的调用，这次又执行了一次」）而不是去补做，
+ * 这一轮就白烧了。信封里把三件事说死：这不是用户消息 / 只补这一条 / 不许复述。
+ */
+function selfCheckEnvelope(gap: string): string {
+	return (
+		'<self_check>\n' +
+		'这不是用户发来的新消息，而是系统对你刚才那次交付做的自动复查（用户看不到这一段，也不要把它当成新的需求）。\n' +
+		'复查认为还差这一条：\n' +
+		`<gap>${gap}</gap>\n` +
+		'现在补做这一条。只做这一条，做完就直接交付。\n' +
+		'不要复述你已经做过什么，不要写「上一轮已经…」「这次又…」这类对自己的说明 —— 用户只看最终结果与证据。\n' +
+		'</self_check>'
+	);
+}
 
 /**
  * 一个挂在 `pendingCallIds` 里的 call 在等什么。
@@ -243,13 +265,26 @@ function renderTaskList(items: { done: boolean; item: string }[]): string {
 /**
  * 反思输出里是否含「真正要补做的事」。
  *
- * 宽松口径的反思提示词（见 plugins/MTG-builtin/daily/reflection.md）允许模型直接回「无」——那不是一个可执行的追问，若当成追问去重入，就又白烧一轮。
- * 所以除了空串，还要认几种「明确表示无需补做」的短语（限短文本，避免误伤真正的追问）。
+ * 宽松口径的反思提示词允许模型直接回「无」——那不是一个可执行的追问，若当成追问去重入，就又白烧一轮。
+ *
+ * ⚠️ 反过来更贵：弱模型（实测 dots3）会不按要求输出，把伪工具调用（`<dots_function_call>…`）、
+ * 大段复述、或者干脆换行列的清单吐出来。这类东西一旦被当成追问，模型会照着它再跑十几轮
+ * （实测一次垃圾反思让任务从 5 轮 60k 变成 16 轮 168k）。所以这里卡三道：
+ * 「无」类短语 → 不是纯文本（带标签 / 伪调用 / 代码围栏）→ 长度与行数超标。
+ * 判不定的一律**不重入**：漏一次自查只是少一道保险，误判一次是几十万 token。
  */
 function reflectionActionable(text: string): boolean {
 	const t = text.trim();
 	if (!t) return false;
 	if (t.length <= 12 && /^(无|没有|无需|无需要|无需追问|无追问|none|n\/?a|nothing)/i.test(t)) return false;
+	// 不是「一句话追问」的形状：带尖括号标签、伪工具调用、代码围栏、markdown 列表
+	if (/<[a-zA-Z_/][^>]*>/.test(t)) return false;
+	if (/```/.test(t)) return false;
+	if (/^\s*[-*+]\s/m.test(t)) return false;
+	if (/\b(invoke|function_call|tool_call|tool_use)\b/i.test(t)) return false;
+	// 追问被限定在一句话、80 字以内；超了基本是在复述或写清单
+	if (t.length > 120) return false;
+	if (t.split('\n').length > 3) return false;
 	return true;
 }
 
@@ -584,14 +619,15 @@ export class AgentRunner {
 
 			// 预算耗尽 → 先给一轮「收尾」的机会，下一轮还超预算才强制收尾
 			// （把「因预算耗尽中止」交还父实例判断，而不是静默丢弃）
-			if (instance.rounds > limits.agentInstanceRounds || this.ctx.budget.spent > limits.totalRounds) {
+			const roundCap = limits.agentInstanceRounds;
+			if (instance.rounds > roundCap || this.ctx.budget.spent > limits.totalRounds) {
 				const alreadyWarned = instance.messages.some((m) => m.role === 'system' && !m.uiOnly && m.content === BUDGET_LAST_CALL);
 				if (!alreadyWarned) {
 					instance.messages.push(message({ role: 'system', content: BUDGET_LAST_CALL }));
 					instance.lastUpdatedAt = now();
 					// 落到这里继续走正常的 LLM 调用，等于把最后一轮花在「把话交代清楚」上
 				} else {
-					const reason = instance.rounds > limits.agentInstanceRounds ? '本实例循环上限' : '总循环预算';
+					const reason = instance.rounds > roundCap ? '本实例循环上限' : '总循环预算';
 					nextTrigger = await this.endPath(instance, `[预算耗尽] 因${reason}中止。已完成部分见此前消息；未完成项需父 Agent 决定是否继续。`, { forced: true });
 					return;
 				}
@@ -621,6 +657,13 @@ export class AgentRunner {
 			const promptCtx = this.buildPromptContext(instance, tools);
 			const { content: stateContent, snapshot } = renderStatePrompt(promptCtx);
 			const llmMessages = toLlmMessages(instance.messages);
+			// ⭐ 强度指令（模式级 effort.md）同样走尾部，且排在动态状态之前：
+			//    这样「按 run 稳定的那一段」尽量靠前、每轮变化的只有最后一条。
+			//    它不进 system prompt —— 改强度不碰前缀 ⇒ 会话中途换档不会炸掉整段历史的缓存。
+			const effortContent = renderEffortPrompt(promptCtx);
+			if (effortContent) {
+				llmMessages.push({ role: 'system', content: effortContent });
+			}
 			if (stateContent.trim()) {
 				llmMessages.push({ role: 'system', content: stateContent });
 			}
@@ -1168,7 +1211,15 @@ export class AgentRunner {
 	private async endPath(instance: AgentInstance, summary: string, opts: { forced?: boolean } = {}): Promise<'reflection' | null> {
 		const hadSummary = !!summary.trim();
 		const hasReflectPrompt = resolveReflectionPrompt(this.mode, this.getAgentDefinitionByInstance(instance));
-		const canReflect = hadSummary && hasReflectPrompt && !opts.forced && instance.reflectionsRemaining > 0 && !this.aborted;
+		// ⚠️ 预算已经进告警区就不反思了：这时候再开一轮只会把「收尾」搅成「返工」，
+		//    而且反思本身要烧一轮完整的历史。同理，被中止的 run 不反思。
+		const limits = this.getModeLimits();
+		const inBudgetWarning =
+			this.ctx.budget.spent > limits.totalRounds - limits.warnAtRemaining ||
+			instance.rounds > limits.agentInstanceRounds - limits.warnAtRemaining;
+		const canReflect =
+			hadSummary && hasReflectPrompt && !opts.forced && !inBudgetWarning &&
+			instance.reflectionsRemaining > 0 && !this.aborted;
 
 		if (canReflect) {
 			instance.reflectionsRemaining -= 1;
@@ -1208,7 +1259,10 @@ export class AgentRunner {
 
 			if (reflectionActionable(reflection)) {
 				instance.messages.push({
-					...message({ role: 'system', content: reflection }, reflectionEntryId),
+					// ⭐ 信封是必需的：裸的一句追问放在消息末尾，模型会当成「用户又说了句话」，
+					//    于是回一句「我在上一轮已经调用过…这次又执行了一次」这种自述，而不是去补做。
+					//    这里显式声明它不是用户消息、要点名补做哪一条、并且禁止复述已做过的事。
+					...message({ role: 'system', content: selfCheckEnvelope(reflection) }, reflectionEntryId),
 					kind: 'reflection',
 					data: { remaining: instance.reflectionsRemaining },
 					...(reflectionUsage ? { usages: [reflectionUsage] } : {}),
@@ -1436,7 +1490,7 @@ export class AgentRunner {
 			parentPrompt: instance.task,
 			childAgentInstances: children,
 			unfinishedAgentInstances: unfinished,
-			budget: { totalLeft, agentInstanceLeft, warn, exhausted },
+			budget: { totalLeft, agentInstanceLeft, warn, exhausted, total: limits.totalRounds, spent: this.ctx.budget.spent },
 			depthExhausted: instance.depth >= this.mode.maxDepth,
 			taskList: this.ctx.taskList,
 			mcpSection: this.mcpSectionFor(tools),

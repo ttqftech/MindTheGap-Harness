@@ -52,14 +52,14 @@ const INLINE_REF = /\[([A-Za-z_$][\w$]*(?:\.[\w$]+)*)\]/g;
  * 插值时**不碰**的键。
  *
  * - `modeJson*` / `plugin*`：模式自身的元信息，改了没有意义还会把源码编辑器弄乱；
- * - `prompt` / `statePrompt` / `reflectionPrompt`：这三份是模板文件，变量走 `{{ }}`，
+ * - `prompt` / `statePrompt` / `reflectionPrompt` / `effortPrompt`：这几份是模板文件，变量走 `{{ }}`，
  *   不参与 `[x]` 插值（否则提示词里想写方括号示例就会被吃掉）；
  * - `params` / `form` / `vars`：变量的来源本身。
  */
 const SKIP_KEYS = new Set([
 	'id', 'pluginId', 'pluginName', 'pluginDir',
 	'modeJsonText', 'modeJsonPath',
-	'prompt', 'statePrompt', 'reflectionPrompt', 'reflectionPromptPath',
+	'prompt', 'statePrompt', 'reflectionPrompt', 'reflectionPromptPath', 'effortPrompt',
 	'params', 'form', 'vars',
 ]);
 

@@ -25,6 +25,8 @@ import { collectParamRefs, knownParamNames } from '@shared/modeParams';
 
 /** 反思提示词的文件名（模式级 / Agent 级同名，按目录位置区分语义） */
 const REFLECTION_FILE = 'reflection.md';
+/** 强度指令的文件名（只认模式级：强度是模式维度的旋钮，不是某个角色的） */
+const EFFORT_FILE = 'effort.md';
 
 // #region 类型
 
@@ -334,6 +336,8 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 
 	// 模式级反思提示词（Agent 级在各 def.reflectionPrompt 里，查到时优先）
 	const modeReflection = findReflectionPrompt({ modeDir });
+	// 模式级强度指令（拼在请求尾部，不进 system prompt —— 见 ModeDefinition.effortPrompt 的说明）
+	const effortPrompt = readText(join(modeDir, EFFORT_FILE)) ?? '';
 
 	// 模式参数：默认变量表 + Composer 下方的动态表单（用户选择覆盖默认值，见 shared/modeParams.ts）
 	const params = normalizeParams(raw.params, errors, { pluginId: plugin.id, modeId: id });
@@ -355,6 +359,7 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 		// 反思提示词按 agent 级 > 模式级 解析（agent 级在 def.reflectionPrompt 里）
 		reflectionPrompt: modeReflection?.text,
 		reflectionPromptPath: modeReflection?.path,
+		effortPrompt,
 		modeJsonText: readText(modeJsonPath) ?? '',
 		modeJsonPath,
 		pluginId: plugin.id,
@@ -391,6 +396,13 @@ function loadAgentDefinition(agentDir: string, errors: PluginLoadError[], ctx: {
 	const statePromptPath = join(agentDir, statePromptFile);
 	const statePrompt = existsSync(statePromptPath) ? readText(statePromptPath) ?? '' : '';
 
+	// 强度指令：Agent 级可选，**文件存在即整份替换**模式级 effort.md（不做拼接）。
+	// 不写 `effortFile` 就是「沿用模式级那份」——常规角色一个字节都不用写。
+	const effortFile = raw.effortFile ?? '';
+	const effortPrompt = effortFile && existsSync(join(agentDir, effortFile))
+		? readText(join(agentDir, effortFile)) ?? ''
+		: '';
+
 	const ability: AbilityPolicy = raw.ability ?? {};
 	// 工具名校验：只 warn（可能是留给其他插件的动态工具 / MCP）
 	// ⚠️ 必须是数组才校验：`allow` 可以写成模式参数引用 `"[mode.writeTools]"`（加载期还是字符串，
@@ -423,6 +435,8 @@ function loadAgentDefinition(agentDir: string, errors: PluginLoadError[], ctx: {
 		reflectionPrompt,
 		statePromptFile,
 		statePrompt,
+		effortFile: effortFile || undefined,
+		effortPrompt,
 	};
 }
 

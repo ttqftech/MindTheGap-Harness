@@ -216,6 +216,20 @@ export function renderTemplate(template: string, scope: Record<string, unknown>)
 	return renderNodes(parseTemplate(stripBlockComments(template)), scope);
 }
 
+/**
+ * 模板渲染的收尾整理（system prompt / 强度指令 / 动态状态三处共用）。
+ *
+ * `{{#if}}` / `{{#each}}` 独占一行时，去掉的段会在输出里留下成串空行，
+ * 空行不改变语义但**照原价计费**，而且会让「同一份内容的哈希」随空行数量漂移
+ * （请求日志里的 prefix 观测、缓存比对都靠哈希）。
+ *
+ * ⚠️ 先把 CRLF 归一成 LF 再压：老 md 里混着 `\r\n`，`\r` 夹在 `\n` 之间时
+ * `/\n{3,}/` 匹配不到，压缩会静默失效（写模板的人并不会去数文件是哪种换行）。
+ */
+export function tidyTemplateText(text: string): string {
+	return text.replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 // #endregion
 
 // #region 作用域
@@ -251,8 +265,8 @@ export interface PromptContext {
 	childAgentInstances?: AgentInstance[];
 	/** 尚未完成的子实例 */
 	unfinishedAgentInstances?: AgentInstance[];
-	/** 循环预算剩余 */
-	budget?: { totalLeft: number; agentInstanceLeft: number; warn: boolean; exhausted: boolean };
+	/** 循环预算剩余（外加总额与已用量，供「过半提醒」用） */
+	budget?: { totalLeft: number; agentInstanceLeft: number; warn: boolean; exhausted: boolean; total?: number; spent?: number };
 	/** 委托是否已达最大深度 */
 	depthExhausted?: boolean;
 	taskList?: string;
@@ -355,7 +369,8 @@ function childEntry(agentInstance: AgentInstance): Record<string, unknown> {
  * | `taskList` `hasTaskList` `taskListEnabled` | 任务清单 |
  * | `children` `hasChildren` | 子实例名册 |
  * | `unfinished` `hasUnfinished` | 尚未完成的子实例（含 `interruptReason`） |
- * | `hasBudget` `budgetTotalLeft` `budgetAgentInstanceLeft` `budgetWarn` `budgetExhausted` | 循环预算 |
+ * | `hasBudget` `budgetTotalLeft` `budgetAgentInstanceLeft` `budgetWarn` `budgetExhausted` | 循环预算（**硬限制**，正常流程用不到） |
+ * | `rounds` `softRounds` `softCheckpoint` | 本实例已跑轮数与**软收尾点**（到了就提醒收尾，不强制） |
  * | `mcpSection` `hasMcp` | MCP 外部工具说明 |
  * | `backgroundTasks` `hasBackgroundTasks` | 后台任务（占位，恒空 / 恒 false） |
  * | `params` `mode.<var>` `<var>` | 模式参数（mode.json 的 `params` 被 Composer 表单覆盖后的结果，三种写法等价；平铺时内置变量优先） |
@@ -375,6 +390,11 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 	const taskList = (ctx.taskList ?? '').trim();
 	const mcpSection = (ctx.mcpSection ?? '').trim();
 	const isSubAgent = !!agentInstance.parentAgentInstanceId;
+	// ⭐ 软收尾点：hard 预算（totalRounds / agentInstanceRounds）是**防死循环的硬限制**，取值远高于真实任务的
+	//   用量（实测 8~29 轮 vs 上限 30~48），所以基于预算的告警在正常流程里永远轮不到触发，压不住尾巴。
+	//   这里另给一条**按轮数**的软提醒：跑到 `softRounds` 轮喊一次收尾（0 = 不启用）。
+	//   ⚠️ 从 ctx.params 直接取：作用域里内置变量优先，写死在字面量里会被 params 覆盖不掉。
+	const softRounds = Number((ctx.params as Record<string, unknown> | undefined)?.softRounds ?? 0) || 0;
 	// 根实例的 task 就是用户的原话（由 messages 里的 user 消息承载），不在 system prompt 里重复
 	const parentPrompt = isSubAgent ? (ctx.parentPrompt ?? agentInstance.task ?? '').trim() : '';
 
@@ -390,6 +410,7 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		isRoot: !isSubAgent,
 		isSubAgent,
 		parentAgentInstanceId: agentInstance.parentAgentInstanceId ?? '',
+		rounds: agentInstance.rounds,
 
 		// 运行环境
 		platform: platformLabel(),
@@ -448,8 +469,17 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		hasBudget: !!budget,
 		budgetTotalLeft: budget?.totalLeft ?? 0,
 		budgetAgentInstanceLeft: budget?.agentInstanceLeft ?? 0,
+		budgetTotal: budget?.total ?? 0,
+		budgetSpent: budget?.spent ?? 0,
 		budgetWarn: !!budget?.warn,
 		budgetExhausted: !!budget?.exhausted,
+		// 「过半」是**电平**量（已用 ≥ 一半 且还没进告警区）—— 用来在任务中段提醒一次，
+		// 而不是只在最后几轮才喊收尾。budgetWarn 时它自然为假，两块不会同时出现。
+		budgetHalf: !!budget && !budget.warn && !budget.exhausted && !!budget.total && (budget.spent ?? 0) >= budget.total / 2,
+
+		// 软收尾点（**电平**量，跟 budgetHalf 一个用法：配合 stateChanged.softCheckpoint 只喊一次）
+		softRounds,
+		softCheckpoint: softRounds > 0 && agentInstance.rounds >= softRounds,
 
 		// MCP
 		mcpSection,
@@ -501,15 +531,34 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
  * 渲染某个实例的 system prompt：**模板就是该 Agent 的 `prompt.md`**。
  * 返回空串时调用方**不应下发 system message**（「空」模式的 prompt.md 就是空的）。
  *
- * 最后会把连续 3 个以上的换行压成 2 个 —— md 里的 `{{#if}}` / `{{#each}}` 独占一行时
- * 难免留下多余空行，压一下省 token 也省得作者为了排版去抠标签位置。
+ * ⚠️ 这份内容就是缓存前缀的第二层：同一个实例里**必须逐字节稳定**。
+ * 所以模板里不许出现 `{{time}}` / `{{rounds}}` / `{{budget*}}` 这类每轮都变的变量 ——
+ * 它们属于 `prompt.state.md`（尾部），写在这里等于每轮把整段历史重算一次。
  */
 export function renderSystemPrompt(ctx: PromptContext): string {
 	const template = ctx.def.prompt ?? '';
 	if (!template.trim()) return '';
-	return renderTemplate(template, buildPromptScope(ctx))
-		.replace(/\n{3,}/g, '\n\n')
-		.trim();
+	return tidyTemplateText(renderTemplate(template, buildPromptScope(ctx)));
+}
+
+/**
+ * 渲染「强度指令」。
+ *
+ * 模板优先级：**Agent 级 `effortFile` > 模式级 `effort.md`**（存在即整份替换，不做拼接）。
+ * Agent 级存在的理由：不同角色的能力范围不同（核对员没有写盘、勘查员不委托），
+ * 通用文案只能写到「大家都成立」的粒度；而强度指令本身又不该为了按角色区分而在
+ * 每份 `prompt.state.md` 里各抄一遍 —— 那些文件是**每轮状态**（边沿语义），不是恒定约束。
+ *
+ * ⭐ 与 `prompt.state.md` 一样拼在**请求尾部**而不是写进 system prompt：
+ * 提示词缓存是「tools → system → messages」的前缀结构，改 system 一个字 = 后面整段历史全部 miss；
+ * 改尾部消息则只影响尾部自己。强度因此可以**在会话中途切换而不炸掉缓存**。
+ *
+ * 模板里能读到 `{{#if isRoot}}`、`{{ intensity }}` 等全部作用域变量。
+ */
+export function renderEffortPrompt(ctx: PromptContext): string {
+	const template = ctx.def.effortPrompt || ctx.mode.effortPrompt || '';
+	if (!template.trim()) return '';
+	return tidyTemplateText(renderTemplate(template, buildPromptScope(ctx)));
 }
 
 /**
@@ -522,9 +571,7 @@ export function renderStatePrompt(ctx: PromptContext): { content: string; snapsh
 	const template = ctx.def.statePrompt ?? '';
 	if (!template.trim()) return { content: '', snapshot: {} };
 	const scope = buildPromptScope(ctx);
-	const content = renderTemplate(template, scope)
-		.replace(/\n{3,}/g, '\n\n')
-		.trim();
+	const content = tidyTemplateText(renderTemplate(template, scope));
 	const snapshot = (scope._stateSnapshot ?? {}) as Record<string, string>;
 	return { content, snapshot };
 }

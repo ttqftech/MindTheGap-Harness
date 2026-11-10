@@ -10,7 +10,7 @@ import { showRequestDetailMsgbox } from './requestDetail';
 import {
 	ReflectionIcon, McpIcon,
 	TOOL_ARGS_LIMIT, TOOL_OUTPUT_LIMIT, PURPOSE_LABEL, STATUS_LABEL,
-	truncateWithNote, fmtTokens, fmtDuration, fmtClock, fmtSize, parseMcpName,
+	truncateWithNote, fmtUsageTriple, USAGE_GLYPH, fmtDuration, fmtClock, fmtSize, parseMcpName,
 } from './shared';
 import styles from './RenderTree.module.css';
 
@@ -19,18 +19,19 @@ import styles from './RenderTree.module.css';
  */
 function runSummaryTooltip(run: RunUsage): string {
 	const lines = ['本次发言（含子 Agent 与反思）'];
-	lines.push(`本 Agent · ${run.own.calls} 次  ↑${fmtTokens(run.own.input)} ↓${fmtTokens(run.own.output)}`);
+	// 图例只在真有缓存命中时给：没有 ⟳ 的账本不需要解释 ⟳
+	if (run.total.cached > 0) {
+		lines.push(`${USAGE_GLYPH.cached} 命中缓存　${USAGE_GLYPH.input} 新增输入　${USAGE_GLYPH.output} 输出`);
+	}
+	lines.push(`本 Agent · ${run.own.calls} 次  ${fmtUsageTriple(run.own.input, run.own.cached, run.own.output)}`);
 	if (run.reflection.calls > 0) {
-		lines.push(`反思 · ${run.reflection.calls} 次  ↑${fmtTokens(run.reflection.input)} ↓${fmtTokens(run.reflection.output)}`);
+		lines.push(`反思 · ${run.reflection.calls} 次  ${fmtUsageTriple(run.reflection.input, run.reflection.cached, run.reflection.output)}`);
 	}
 	if (run.toolSub.calls > 0) {
-		lines.push(`工具内请求 · ${run.toolSub.calls} 次  ↑${fmtTokens(run.toolSub.input)} ↓${fmtTokens(run.toolSub.output)}`);
+		lines.push(`工具内请求 · ${run.toolSub.calls} 次  ${fmtUsageTriple(run.toolSub.input, run.toolSub.cached, run.toolSub.output)}`);
 	}
 	if (run.children.calls > 0) {
-		lines.push(`子 Agent · ${run.childAgents} 个 / ${run.children.calls} 次  ↑${fmtTokens(run.children.input)} ↓${fmtTokens(run.children.output)}`);
-	}
-	if (run.total.cached > 0) {
-		lines.push(`其中缓存命中  ${fmtTokens(run.total.cached)}`);
+		lines.push(`子 Agent · ${run.childAgents} 个 / ${run.children.calls} 次  ${fmtUsageTriple(run.children.input, run.children.cached, run.children.output)}`);
 	}
 	return lines.join('\n');
 }
@@ -49,9 +50,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		const parts: string[] = []
 		parts.push(`#${usage.seq ?? '?'}`);
 		if (usage.round) parts.push(`第 ${usage.round} 轮`);
-		parts.push(`↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)}`);
-		// parts.push(`共 ${fmtTokens(usage.total)}`);
-		if (usage.cached) parts.push(`缓存 ${fmtTokens(usage.cached)}`);
+		parts.push(fmtUsageTriple(usage.input, usage.cached, usage.output));
 		const duration = fmtDuration(usage.durationMs);
 		if (duration) parts.push(duration);
 		if (usage.purpose && usage.purpose !== 'agent_loop') {
@@ -391,14 +390,8 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 				</span>
 				<span class={styles['summary-chip']}>
 					<span class={styles['summary-chip-key']}>tokens</span>
-					↑{fmtTokens(run().total.input)} ↓{fmtTokens(run().total.output)}
+					{fmtUsageTriple(run().total.input, run().total.cached, run().total.output)}
 				</span>
-				<Show when={run().total.cached > 0}>
-					<span class={styles['summary-chip']}>
-						<span class={styles['summary-chip-key']}>缓存</span>
-						{fmtTokens(run().total.cached)}
-					</span>
-				</Show>
 				<Show when={run().rounds > 0}>
 					<span class={styles['summary-chip']}>
 						<span class={styles['summary-chip-key']}>轮次</span>
