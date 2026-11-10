@@ -1,12 +1,13 @@
-import { Index, For, Show, Switch, Match } from 'solid-js';
-import { useTooltip } from 'ffbox-ui';
+import { Index, For, Show, Switch, Match, createSignal } from 'solid-js';
+import { useTooltip, type MenuItem } from 'ffbox-ui';
 import type { RenderAgentNode, RenderBlock, RenderLlmBlock, RenderSubBlock, RenderToolSub, RunUsage } from '@mainview/logic/projection';
 import { runOfTurn } from '@mainview/logic/projection';
 import type { UsageEntry } from '@shared/agent';
 import { answerAskUser } from '@mainview/logic/runController';
 import { showMenu } from '@mainview/bridges/ffboxBridge';
 import AskUserCard from '@mainview/App/ChatView/AskUserCard/AskUserCard';
-import { showRequestDetailMsgbox } from './requestDetail';
+import MarkdownText from './MarkdownText';
+import { copyText, showRequestDetailMsgbox } from './requestDetail';
 import {
 	ReflectionIcon, McpIcon,
 	TOOL_ARGS_LIMIT, TOOL_OUTPUT_LIMIT, PURPOSE_LABEL, STATUS_LABEL,
@@ -45,6 +46,21 @@ function runSummaryTooltip(run: RunUsage): string {
 export default function RenderTreeView(props: { tree: RenderAgentNode; openOverrides: Map<string, boolean>; convId: string }) {
 	const { openOverrides, convId } = props;
 
+	/**
+	 * 「原始输出」开关：按 text 子块的 key 记。
+	 *
+	 * ⚠️ 不能塞 `openOverrides`：那是纯 Map，写进去不会触发重渲染（只有块被重建时才会被读到），
+	 *    而「切换原始 / 渲染」必须当场换内容，所以另开一个 signal。
+	 */
+	const [preferRawBlocks, setPreferRawBlocks] = createSignal<ReadonlySet<string>>(new Set());
+	const togglePreferRaw = (key: string, raw: boolean) => {
+		setPreferRawBlocks((prev) => {
+			const next = new Set(prev);
+			if (raw) next.add(key); else next.delete(key);
+			return next;
+		});
+	};
+
 	/** 一次 LLM 调用的账本：贴在所属块的**下方**（它是那次调用自带的一条数据，不是独立条目） */
 	const renderUsage = (usage: UsageEntry) => {
 		const parts: string[] = []
@@ -65,7 +81,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	};
 
 	/**
-	 * 一个 LLM 块的右键菜单：导出这次请求**真正发给模型**的 messages 全文。
+	 * 一个 LLM 块的右键菜单：复制选中 / 复制全文 / 切换原始输出，最后是这次请求的详细信息。
 	 *
 	 * logId 来自该块自己的账本（`usage.logId`）；块还在飞、账本还没落地时置灰。
 	 * 菜单挂在鼠标处而不是块上 —— 一次调用的块可能很长，用块矩形会飘到很远。
@@ -84,30 +100,78 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		 * 同一元素连点要能重放：先摘类、强制回流、再挂类。
 		 * 动画本身是 `forwards` 的，挂到菜单关闭为止不会残留光带，只保证菜单开着时这一块一直是「被选中」的那一条。
 		 */
-		const sweepTarget = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
-		if (sweepTarget) {
-			sweepTarget.classList.remove(styles.sweep);
-			void sweepTarget.offsetWidth;	// 强制回流，否则第二次点同一个块动画不会重播
-			sweepTarget.classList.add(styles.sweep);
+		const blockEl = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+		if (blockEl) {
+			blockEl.classList.remove(styles.sweep);
+			void blockEl.offsetWidth;	// 强制回流，否则第二次点同一个块动画不会重播
+			blockEl.classList.add(styles.sweep);
 		}
+
+		/**
+		 * 右键落在正文里吗？`data-text-block` 是投影里每个 text 子块根节点上的 key。
+		 * 落在思考 / 工具卡里时它是 null —— 那两处不提供「复制全文 / 切换原始输出」。
+		 */
+		const textEl = e.target instanceof HTMLElement ? e.target.closest('[data-text-block]') : null;
+		const textKey = textEl?.getAttribute('data-text-block') ?? null;
+
 		const usage = block.usages?.find((u) => u.logId) ?? block.usages?.[0];
 		const logId = usage?.logId;
+
+		const menu: MenuItem[] = [];
+		const selection = window.getSelection()?.toString() ?? '';
+		if (selection.trim()) {
+			menu.push({
+				type: 'normal',
+				value: 'copy-selection',
+				label: `复制选中文本（${selection.length} 字符）`,
+				onClick: () => void copyText(selection),
+			});
+		}
+		if (textKey) {
+			/**
+			 * 一个 LLM 块里所有正文子块的可见文本。
+			 * 走 DOM 而不是走投影数据：这样「原始输出」状态下拿到的是源码、「渲染」状态下拿到的是渲染结果（表格/列表都成了纯文本），与用户眼前看到的一致；一个消息被工具调用截断成多段正文时也自然拼得回来。
+			 */
+			function allTextOf(root: HTMLElement): string {
+				return [...root.querySelectorAll('[data-text-block]')]
+					.map((el) => (el as HTMLElement).innerText.trim())
+					.filter(Boolean)
+					.join('\n\n');
+			}
+			menu.push({
+				type: 'normal',
+				value: 'copy-all',
+				label: '复制全文',
+				onClick: () => {
+					const text = blockEl ? allTextOf(blockEl) : '';
+					if (text) void copyText(text);
+				},
+			});
+			const raw = preferRawBlocks().has(textKey);
+			menu.push({
+				type: 'normal',
+				value: 'toggle-raw',
+				label: raw ? '切换至 Markdown 渲染输出' : '切换至原始输出',
+				onClick: () => togglePreferRaw(textKey, !raw),
+			});
+		}
+		if (menu.length > 0) menu.push({ type: 'separator' });
+		menu.push({
+			type: 'normal',
+			value: 'export-detail',
+			label: '查看这条 LLM 请求的详细信息…',
+			disabled: !logId,
+			onClick: () => {
+				if (logId) showRequestDetailMsgbox(convId, logId, usage?.seq);
+			},
+		});
+
 		showMenu({
 			type: 'action',
 			triggerRect: { xMin: e.clientX, yMin: e.clientY, xMax: e.clientX, yMax: e.clientY },
-			menu: [
-				{
-					type: 'normal',
-					value: 'export-detail',
-					label: '查看这条 LLM 请求的详细信息…',
-					disabled: !logId,
-					onClick: () => {
-						if (logId) showRequestDetailMsgbox(convId, logId, usage?.seq);
-					},
-				},
-			],
+			menu,
 			onClose: () => {
-				sweepTarget?.classList.remove(styles.sweep);
+				blockEl?.classList.remove(styles.sweep);
 			}
 		});
 	};
@@ -141,20 +205,30 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 			void sweepTarget.offsetWidth;
 			sweepTarget.classList.add(styles.sweep);
 		}
+		const menu: MenuItem[] = [];
+		const selection = window.getSelection()?.toString() ?? '';
+		if (selection.trim()) {
+			menu.push({
+				type: 'normal',
+				value: 'copy-selection',
+				label: `复制选中文本（${selection.length} 字符）`,
+				onClick: () => void copyText(selection),
+			});
+			menu.push({ type: 'separator' });
+		}
+		menu.push({
+			type: 'normal',
+			value: 'safety-review-detail',
+			label: safetyLogId ? '查看这次命令的安全审核…' : '（这次调用没有安全审查记录）',
+			disabled: !safetyLogId,
+			onClick: () => {
+				if (safetyLogId) showRequestDetailMsgbox(convId, safetyLogId);
+			},
+		});
 		showMenu({
 			type: 'action',
 			triggerRect: { xMin: e.clientX, yMin: e.clientY, xMax: e.clientX, yMax: e.clientY },
-			menu: [
-				{
-					type: 'normal',
-					value: 'safety-review-detail',
-					label: safetyLogId ? '查看这次命令的安全审核…' : '（这次调用没有安全审查记录）',
-					disabled: !safetyLogId,
-					onClick: () => {
-						if (safetyLogId) showRequestDetailMsgbox(convId, safetyLogId);
-					},
-				},
-			],
+			menu,
 			onClose: () => {
 				sweepTarget?.classList.remove(styles.sweep);
 			}
@@ -304,8 +378,16 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 				)}
 			</Match>
 
+			{/* 正文走 markdown 渲染（marked 词法 + 自绘，见 MarkdownText.tsx）；思考 / 反思仍是纯文本。
+			    `data-text-block` 是这一块的 key，右键菜单靠它判断「点在正文里」并定位切换目标 */}
 			<Match when={subTypeEquals(sub, 'text')}>
-				{(t) => <div class={styles['agent-block-text']}>{t().content}</div>}
+				{(textBlock) => (
+					<div data-text-block={textBlock().key}>
+						<Show when={preferRawBlocks().has(textBlock().key)} fallback={<MarkdownText text={textBlock().content} />}>
+							<div class={styles['raw-text']}>{textBlock().content}</div>
+						</Show>
+					</div>
+				)}
 			</Match>
 
 			{/* 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定。

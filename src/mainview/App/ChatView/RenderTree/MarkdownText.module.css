@@ -1,0 +1,211 @@
+/* Markdown 正文（AI 回复的 text 子块）。
+   只有根节点挂 class，块内元素一律靠后代选择器 —— 少一堆 class 名，也不用管 CSS module 的哈希。 */
+
+.markdownBody {
+	font-size: var(--fs-m);
+	line-height: 1.8em;
+	color: var(--text-primary);
+	word-break: break-word;
+
+	/* 首尾不留空：块与块之间的间距由各元素自己的 margin 决定，边界处要贴合消息容器 */
+	& > *:first-child {
+		margin-block-start: 0;
+	}
+	& > *:last-child {
+		margin-block-end: 0;
+	}
+
+	& p {
+		margin: 0.55em 0;
+	}
+
+	& h1, & h2, & h3, & h4, & h5, & h6 {
+		margin: 1.1em 0 0.45em;
+		font-weight: 600;
+		line-height: 1.4;
+	}
+	& h1 { font-size: var(--fs-xxl); }
+	& h2 { font-size: var(--fs-xl); }
+	& h3 { font-size: var(--fs-l); }
+	& h4, & h5, & h6 { font-size: var(--fs-m); }
+
+	& ul, & ol {
+		margin: 0.55em 0;
+		padding-inline-start: 1.5em;
+	}
+	& li {
+		margin: 0.15em 0;
+	}
+	/* 松散列表项内部是 <p>，别再叠一层段落间距 */
+	& li > p {
+		margin: 0.15em 0;
+	}
+	& li::marker {
+		color: var(--text-placeholder);
+	}
+	/* 任务项不要前面的圆点，复选框自己就是标记；内容在松散列表里是 <p>，用 flex 让它和方框同行 */
+	& li.is-task {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.45em;
+		list-style: none;
+
+		& > p {
+			flex: 1;
+		}
+	}
+
+	& blockquote {
+		margin: 0.6em 0;
+		padding: 0.05em 0 0.05em 0.85em;
+		border-left: 3px solid var(--border-strong);
+		color: var(--text-secondary);
+	}
+
+	& hr {
+		margin: 1.1em 0;
+		border: 0;
+		border-top: 1px solid var(--border);
+	}
+
+	& a {
+		color: var(--accent);
+		text-decoration: none;
+		border-bottom: 1px solid var(--accent-soft-border);
+
+		&:hover {
+			border-bottom-color: var(--accent);
+		}
+	}
+
+	& strong {
+		font-weight: 600;
+		color: var(--text-primary-strong);
+	}
+
+	& img {
+		max-width: 100%;
+		border-radius: var(--r-md);
+	}
+}
+
+/* ---------- 行内 / 块级代码 ---------- */
+
+.inline-code {
+	padding: 0.1em 0.35em;
+	border-radius: var(--r-xs);
+	background-color: var(--bg-chip);
+	font-family: var(--font-mono);
+	font-size: 0.92em;
+}
+
+.code-block {
+	margin: 0.7em 0;
+	padding: 10px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-lg);
+	background-color: var(--bg-sub1);
+	font-family: var(--font-mono);
+	font-size: var(--fs-s);
+	line-height: 1.6;
+	white-space: pre;
+	overflow: auto;
+
+	& > code {
+		font-family: inherit;
+	}
+}
+
+/* ---------- 表格 ---------- */
+
+.table-wrap {
+	margin: 0.7em 0;
+	overflow-x: auto;
+	border: 1px solid var(--border);
+	border-radius: var(--r-lg);
+
+	& table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: var(--fs-s);
+	}
+	& th, & td {
+		padding: 6px 10px;
+		border-right: 1px solid var(--border);
+		border-bottom: 1px solid var(--border);
+	}
+	& th:last-child, & td:last-child {
+		border-right: 0;
+	}
+	& tbody tr:last-child td {
+		border-bottom: 0;
+	}
+	& th {
+		background-color: var(--bg-sub1-header);
+		font-weight: 600;
+	}
+}
+
+/* ---------- html 围栏（代码 / 预览） ---------- */
+
+.html-fence {
+	margin: 0.7em 0;
+	border: 1px solid var(--border);
+	border-radius: var(--r-lg);
+	background-color: var(--bg-sub1);
+	overflow: hidden;
+}
+
+.html-fence-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 6px 4px 10px;
+	font-size: var(--fs-xxs);
+	color: var(--text-tertiary);
+}
+
+.html-fence-lang {
+	flex: 1;
+	font-family: var(--font-mono);
+	letter-spacing: 0.04em;
+}
+
+.html-fence-tab {
+	padding: 2px 8px;
+	border: 1px solid var(--border);
+	border-radius: var(--r-sm);
+	background-color: var(--bg-chip);
+	color: var(--text-secondary);
+	font-size: var(--fs-xxs);
+	cursor: pointer;
+
+	&:hover {
+		background-color: var(--bg-hover);
+		color: var(--text-primary);
+	}
+}
+
+/* 预览一律白底：模型写的 html 通常按浅色设计，跟着主题走会变成黑字黑底 */
+.html-fence-frame {
+	display: block;
+	width: 100%;
+	height: 320px;
+	border: 0;
+	border-top: 1px solid var(--border);
+	background-color: #fff;
+}
+
+.html-fence-pending {
+	padding: 18px 12px;
+	border-top: 1px solid var(--border);
+	font-size: var(--fs-xs);
+	color: var(--text-tertiary);
+}
+
+/* ---------- 任务列表 ---------- */
+
+.task-box {
+	flex: none;
+	margin: 0.5em 0 0;
+}

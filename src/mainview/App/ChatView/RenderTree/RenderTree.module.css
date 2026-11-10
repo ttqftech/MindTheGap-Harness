@@ -98,12 +98,12 @@
 	}
 }
 
-.agent-block-text {
+/* 原始输出（右键正文 → 切换至原始输出）：直接摊开 markdown 源码 */
+.raw-text {
 	font-size: var(--fs-m);
 	line-height: 1.8em;
 	white-space: pre-wrap;
 	word-break: break-word;
-	color: var(--text-primary);
 }
 
 /* ---------- 工具调用卡 ---------- */

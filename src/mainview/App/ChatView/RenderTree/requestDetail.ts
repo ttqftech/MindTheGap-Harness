@@ -20,7 +20,7 @@ import { fmtSize } from './shared';
  * 写剪贴板。
  * ⚠️ `views://` 不是安全上下文，`navigator.clipboard` 可能整个不存在（`appCommands.editPaste` 也踩过），所以必须有 execCommand 兜底 —— 否则「复制」按钮在打包版里会静默失效。
  */
-async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
 	try {
 		if (navigator.clipboard?.writeText) {
 			await navigator.clipboard.writeText(text);
