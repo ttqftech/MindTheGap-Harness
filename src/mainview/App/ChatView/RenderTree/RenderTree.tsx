@@ -8,6 +8,8 @@ import { showMenu } from '@mainview/bridges/ffboxBridge';
 import AskUserCard from '@mainview/App/ChatView/AskUserCard/AskUserCard';
 import MarkdownText from './MarkdownText';
 import { copyText, showRequestDetailMsgbox } from './requestDetail';
+import type { OpenState } from './openState';
+import Collapsible from './Collapsible';
 import {
 	ReflectionIcon, McpIcon,
 	TOOL_ARGS_LIMIT, TOOL_OUTPUT_LIMIT, PURPOSE_LABEL, STATUS_LABEL,
@@ -43,14 +45,14 @@ function runSummaryTooltip(run: RunUsage): string {
  * 聊天视图和图示视图共享同一份渲染树数据，只是投影方式不同——
  * 本组件负责「聊天消息列表」这种投影。
  */
-export default function RenderTreeView(props: { tree: RenderAgentNode; openOverrides: Map<string, boolean>; convId: string }) {
-	const { openOverrides, convId } = props;
+export default function RenderTreeView(props: { tree: RenderAgentNode; openState: OpenState; convId: string }) {
+	const { openState, convId } = props;
 
 	/**
 	 * 「原始输出」开关：按 text 子块的 key 记。
 	 *
-	 * ⚠️ 不能塞 `openOverrides`：那是纯 Map，写进去不会触发重渲染（只有块被重建时才会被读到），
-	 *    而「切换原始 / 渲染」必须当场换内容，所以另开一个 signal。
+	 * ⚠️ 不塞 `openState`：那是折叠用的（只表达「用户想让它开着还是关着」，且只有流式/自动折叠才需要它参与响应式），
+	 *    而「切换原始 / 渲染」是另一件事，另开一个 signal。
 	 */
 	const [preferRawBlocks, setPreferRawBlocks] = createSignal<ReadonlySet<string>>(new Set());
 	const togglePreferRaw = (key: string, raw: boolean) => {
@@ -235,115 +237,123 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		});
 	};
 
-	const renderToolCard = (tool: () => RenderToolSub) => {
+	const renderToolCard = (tool: () => RenderToolSub, tail: () => boolean) => {
 		const mcpName = () => parseMcpName(tool().name);
+		const openKey = () => `tool:${tool().callId}`;
+		const isOpen = () => openState.isOpen(openKey(), tail());
 		return (
-			<details
+			<Collapsible
 				class={styles['tool-card']}
 				classList={{
 					[styles['is-error']]: tool().status === 'error',
 					[styles['is-mcp']]: !!mcpName(),
 				}}
-				open={openOverrides.get(`tool:${tool().callId}`) ?? (tool().status === 'error' || (!!tool().output && tool().output.length <= 240))}
-				ontoggle={(e) => openOverrides.set(`tool:${tool().callId}`, e.currentTarget.open)}
-				oncontextmenu={(e) => openToolCardMenu(e, tool())}
-			>
-				<summary class={styles['tool-head']}>
-					<span class={styles['tool-head-caret']}>▶</span>
-					<span class={styles['tool-status']}>
-						{tool().status === 'running' ? '⏳' : tool().status === 'success' ? '✓' : '✗'}
-					</span>
-					<Show
-						when={mcpName()}
-						fallback={<span class={styles['tool-name']}>{tool().name}</span>}
-					>
-						{(m) => (
-							<>
-								<span class={styles['tool-icon']}>
-									<McpIcon />
-								</span>
-								<span class={styles['tool-name']}>mcp:{m().server}</span>
-								<span class={styles['tool-name-sub']}>tools/call · {m().method}</span>
-							</>
-						)}
-					</Show>
-					<Show when={(tool().children?.length ?? 0) > 0}>
-						{/* 子 Agent 渲染在这个块**下面**（同级），这里只提示它委托出去了几个 */}
-						<span class={styles['tool-owner']}>↳ {tool().children!.length} 个子 Agent</span>
-					</Show>
-					<Show when={tool().reason}>
-						<span class={styles['tool-reason']}>{tool().reason}</span>
-					</Show>
-					<Show when={mcpName()}>
-						<span class={styles['tool-chip']}>JSON-RPC</span>
-					</Show>
-					{/* <Show
-						when={tool().output}
-						fallback={
-							<Show when={tool().status === 'running'}>
-								<span class={styles['tool-preview']}>执行中…</span>
-							</Show>
-						}
-					>
-						<span class={styles['tool-preview']}>
-							{tool().output.replace(/\s+/g, ' ').trim().slice(0, 120)}
+				/* 默认展开与否只取决于「它是不是最后那一组」（见 openState.ts）；用户点过之后固定 */
+				open={isOpen()}
+				onToggle={() => openState.toggle(openKey(), !isOpen())}
+				onContextMenu={(e) => openToolCardMenu(e, tool())}
+				headClass={styles['tool-head']}
+				bodyClass={styles['tool-body']}
+				head={
+					<>
+						<span class={styles['tool-head-caret']}>▶</span>
+						<span class={styles['tool-status']}>
+							{tool().status === 'running' ? '⏳' : tool().status === 'success' ? '✓' : '✗'}
 						</span>
-					</Show> */}
-				</summary>
-				<div class={styles['tool-body']}>
-					{/* MCP 卡用设计稿的「→ request / ← response」行；普通工具用「入参 / 输出」小标 */}
-					<Show
-						when={mcpName()}
-						fallback={
-							<>
-								<Show when={tool().args}>
-									<div class={styles['tool-section']}>入参</div>
-									<pre class={styles['tool-pre']}>{truncateWithNote(tool().args, TOOL_ARGS_LIMIT)}</pre>
+						<Show
+							when={mcpName()}
+							fallback={<span class={styles['tool-name']}>{tool().name}</span>}
+						>
+							{(m) => (
+								<>
+									<span class={styles['tool-icon']}>
+										<McpIcon />
+									</span>
+									<span class={styles['tool-name']}>mcp:{m().server}</span>
+									<span class={styles['tool-name-sub']}>tools/call · {m().method}</span>
+								</>
+							)}
+						</Show>
+						<Show when={(tool().children?.length ?? 0) > 0}>
+							{/* 子 Agent 渲染在这个块**下面**（同级），这里只提示它委托出去了几个 */}
+							<span class={styles['tool-owner']}>↳ {tool().children!.length} 个子 Agent</span>
+						</Show>
+						<Show when={tool().reason}>
+							<span class={styles['tool-reason']}>{tool().reason}</span>
+						</Show>
+						<Show when={mcpName()}>
+							<span class={styles['tool-chip']}>JSON-RPC</span>
+						</Show>
+						{/* <Show
+							when={tool().output}
+							fallback={
+								<Show when={tool().status === 'running'}>
+									<span class={styles['tool-preview']}>执行中…</span>
 								</Show>
-								<Show when={tool().output}>
-									<div class={styles['tool-section']}>输出</div>
-									<pre class={styles['tool-pre']}>{truncateWithNote(tool().output, TOOL_OUTPUT_LIMIT)}</pre>
-								</Show>
-							</>
-						}
-					>
+							}
+						>
+							<span class={styles['tool-preview']}>
+								{tool().output.replace(/\s+/g, ' ').trim().slice(0, 120)}
+							</span>
+						</Show> */}
+					</>
+				}
+			>
+				{/* MCP 卡用设计稿的「→ request / ← response」行；普通工具用「入参 / 输出」小标 */}
+				<Show
+					when={mcpName()}
+					fallback={
 						<>
 							<Show when={tool().args}>
-								<div class={styles['tool-line']}>→ request</div>
+								<div class={styles['tool-section']}>入参</div>
 								<pre class={styles['tool-pre']}>{truncateWithNote(tool().args, TOOL_ARGS_LIMIT)}</pre>
 							</Show>
 							<Show when={tool().output}>
-								<div class={`${styles['tool-line']} ${styles['is-response']}`}>
-									← response · {tool().status === 'success' ? '200 OK' : tool().status} · {fmtSize(tool().output.length)}
-								</div>
+								<div class={styles['tool-section']}>输出</div>
 								<pre class={styles['tool-pre']}>{truncateWithNote(tool().output, TOOL_OUTPUT_LIMIT)}</pre>
 							</Show>
 						</>
-					</Show>
-					<Show when={!tool().args && !tool().output}>
-						<div class={styles['tool-hint']}>
-							{tool().status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
-						</div>
-					</Show>
-				</div>
-			</details>
+					}
+				>
+					<>
+						<Show when={tool().args}>
+							<div class={styles['tool-line']}>→ request</div>
+							<pre class={styles['tool-pre']}>{truncateWithNote(tool().args, TOOL_ARGS_LIMIT)}</pre>
+						</Show>
+						<Show when={tool().output}>
+							<div class={`${styles['tool-line']} ${styles['is-response']}`}>
+								← response · {tool().status === 'success' ? '200 OK' : tool().status} · {fmtSize(tool().output.length)}
+							</div>
+							<pre class={styles['tool-pre']}>{truncateWithNote(tool().output, TOOL_OUTPUT_LIMIT)}</pre>
+						</Show>
+					</>
+				</Show>
+				<Show when={!tool().args && !tool().output}>
+					<div class={styles['tool-hint']}>
+						{tool().status === 'running' ? '等待工具返回…' : '（该工具没有输出）'}
+					</div>
+				</Show>
+			</Collapsible>
 		);
 	};
 
 	/**
 	 * 委托 / 唤醒类工具：卡片 + 它下面的子 Agent。
 	 *
-	 * ⚠️ 子 Agent **不嵌在卡片的 `<details>` 里**，而是同级渲染在它下面：
+	 * ⚠️ 子 Agent **不嵌在卡片的内容区里**（`.clip` 里），而是同级渲染在它下面：
 	 *    ① 折叠卡片不该把整棵子 Agent 树一起藏起来
 	 *    ② 子 Agent 有自己的左边距，使「哪一块是一个完整的子 Agent」从结构上就看得出来
 	 * ⚠️ 子节点列表用 `<Index>`：子 Agent 流式时它的节点对象每帧都是新的，`<For>` 会按引用判定成「换了个人」→ 整棵子树重挂（`.block-llm` 是全新 DOM，:hover 的边条过渡会反复重播）。
 	 */
-	const renderToolGroup = (tool: () => RenderToolSub) => (
+	const renderToolGroup = (tool: () => RenderToolSub, tail: () => boolean) => (
 		<div class={styles['agent-tool-group']}>
-			{renderToolCard(tool)}
+			{renderToolCard(tool, tail)}
 			<Show when={(tool().children?.length ?? 0) > 0}>
 				<div class={styles['agent-tool-children']}>
-					<Index each={tool().children ?? []}>{(child) => renderNode(child, false)}</Index>
+					<Index each={tool().children ?? []}>
+						{/* 子节点只有「挂在最后一组的最后一个工具上」才算尾：「最后一组」是整棵树的概念，不是每层各自算 */}
+						{(child, ci) => renderNode(child, false, () => tail() && ci === (tool().children?.length ?? 0) - 1)}
+					</Index>
 				</div>
 			</Show>
 		</div>
@@ -356,26 +366,35 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 * ⚠️ 与顶层块同理：参数是 accessor、分派用 `<Switch>`，让「同一位置上的内容变了」只更新表达式，
 	 *    不重建元素。用值 + switch 的话流式时每个 chunk 都会换一个新的子块 DOM。
 	 */
-	const renderSubBlock = (sub: () => RenderSubBlock) => (
+	const renderSubBlock = (sub: () => RenderSubBlock, tail: () => boolean) => (
 		<Switch fallback={null}>
-			{/* 思考过程默认折叠，但 summary 里实时滚出末尾几个字，这样即使折叠着也能看出「模型还在动」 */}
+			{/* 思考过程默认折叠（除非它是最后一组），头部里实时滚出末尾几个字，这样即使折叠着也能看出「模型还在动」 */}
 			<Match when={subTypeEquals(sub, 'reasoning')}>
-				{(r) => (
-					<details
-						class={styles.reasoning}
-						/* ⚠️ 展开态必须自己记（与工具卡 / 反思 / 子 Agent 同一套 openOverrides）：
-						   靠浏览器原生 `open` 的话，这一块一旦被重建（换 key / 短暂消失再出现 / 树整体重挂）就弹回折叠。 */
-						open={openOverrides.get(`reasoning:${r().key}`) ?? false}
-						ontoggle={(e) => openOverrides.set(`reasoning:${r().key}`, e.currentTarget.open)}
-					>
-						<summary class={styles['reasoning-head']}>
-							<span class={styles['reasoning-caret']}>▶</span>
-							<span class={styles['reasoning-label']}>思考</span>
-							<span class={styles['reasoning-peek']}>{r().content.slice(-72)}</span>
-						</summary>
-						<div class={styles['reasoning-body']}>{r().content}</div>
-					</details>
-				)}
+				{(r) => {
+					const openKey = () => `reasoning:${r().key}`;
+					const isOpen = () => openState.isOpen(openKey(), tail());
+					return (
+						/* ⚠️ 展开态必须自己记（与工具卡 / 反思 / 子 Agent 同一套 openState）：
+						   这块一旦被重建（换 key / 短暂消失再出现 / 树整体重挂）不该弹回折叠；
+						   默认值也不是写死的 false —— 见 openState.ts，只有「最后一组」默认展开。 */
+						<Collapsible
+							class={styles.reasoning}
+							open={isOpen()}
+							onToggle={() => openState.toggle(openKey(), !isOpen())}
+							headClass={styles['reasoning-head']}
+							bodyClass={styles['reasoning-body']}
+							head={
+								<>
+									<span class={styles['reasoning-caret']}>▶</span>
+									<span class={styles['reasoning-label']}>思考</span>
+									<span class={styles['reasoning-peek']}>{r().content.slice(-72)}</span>
+								</>
+							}
+						>
+							{r().content}
+						</Collapsible>
+					);
+				}}
 			</Match>
 
 			{/* 正文走 markdown 渲染（marked 词法 + 自绘，见 MarkdownText.tsx）；思考 / 反思仍是纯文本。
@@ -390,35 +409,42 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 				)}
 			</Match>
 
-			{/* 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定。
-			    默认展开：设计稿就是展开态，而且它本来就只有一两句话。 */}
+			{/* 反思同样是「一次 LLM 调用」，所以它也走 llm 块 —— 只是内容形态固定。默认与同组其他块一致（只有最后一组展开） */}
 			<Match when={subTypeEquals(sub, 'reflection')}>
-				{(r) => (
-					<details
-						class={styles['reflection']}
-						open={openOverrides.get(`reflection:${r().key}`) ?? true}
-						ontoggle={(e) => openOverrides.set(`reflection:${r().key}`, e.currentTarget.open)}
-					>
-						<summary class={styles['reflection-head']}>
-							<span class={styles['reflection-icon']}>
-								<ReflectionIcon />
-							</span>
-							<span class={styles['reflection-title']}>REFLECTION</span>
-							<Show when={r().remaining !== undefined}>
-								<span class={styles['reflection-chip']}>剩 {r().remaining} 次</span>
-							</Show>
-							<span class={styles['reflection-caret']}>▶</span>
-						</summary>
-						<div class={styles['reflection-body']}>{r().content}</div>
-					</details>
-				)}
+				{(r) => {
+					const openKey = () => `reflection:${r().key}`;
+					const isOpen = () => openState.isOpen(openKey(), tail());
+					return (
+						<Collapsible
+							class={styles.reflection}
+							open={isOpen()}
+							onToggle={() => openState.toggle(openKey(), !isOpen())}
+							headClass={styles['reflection-head']}
+							bodyClass={styles['reflection-body']}
+							head={
+								<>
+									<span class={styles['reflection-icon']}>
+										<ReflectionIcon />
+									</span>
+									<span class={styles['reflection-title']}>REFLECTION</span>
+									<Show when={r().remaining !== undefined}>
+										<span class={styles['reflection-chip']}>剩 {r().remaining} 次</span>
+									</Show>
+									<span class={styles['reflection-caret']}>▶</span>
+								</>
+							}
+						>
+							{r().content}
+						</Collapsible>
+					);
+				}}
 			</Match>
 
 			<Match when={subTypeEquals(sub, 'tool')}>
 				{(tool) => (
 					<Show
 						when={tool().ask}
-						fallback={renderToolGroup(tool)}
+						fallback={renderToolGroup(tool, tail)}
 					>
 						{/* ask_user 的工具调用渲染成提问卡片（它的「结果」是用户回答，不是工具输出） */}
 						{(ask) => (
@@ -490,8 +516,8 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 		return b.type === type ? (b as Extract<RenderBlock, { type: T }>) : undefined;
 	}
 
-	/** 单个顶层块（`isRoot` 决定用户发言是否渲染成气泡：子 Agent 的任务已在头部显示） */
-	const renderBlock = (block: () => RenderBlock, isRoot: boolean) => (
+	/** 单个顶层块（`isRoot` 决定用户发言是否渲染成气泡：子 Agent 的任务已在头部显示；`isTail` = 它是全树最后一块） */
+	const renderBlock = (block: () => RenderBlock, isRoot: boolean, isTail: () => boolean) => (
 		<Switch fallback={null}>
 			{/* 用户发言：子 Agent 的那条已经在它自己的节点头部显示，不再重复成气泡 */}
 			<Match when={isRoot && blockTypeEquals(block, 'user')}>
@@ -507,11 +533,12 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 				)}
 			</Match>
 
-			{/* ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方 */}
+			{/* ⭐ 一次 LLM 调用 = 一个块：思考 / 正文 / 工具调用 / 反思都缩在它里面，账本贴在它下方。
+			    「最后一组」= 这块是全树最后一块，它里面的子块因此默认全展开（见 openState.ts） */}
 			<Match when={blockTypeEquals(block, 'llm')}>
 				{(llm) => (
 					<div class={styles['block-llm']} oncontextmenu={(e) => openLlmBlockMenu(e, llm())}>
-						<Index each={llm().subBlocks}>{(sub) => renderSubBlock(sub)}</Index>
+						<Index each={llm().subBlocks}>{(sub) => renderSubBlock(sub, isTail)}</Index>
 						<Show when={llm().usages}>{(usages) => (
 							<>
 								<For each={usages()}>{(usage) => renderUsage(usage)}</For>
@@ -534,14 +561,14 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 			</Match>
 
 			<Match when={blockTypeEquals(block, 'agent')}>
-				{(agent) => renderNode(() => agent().node, false)}
+				{(agent) => renderNode(() => agent().node, false, isTail)}
 			</Match>
 		</Switch>
 	);
 
 	/**
 	 * 一个 Agent 实例 = 一个块序列（含它的子节点）。
-	 * 子 Agent 用 `<details>` 整块折叠（名字 + 状态 + 任务在头部，展开才是它自己的产出）。
+	 * 子 Agent 用 `Collapsible` 整块折叠（名字 + 状态 + 任务在头部，展开才是它自己的产出）。
 	 *
 	 * ⚠️ `currentNode` 参数是 accessor（访问器），不是值——这是「流式可见」和「逐块复用」能同时成立的前提：
 	 * - 传值：`node.blocks` 在组件体（只执行一次）里就被求值，闭包捕获首帧快照 ⇒ 之后的流式增量全看不到。
@@ -566,41 +593,56 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 *    `<Index>` 按**位置**给该项一个 signal，值变了只更新读到它的那些表达式 —— 只剩那一段正文节点在动。
 	 *    （代价是「位置」变了 DOM 会被复用：所以分支选择也必须是响应式的，用 `<Switch>` 而不是 switch，否则某个位置上的块换了类型，旧的 DOM 会留在原位。块类型本身通过 messageId 派生的 key 保持稳定。）
 	 */
-	const renderBlocks = (node: () => RenderAgentNode, isRoot: boolean) => (
+	const renderBlocks = (node: () => RenderAgentNode, isRoot: boolean, isTail: () => boolean) => (
 		<Index each={node().blocks}>
-			{(block, index) => (
-				<>
-					<Show when={isRoot && isTurnStart(node(), index)}>{renderAgentHeaderFor(node)}</Show>
-					{renderBlock(block, isRoot)}
-					<Show when={isTurnEnd(node(), index)}>
-						{renderRunSummaryFor(() => runOfTurn(node(), block().turn))}
-					</Show>
-				</>
-			)}
+			{(block, index) => {
+				/**
+				 * 「最后一块」按**位置**现算，不缓存快照：
+				 * 新块一来 `node().blocks.length` 就变了，读它的表达式（折叠块的 open）跟着重判 ⇒ 上一组自动收起来。
+				 * `isTail` 是父层传下来的「到这一层还是不是全树的末尾」，所以嵌套子 Agent 里也只有真正最末尾的那条算尾。
+				 */
+				const atTail = () => isTail() && index === node().blocks.length - 1;
+				return (
+					<>
+						<Show when={isRoot && isTurnStart(node(), index)}>{renderAgentHeaderFor(node)}</Show>
+						{renderBlock(block, isRoot, atTail)}
+						<Show when={isTurnEnd(node(), index)}>
+							{renderRunSummaryFor(() => runOfTurn(node(), block().turn))}
+						</Show>
+					</>
+				);
+			}}
 		</Index>
 	);
 
-	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean) => {
+	const renderNode = (currentNode: () => RenderAgentNode, isRoot: boolean, isTail: () => boolean) => {
 		if (isRoot) {
-			return <div class={styles['agent-reply']}>{renderBlocks(currentNode, true)}</div>;
+			return <div class={styles['agent-reply']}>{renderBlocks(currentNode, true, isTail)}</div>;
 		}
+		const openKey = () => `node:${currentNode().agentInstanceId}`;
+		const isOpen = () => openState.isOpen(openKey(), isTail());
 		return (
-			<details
+			/* 默认展开与否同样只看「它是不是最后一条」：跑到一半的子 Agent 一定在尾部，所以看得见；
+			   历史轮次里的子 Agent 自动收起（头部仍显示名字 / 状态 / 任务，点一下就能看）。 */
+			<Collapsible
 				class={styles['agent-node']}
-				/* ⚠️ 默认展开：要的是「子 Agent 的内容都看得见，想收起来时自己收」。 */
-				open={openOverrides.get(`node:${currentNode().agentInstanceId}`) ?? true}
-				ontoggle={(e) => openOverrides.set(`node:${currentNode().agentInstanceId}`, e.currentTarget.open)}
+				open={isOpen()}
+				onToggle={() => openState.toggle(openKey(), !isOpen())}
+				headClass={styles['agent-node-header']}
+				bodyClass={styles['agent-node-body']}
+				head={
+					<>
+						<span class={styles['agent-node-caret']}>▶</span>
+						<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
+						<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
+						<Show when={currentNode().task}>
+							<span class={styles['agent-node-task']}>{currentNode().task}</span>
+						</Show>
+					</>
+				}
 			>
-				<summary class={styles['agent-node-header']}>
-					<span class={styles['agent-node-caret']}>▶</span>
-					<span class={styles['agent-node-name']}>{currentNode().agentName || currentNode().agentId}</span>
-					<span class={styles['agent-node-status']}>{STATUS_LABEL[currentNode().status] ?? currentNode().status}</span>
-					<Show when={currentNode().task}>
-						<span class={styles['agent-node-task']}>{currentNode().task}</span>
-					</Show>
-				</summary>
-				<div class={styles['agent-node-body']}>{renderBlocks(currentNode, false)}</div>
-			</details>
+				{renderBlocks(currentNode, false, isTail)}
+			</Collapsible>
 		);
 	};
 
@@ -610,5 +652,5 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openOverr
 	 * 注意：`props.tree` 必须在**会被重新执行的跟踪作用域里**读——
 	 *    组件体顶层不是跟踪作用域，`return renderNode(props.tree, true)` 会把第一帧的树捕获进闭包，会导致后续更新没有被追踪，导致「流式输出要等整块跑完才出现」。
 	 */
-	return renderNode(() => props.tree!, true);
+	return renderNode(() => props.tree!, true, () => true);
 }

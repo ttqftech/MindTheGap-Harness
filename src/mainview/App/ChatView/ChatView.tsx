@@ -21,12 +21,14 @@ import type { RenderAgentNode } from '@mainview/logic/projection';
 import * as agentBridge from '@mainview/bridges/agentBridge';
 import { requestFolderPath } from '@mainview/bridges/localBridge';
 import { startRun, stopRun } from '@mainview/logic/runController';
+import { attachBottomFollow, type BottomFollow } from '@mainview/logic/bottomFollow';
 import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
 import { alertMsgbox, showMenu } from '@mainview/bridges/ffboxBridge';
 import DiagramView from './DiagramView/DiagramView';
 import MTGlogo from './MTG-logo-transparent.svg';
 import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow } from '@mainview/App/ChatView/RenderTree/shared';
 import RenderTreeView from './RenderTree/RenderTree';
+import { createOpenState } from './RenderTree/openState';
 import styles from './ChatView.module.css';
 
 // #region 主组件
@@ -406,19 +408,29 @@ export default function ChatView() {
 
 	// #region 滚动与后端刷新
 
-	const SCROLL_TO_BOTTOM_THRESHOLD = 100;
+	/**
+	 * 贴底跟随（实现见 `logic/bottomFollow.ts`）。
+	 *
+	 * ⚠️ 触发点是**内容高度变化**（ResizeObserver），不是 SSE tick：折叠块开合动画、iframe 提交、图片加载、
+	 *    run 结束换 ctx …… 都会让内容长高，而且都没有 tick —— 旧实现只在 tick 里滚一次，
+	 *    所以「有时候能贴住有时候不能」。
+	 */
+	let bottomFollow: BottomFollow | undefined;
 	const chatAreaRef = (el: HTMLDivElement) => {
-		createEffect(() => {
-			getActiveConversation();
-			getStreamTick(appState.activeConversationId ?? '');
-			const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-			queueMicrotask(() => {
-				if (distanceFromBottom <= SCROLL_TO_BOTTOM_THRESHOLD) {
-					el.scrollTop = el.scrollHeight;
-				}
-			});
-		});
+		// 聊天 / 图示视图切换会重建这个元素：先把旧容器的监听拆掉，否则两个 effect 会互相打架
+		bottomFollow?.dispose();
+		bottomFollow = attachBottomFollow(el);
 	};
+	onCleanup(() => bottomFollow?.dispose());
+
+	/** 切会话 = 换了一整段内容：直接落到最新那条，之后靠跟随保持 */
+	let lastFollowedConversationId: string | null = null;
+	createEffect(() => {
+		const id = appState.activeConversationId ?? '';
+		if (id === lastFollowedConversationId) return;
+		lastFollowedConversationId = id;
+		bottomFollow?.jump();
+	});
 
 	// #endregion
 
@@ -480,8 +492,10 @@ export default function ChatView() {
 		const runningDir = appState.folders.find((f) => f.id === conv.folderId)?.path;
 
 		setInputText('');
+		// 用户自己发的消息必须让他看见：哪怕刚才滚上去读历史，也重新贴住底部（之后靠跟随保持）
+		bottomFollow?.jump();
 		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
-		// openOverrides.clear();
+		// openState.reset();
 		prevTree = null;
 		// 「发起 / 停止 / 回答」全在 runController 里，这里只负责把 UI 上的东西（输入文本、模型配置、工作目录）交给它
 		void startRun({
@@ -504,12 +518,12 @@ export default function ChatView() {
 	// #endregion
 
 	/**
-	 * 用户手动折叠/展开过的块。
+	 * 折叠块的开关状态（思考 / 工具卡 / 反思 / 子 Agent 共用一套）。
 	 *
-	 * 投影每次重算都会**重建块对象**（流式期间每来一个增量就重算一次），DOM 上的 `<details>` 会被换掉，不把用户的意愿记在这里就会被弹回去。key 用块的稳定标识（工具用 callId、子 Agent 用实例 id）
-	 * ⚠️ 每轮 run 开始时清空：根实例是永续的，不清的话上一条轮次的展开状态会串到新轮次的同名块上。
+	 * 投影每次重算都会**重建块对象**（流式期间每来一个增量就重算一次），DOM 上的块会被换掉，不把用户的意愿记在这里就会被弹回去。
+	 * ⚠️ 只记「用户点过」的：默认该不该展开由 RenderTree 现算（只有最后一组展开），写进记录就等于把它钉死，见 `RenderTree/openState.ts`。
 	 */
-	const openOverrides = new Map<string, boolean>();
+	const openState = createOpenState();
 
 	return (
 		<div class={styles.mainContent}>
@@ -606,7 +620,7 @@ export default function ChatView() {
 						<RenderTreeView
 							// 外层 <Show when={... && renderTree()}> 已保证非空
 							tree={renderTree()!}
-							openOverrides={openOverrides}
+							openState={openState}
 							convId={appState.activeConversationId ?? ''}
 						/>
 

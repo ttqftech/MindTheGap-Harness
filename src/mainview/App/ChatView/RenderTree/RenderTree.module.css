@@ -86,6 +86,32 @@
 	}
 }
 
+/* ---------- 可开合的块：高度动画（Collapsible.tsx 用） ---------- */
+
+/*
+ * 内容区是一格 grid，行高在 0fr ↔ 1fr 之间过渡。
+ * ⚠️ 别改成「量高度 → 写 px → transitionend 再放开」：
+ *    ① 流式期间内容每帧都在变高，量出来的 px 立刻过期；
+ *    ② 展开态下内容变高必须**立刻**跟上（不能有动画），而 1fr 天然就是「内容多高就多高」；
+ *    ③ 0fr 到 1fr 的插值本身就是「按内容高度等比例展开」，边界情况（内容比容器高、内容为 0）都对。
+ * 代价：折叠时内容仍留在 DOM 里（只是被裁掉），与原来 `<details>` 的行为一致。
+ */
+.collapsible {
+	display: grid;
+	grid-template-rows: 0fr;
+	transition: grid-template-rows var(--dur) var(--ease);
+}
+
+.collapsible[data-open] {
+	grid-template-rows: 1fr;
+}
+
+/* 裁剪层：不能带 padding —— 折叠时 padding 撑不到 0，会留一条空边 */
+.clip {
+	overflow: hidden;
+	min-height: 0;
+}
+
 /* ---------- Agent 回复 ---------- */
 
 .agent-reply {
@@ -131,12 +157,8 @@
 		padding: 0 12px;
 		background-color: var(--bg-sub1-header);
 		cursor: pointer;
-		list-style: none;
 		user-select: none;
 
-		&::-webkit-details-marker {
-			display: none;
-		}
 		.tool-head-caret {
 			flex-shrink: 0;
 			width: 10px;
@@ -238,7 +260,7 @@
 		color: var(--mcp-text);
 	}
 
-	&[open] > .tool-head .tool-head-caret {
+	&[data-open] > .tool-head .tool-head-caret {
 		transform: rotate(90deg);
 	}
 
@@ -373,7 +395,6 @@
 		align-items: center;
 		gap: 8px;
 		cursor: pointer;
-		list-style: none;
 		user-select: none;
 		.reasoning-caret {
 			flex-shrink: 0;
@@ -410,10 +431,10 @@
 		line-height: 1.8em;
 		color: var(--text-tertiary);
 	}
-	&[open] .reasoning-caret {
+	&[data-open] .reasoning-caret {
 		transform: rotate(90deg);
 	}
-	&[open] .reasoning-peek {
+	&[data-open] .reasoning-peek {
 		display: none;
 	}
 }
@@ -432,11 +453,7 @@
 		align-items: center;
 		gap: 8px;
 		cursor: pointer;
-		list-style: none;
 		user-select: none;
-		&::-webkit-details-marker {
-			display: none;
-		}
 		.reflection-icon {
 			display: inline-flex;
 			flex-shrink: 0;
@@ -479,7 +496,7 @@
 		line-height: 20px;
 		color: var(--text-primary-strong);
 	}
-	&[open] .reflection-caret {
+	&[data-open] .reflection-caret {
 		transform: rotate(90deg);
 	}
 }
@@ -566,14 +583,9 @@
 		align-items: center;
 		gap: 8px;
 		cursor: pointer;
-		list-style: none;
 		user-select: none;
 		font-size: var(--fs-s);
 		color: var(--text-placeholder);
-
-		&::-webkit-details-marker {
-			display: none;
-		}
 
 		.agent-node-caret {
 			flex-shrink: 0;
@@ -607,7 +619,7 @@
 		}
 	}
 
-	&[open] > .agent-node-header .agent-node-caret {
+	&[data-open] > .agent-node-header .agent-node-caret {
 		transform: rotate(90deg);
 	}
 
