@@ -51,6 +51,7 @@ const mockHandlers = {
 	}),
 	windowSetFrame: (): RpcResult<void> => ({ ok: true, data: undefined }),
 	windowSetFrameUnlocked: (): RpcResult<void> => ({ ok: true, data: undefined }),
+	windowSetFullScreen: (): RpcResult<void> => ({ ok: true, data: undefined }),
 	exitStage: (): RpcResult<void> => ({ ok: true, data: undefined }),
 };
 
@@ -78,6 +79,7 @@ interface RpcApi {
 		windowGetFrame: RequestFn<undefined, RpcResult<{ x: number; y: number; width: number; height: number }>>;
 		windowSetFrame: RequestFn<{ x: number; y: number; width: number; height: number }, RpcResult<void>>;
 		windowSetFrameUnlocked: RequestFn<{ unlocked: boolean }, RpcResult<void>>;
+		windowSetFullScreen: RequestFn<{ fullScreen: boolean }, RpcResult<void>>;
 		exitStage: RequestFn<{ stage: 'collapse' | 'finished' }, RpcResult<void>>;
 	};
 	send: {

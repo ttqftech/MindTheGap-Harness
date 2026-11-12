@@ -9,7 +9,7 @@
 import { createSignal } from 'solid-js';
 import { EASE } from '@mainview/App/ExitOverlay/shell';
 import { playMusic } from '@mainview/App/ExitOverlay/audio';
-import exitMusicUrl from '@mainview/App/ExitOverlay/assets/港铁关门提示音.mp3';
+import exitMusicUrl from '@mainview/App/ExitOverlay/assets/mtr-close 带噪音_缩混.flac';
 import styles from './taillight.module.css';
 import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
 

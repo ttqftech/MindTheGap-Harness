@@ -107,6 +107,14 @@ export interface AppRPC {
                 response: RpcResult<void>;
             };
             /**
+             * 全屏开关。启动动画期间窗口是全屏的（进全屏由主进程建窗时做，见 desktop/index.ts），
+             * 动画收尾时前端调这条退出 —— 页面自己 requestFullscreen() 在没有用户手势时会被 WebView2 拒掉，所以必须走主进程。
+             */
+            windowSetFullScreen: {
+                params: { fullScreen: boolean };
+                response: RpcResult<void>;
+            };
+            /**
              * 前端报告退场进度（全程只有这一条，别再为每个时点加一条 RPC）。
              *   'collapse' = 外壳开始收、画面已进入尾声 → 主进程先停会话与 Service
              *   'finished' = 动画放完 → 主进程关窗口、退进程

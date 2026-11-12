@@ -5,21 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MindTheGap-Harness</title>
 
-    <!-- 启动加载页样式：内联，不依赖任何 JS / 外部 CSS。
-         目的：main.tsx 下载执行前（以及 hutch 抽风白屏时）给用户一个像样的画面，而不是一片白。颜色与 theme/theme.css 的深/浅主题手动对齐。 -->
+    <!-- 启动动画样式：全部内联，不依赖任何 JS / 外部 CSS / 字体。
+         目的：main.tsx（Solid）下载执行前就立刻开播，页面加载完成 = 动画开始。
+         主题是「mind the gap + 努比亚开机音乐」：三角铁音色的十音符旋律，
+         每个音符配一段随机城市地铁声 + 一张随机「小心空隙」贴图。
+         配色固定（不看深浅色主题）：浅蓝灰底 + 白字。 -->
     <style>
       :root {
-        --boot-bg: #0c0d10; /* 深色 --bg-app */
-        --boot-fg: #e9e9e7; /* 深色 --text-primary */
-        --boot-dim: #6e7278; /* 深色 --text-placeholder */
-        --boot-accent: #e8a33c; /* --accent */
-        --boot-track: #1b1f25; /* 深色 --border */
+        --boot-bg: hwb(210 10% 87.5%); /* 固定背景，不跟随 app 主题 */
+        --boot-fg: #ffffff;
+        --boot-dim: #7b8794;
       }
-      html.boot-light {
-        --boot-bg: #ffffff; /* 浅色 --bg-app */
-        --boot-fg: #1b1f24; /* 浅色 --text-primary */
-        --boot-dim: #767c85; /* 浅色 --text-placeholder */
-        --boot-track: #e4e7ea; /* 浅色 --border */
+
+      /* 动画时长与幅度在这里定死，脚本只负责触发（改手感只动这一处） */
+      :root {
+        --boot-img-dur: 1750ms; /* 单张贴图：淡入→放大→淡出 */
+        --boot-img-s0: 0.62; /* 贴图起始缩放 */
+        --boot-img-grow: 2.05; /* 贴图全程放大倍数 */
+        --boot-final-dur: 4360ms; /* 终章（定格图 + 三行大字），与尾声音长对齐 */
+        --boot-line-dur: 4360ms; /* 三行大字 */
+        /* 定格图起始缩放：一小点在中心 */
+        --boot-final-s0: 0.06;
+        /* 定格图终点缩放：略大于 1，上下也压过屏幕边，免得贴边露出一丝背景 */
+        --boot-final-s1: 1.06;
       }
 
       html,
@@ -27,22 +35,21 @@
         margin: 0;
         padding: 0;
         background: var(--boot-bg);
+        overflow: hidden;
       }
 
       #boot {
         position: fixed;
         inset: 0;
         z-index: 100;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 22px;
         background: var(--boot-bg);
         color: var(--boot-fg);
         font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
         user-select: none;
-        -webkit-app-region: drag;
+        -webkit-user-select: none;
+        cursor: default;
+        /* 启动层必须允许点击退出，不能做成拖拽区（原生会吃掉点击） */
+        -webkit-app-region: no-drag;
         transition: opacity 0.24s ease;
       }
       #boot.boot-hide {
@@ -50,129 +57,476 @@
         pointer-events: none;
       }
 
-      /* Logo：与标题栏同款的应用标志（两根立柱 + 下方两道强调色横杠），尺寸放大 */
-      .boot-logo {
-        width: 68px;
-        height: 68px;
-      }
-      .boot-mark {
-        fill: var(--boot-fg);
-      }
-      .boot-mark-accent {
-        fill: var(--boot-accent);
-      }
-
-      #boot-title {
-        font-size: 15px;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        color: var(--boot-fg);
-      }
-      #boot-sub {
-        font-size: 12px;
-        color: var(--boot-dim);
-        letter-spacing: 0.05em;
-      }
-
-      /* 不确定进度条 */
-      #boot-bar {
-        width: 148px;
-        height: 3px;
-        border-radius: 2px;
-        background: var(--boot-track);
+      #boot-imgs {
+        position: absolute;
+        inset: 0;
         overflow: hidden;
+        pointer-events: none;
       }
-      #boot-bar::after {
-        content: '';
-        display: block;
-        width: 40%;
-        height: 100%;
-        border-radius: 2px;
-        background: var(--boot-accent);
-        animation: boot-slide 1.25s ease-in-out infinite;
+
+      /* 入场贴图：初始透明 → 中段不透明 → 结尾透明，全程逐渐放大 */
+      .boot-img {
+        position: absolute;
+        max-width: 78vw;
+        border-radius: 6px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(var(--boot-img-s0));
+        animation: boot-img var(--boot-img-dur) cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+        will-change: opacity, transform;
       }
-      @keyframes boot-slide {
+      @keyframes boot-img {
         0% {
-          transform: translateX(-105%);
+          opacity: 0;
+          transform: translate(-50%, -50%) scale(var(--boot-img-s0));
+        }
+        26% {
+          opacity: 0.98;
         }
         100% {
-          transform: translateX(255%);
+          opacity: 0;
+          transform: translate(-50%, -50%) scale(calc(var(--boot-img-s0) * var(--boot-img-grow)));
         }
       }
 
-      /* 卡住提示：纯 CSS 延时出现（15s 后仍未加载完），不需要 JS */
+      /* 末音定格图：从页面中心一小点，夸张放大到超出全屏。
+         元素比例锁死成 final.jpg 的比例（1000×400 = 5:2）并按 100vh 取高，
+         于是 scale(1) 时上下正好贴边、左右溢出屏幕外（1280×800 实测整屏铺满，图宽约 39% 落在屏外，每边约两成）
+         —— 图本身不被裁，看不见的只是两端溢出部分。
+         （不能再用 100vw×100vh：那样 contain 会留上下黑边，cover 又会裁掉左右。） */
+      .boot-img-final {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        height: 100vh;
+        aspect-ratio: 5 / 2;
+        /* 万一换了张比例不同的 final 图：宁可留边，不裁内容 */
+        object-fit: contain;
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(var(--boot-final-s0));
+        animation: boot-final var(--boot-final-dur) cubic-bezier(0.32, 0, 0.68, 1) forwards;
+        will-change: opacity, transform;
+      }
+      @keyframes boot-final {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, -50%) scale(var(--boot-final-s0));
+        }
+        10% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 1;
+          transform: translate(-50%, -50%) scale(var(--boot-final-s1));
+        }
+      }
+
+      /* 三行大字：scale(1000%, 0%) + 透明 → 可见 → scale(100%, 100%) + 透明 */
+      #boot-lines {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2vh;
+        pointer-events: none;
+        opacity: 0;
+      }
+      #boot.lines #boot-lines {
+        opacity: 1;
+      }
+      .boot-line {
+        font-weight: 900;
+        line-height: 0.9;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+        text-align: center;
+        transform: scale(1000%, 0%);
+        opacity: 0;
+        will-change: opacity, transform;
+        text-shadow: 0 3px 0px hwb(210 10% 87.5% / 0.3), 0 4px 0px hwb(35 20% 10%), -2px 4px 0px hwb(35 20% 10%), 2px 4px 0px hwb(35 20% 10%), 0 2px 4px hwb(210 10% 87.5% / 0.7);
+      }
+      .boot-line-1 {
+        font-size: 13vh;
+      }
+      .boot-line-2 {
+        font-size: 17vh;
+      }
+      .boot-line-3 {
+        font-size: 6.5vh;
+        letter-spacing: 0.06em;
+      }
+      #boot.lines .boot-line {
+        animation: boot-line var(--boot-line-dur) cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+      }
+      @keyframes boot-line {
+        0% {
+          opacity: 0;
+          transform: scale(1000%, 0%);
+        }
+        18% {
+          opacity: 1;
+        }
+        72% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+          transform: scale(100%, 100%);
+        }
+      }
+      /* 三行错开起跑 */
+      #boot.lines .boot-line-2 {
+        animation-delay: calc(var(--boot-line-dur) * 0.06);
+      }
+      #boot.lines .boot-line-3 {
+        animation-delay: calc(var(--boot-line-dur) * 0.12);
+      }
+      /* 三行统一白字（叠在终章全屏图上，浅底下不单独着色） */
+      .boot-line {
+        color: var(--boot-fg);
+      }
+
+      #boot-hint {
+        position: absolute;
+        bottom: 34px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        color: var(--boot-dim);
+        opacity: 0;
+        transition: opacity 0.3s ease;
+        pointer-events: none;
+      }
+      #boot.ready #boot-hint {
+        opacity: 1;
+      }
+
+      /* Solid 挂载失败时的兜底提示（沿用旧加载页的 15s 延时出现） */
       #boot-stuck {
         position: absolute;
-        bottom: 42px;
+        bottom: 12px;
+        left: 0;
+        right: 0;
+        text-align: center;
         font-size: 11px;
         color: var(--boot-dim);
         opacity: 0;
         animation: boot-appear 0.4s 15s forwards;
+        pointer-events: none;
       }
       @keyframes boot-appear {
         to {
           opacity: 1;
         }
       }
+      #boot.ready #boot-stuck,
+      #boot.boot-hide #boot-stuck {
+        display: none;
+      }
 
       @media (prefers-reduced-motion: reduce) {
-        .boot-bar::after {
-          animation: none;
-          width: 100%;
-          transform: none;
+        .boot-img,
+        .boot-img-final,
+        #boot.lines .boot-line {
+          animation-duration: 0.001s;
         }
       }
     </style>
   </head>
 
   <body>
-    <!-- 启动加载页（main.tsx 挂载后淡出移除） -->
+    <!-- 启动动画层：Solid 挂载后允许点击退出（见 main.tsx） -->
     <div id="boot">
-      <svg class="boot-logo" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-        <path
-          class="boot-mark"
-          fill-rule="evenodd"
-          transform="matrix(1 0 0 1 3 4.6)"
-          d="M-1.1 16.5L-1.1 3.3278L4.0399 -1.5551L5.5551 0.0399L4.7576 0.7975L1.1 4.2722L1.1 16.5L-1.1 16.5Z"
-        />
-        <path
-          class="boot-mark"
-          fill-rule="evenodd"
-          transform="matrix(1 0 0 1 15 4.6)"
-          d="M2.9 16.5L2.9 4.2722L-1.5551 0.0399L-0.0399 -1.5551L0.7576 -0.7975L5.1 3.3278L5.1 16.5L2.9 16.5Z"
-        />
-        <path
-          class="boot-mark-accent"
-          fill-rule="evenodd"
-          transform="matrix(1 0 0 1 1.8 13.2)"
-          d="M5.4 -1.1L6.5 -1.1L6.5 1.1L-1.1 1.1L-1.1 -1.1L5.4 -1.1Z"
-        />
-        <path
-          class="boot-mark-accent"
-          fill-rule="evenodd"
-          transform="matrix(1 0 0 1 14.8 13.2)"
-          d="M5.4 -1.1L6.5 -1.1L6.5 1.1L-1.1 1.1L-1.1 -1.1L5.4 -1.1Z"
-        />
-      </svg>
-      <div id="boot-title">MindTheGap-Harness</div>
-      <div id="boot-bar"></div>
-      <div id="boot-sub">正在启动…</div>
+      <div id="boot-imgs"></div>
+      <div id="boot-lines">
+        <div class="boot-line boot-line-1">MIND THE GAP</div>
+        <div class="boot-line boot-line-2">HARNESS</div>
+        <div class="boot-line boot-line-3">GAPPERS SAVE THE WORLD!</div>
+      </div>
+      <div id="boot-hint">界面就绪 · 点击任意处进入</div>
       <div id="boot-stuck">启动时间异常，可能是开发服务未就绪或渲染进程卡住了</div>
     </div>
 
     <div id="root"></div>
 
     <script>
-      // 记录启动时刻，供 main.tsx 计算加载耗时
-      window.__bootStart = performance.now();
-      // 让加载页跟随已保存的主题（theme.ts 存在 localStorage 的 'colorTheme'）
-      try {
-        var colorTheme = localStorage.getItem('colorTheme');
-        var isLight = colorTheme === 'light' || ((colorTheme === 'system' || !colorTheme) && window.matchMedia('(prefers-color-scheme: light)').matches);
-        if (isLight) document.documentElement.classList.add('boot-light');
-      } catch (e) {
-        /* localStorage 不可用时保持深色 */
-      }
+      // ===== 启动动画：三角铁十音符 + 随机城市地铁声 + 随机「mind the gap」贴图 =====
+      // 全部内联（不引外部 js / css）：先预读素材，200ms 后开播（不等预读放完，也不等 Solid）。
+      // 素材清单见 public/boot/MANIFEST.txt。
+      (function () {
+        var NOTE_GAP = 460; // 音符间隔 ms（实测努比亚开机音约 0.45s 一个音头）
+        var NOTE_DECAY = 2700; // 每个音的延音时长（相邻音会叠 3~4 层，靠 MASTER 压总响度）
+        var LAST_DECAY = 3800; // 末音延音，长过终章起跑点
+        var NOTE_DELAY = 40; // 合成音晚 40ms 起：城市声走 <audio> 元素，play() 到出声有这段延迟，WebAudio 没有，不补就是音符抢拍
+        var IMG_LIFE = 1750; // 单张贴图存活时长，须与 CSS --boot-img-dur 一致
+        var FINAL_DUR = 4360; // 终章时长，须与 CSS --boot-final-dur / --boot-line-dur 一致（= 尾声音长）
+        var CITY_COUNT = 14; // public/boot/sound/cityNN.flac
+        var IMG_COUNT = 17; // public/boot/img/gapNN.jpg|webp
+        var PRELOAD_LEAD = 400; // 预读起跑线：页面加载后等多久必开播（预读没完也照开）
+
+        // 素材根：相对 baseURI 解析，dev（http://localhost:5173/）与 prod（views://mainview/index.html）都对
+        var BASE = new URL('boot/', document.baseURI).href;
+
+        // 音名 → 频率（A4 = 440）；写旋律时直接填 'E6' 这种音名
+        var SEMITONE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+        function hz(name) {
+          var m = /^([A-G])(#|b)?(\d)$/.exec(name);
+          var offset = SEMITONE[m[1]] - 9 + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (Number(m[3]) - 4) * 12;
+          return 440 * Math.pow(2, offset / 12);
+        }
+
+        // ---- 旋律预设：每档 10 个音；改下面 MELODY 的取值来换档 ----
+        var MELODIES = {
+          // A. 努比亚开机音（正谱）
+          nubia: ['E6', 'C6', 'A5', 'D6', 'B5', 'G5', 'E6', 'G6', 'B6', 'C7'].map(hz),
+          // B. 帕赫贝尔《D 大调卡农》主题句（下行级进，古典辨识度最高）
+          canon: ['D4', 'C#4', 'A3', 'F#3', 'F3', 'C#3', 'E3', 'A2', 'F3', 'C#3'].map(hz),
+          // C. 五声宫调上行：宫商角徵羽 → 高八度 → 回落（明亮、上扬）
+          pentatonic: ['C4', 'D4', 'E4', 'G4', 'A4', 'C5', 'D5', 'E5', 'C5', 'C6'].map(hz),
+          // D. 原创动机：大九和弦式缓慢下行，末尾折返上扬（空灵、留白多）
+          drift: ['E5', 'C#5', 'A4', 'F#4', 'E4', 'C#4', 'Bb3', 'C#4', 'E4', 'A4'].map(hz),
+          // E. 明亮上行档：高八度起，一路往上叠，末音再翻高（偏电子开机铃的利落感）
+          brightUp: ['C5', 'E5', 'G5', 'C6', 'B5', 'G5', 'E5', 'G5', 'C6', 'E6'].map(hz),
+          // F. 低八度钟感档：整体压低，像铜钟而不是三角铁（想更沉就用这档）
+          lowBell: ['F3', 'A3', 'C4', 'F4', 'C4', 'A3', 'F3', 'C3', 'G3', 'C4'].map(hz),
+        };
+
+        // ★★★ 用这一款 ★★★
+        var MELODY = MELODIES.nubia;
+
+        // ---- 音色预设 ----
+        // partials 每项 [频率倍数, 相对音量, 时长倍数]：该分音的衰减 = 音符时长 × 时长倍数
+        // noise = 打击瞬态的相对强度（金属那个「叮」的头，一半靠它）；peak = 该音色的整体峰值
+        var TIMBRES = {
+          // A. 三角铁（原款）：基音 + 两条不成倍泛音，带一点打击头
+          triangle: { peak: 0.5, noise: 0.1, partials: [[1, 1, 1], [3.02, 0.34, 0.8], [5.43, 0.16, 0.55]] },
+          // B. 更亮的三角铁：泛音列往上多铺两层，打击头加重 —— 最「铁」的一档
+          bright: { peak: 0.44, noise: 0.24, partials: [[1, 1, 1], [2.76, 0.4, 0.9], [5.4, 0.22, 0.6], [8.93, 0.1, 0.35]] },
+          // C. 音叉 / 玻璃棒：几乎只有基音，起音干净、尾巴长，最不刺耳
+          soft: { peak: 0.55, noise: 0.02, partials: [[1, 1, 1.25], [2.01, 0.12, 0.5]] },
+          // D. 小钟：低次泛音按钟的比例排，尾巴拉得最长
+          bell: { peak: 0.42, noise: 0.06, partials: [[1, 1, 1.6], [2.75, 0.3, 1.2], [4.07, 0.16, 0.8], [6.1, 0.08, 0.5]] },
+          // E. 水晶：两条几乎同频的基音差 3 音分，慢拍频 = 空灵的「晃动」感
+          crystal: { peak: 0.46, noise: 0.08, partials: [[1, 1, 1.4], [1.0017, 0.75, 1.3], [3.05, 0.2, 0.7]] },
+          // F. 琴槌 / 木鱼：瞬态最重、音调最短，偏打击乐而不是延音
+          mallet: { peak: 0.4, noise: 0.4, partials: [[1, 1, 0.55], [3.4, 0.25, 0.3]] },
+          brighter: { peak: 0.44, noise: 0.24, partials: [[1, 1, 1], [2.76, 0.4, 0.8], [5.4, 0.25, 0.6], [8.93, 0.3, 0.35]] },
+        };
+
+        // ★★★ 用这一款音色 ★★★
+        var TIMBRE = TIMBRES.brighter;
+
+        // ---- 三角铁音色：基音 + 不成倍泛音 + 打击瞬态，指数衰减 ----
+        // ⚠️ WebView2 的自动播放策略可能把首次 AudioContext 挂起；挂起时只是没声，画面与节奏照走
+        var MASTER = 0.3; // 总音量旋钮（十音会叠三四层，别只调 peak）
+        var actx = null;
+        var bus = null;
+        try {
+          var Ctor = window.AudioContext || window.webkitAudioContext;
+          if (Ctor) {
+            actx = new Ctor();
+            bus = actx.createGain();
+            bus.gain.value = MASTER;
+            bus.connect(actx.destination);
+            if (actx.state === 'suspended') actx.resume().catch(function () {});
+          }
+        } catch (e) {
+          actx = null;
+        }
+
+        // 打击瞬态用的白噪（60ms，平方衰减包络），建一次复用
+        var noiseBuf = null;
+        function strikeNoise() {
+          if (!noiseBuf) {
+            var n = Math.floor(actx.sampleRate * 0.06);
+            noiseBuf = actx.createBuffer(1, n, actx.sampleRate);
+            var ch = noiseBuf.getChannelData(0);
+            for (var i = 0; i < n; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2.5);
+          }
+          return noiseBuf;
+        }
+
+        function strike(freq, atMs, durMs) {
+          if (!actx) return;
+          var t0 = actx.currentTime + atMs / 1000;
+          var spec = TIMBRE;
+          spec.partials.forEach(function (p) {
+            var d = Math.max(0.05, (durMs / 1000) * p[2]);
+            var osc = actx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = freq * p[0];
+            var g = actx.createGain();
+            g.gain.setValueAtTime(0.0001, t0);
+            g.gain.exponentialRampToValueAtTime(spec.peak * p[1], t0 + 0.006);
+            g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+            osc.connect(g).connect(bus);
+            osc.start(t0);
+            osc.stop(t0 + d + 0.05);
+          });
+          if (spec.noise <= 0) return;
+          var src = actx.createBufferSource();
+          src.buffer = strikeNoise();
+          var bp = actx.createBiquadFilter();
+          bp.type = 'bandpass';
+          bp.frequency.value = Math.min(9000, Math.max(2200, freq * 5.4));
+          bp.Q.value = 0.7;
+          var ng = actx.createGain();
+          ng.gain.setValueAtTime(spec.peak * spec.noise, t0);
+          ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.06);
+          src.connect(bp).connect(ng).connect(bus);
+          src.start(t0);
+        }
+
+        // ---- 城市声池：14 条各一个 Audio，每次挑当前没在响的那条 → 并行叠放，绝不打断上一条 ----
+        var cityPool = [];
+        for (var ci = 1; ci <= CITY_COUNT; ci++) {
+          var ca = new Audio(BASE + 'sound/city' + (ci < 10 ? '0' + ci : ci) + '.flac');
+          ca.preload = 'auto';
+          ca.volume = 0.9;
+          ca.load(); // 预读：不 load() 的话要等首次 play() 才发请求
+          cityPool.push(ca);
+        }
+        function playCity() {
+          var idle = [];
+          for (var i = 0; i < cityPool.length; i++) {
+            if (cityPool[i].paused || cityPool[i].ended) idle.push(cityPool[i]);
+          }
+          var pool = idle.length ? idle : cityPool;
+          var pick = pool[Math.floor(Math.random() * pool.length)];
+          try {
+            pick.currentTime = 0;
+            var pr = pick.play();
+            if (pr && pr.catch) pr.catch(function () {});
+          } catch (e) {
+            /* 解码 / 自动播放失败都不影响画面节奏 */
+          }
+        }
+
+        // 终章固定音效：尾声缩混，从头播到结尾（4.37s，与 CSS --boot-final-dur 对齐）
+        // ⚠️ 文件名带空格和中文，views:// 下必须逐段 encodeURIComponent，不能直接拼
+        var mtr = new Audio(BASE + encodeURIComponent('MIND THE GAP 启动动画尾声_缩混.flac'));
+        mtr.preload = 'auto';
+        mtr.volume = 1;
+        mtr.load();
+
+        // ---- 贴图池：本轮不重复，用完再洗牌 ----
+        var imgSrcs = [];
+        for (var ii = 1; ii <= IMG_COUNT; ii++) {
+          imgSrcs.push(BASE + 'img/gap' + (ii < 10 ? '0' + ii : ii) + (ii === 15 ? '.webp' : '.jpg'));
+        }
+        // 提前预热缓存：第一次 spawn 就不用等下载（但不阻塞开播）
+        imgSrcs.concat([BASE + 'img/final.jpg']).forEach(function (s) {
+          var im = new Image();
+          im.src = s;
+        });
+        var imgQueue = [];
+        function nextImg() {
+          if (!imgQueue.length) {
+            imgQueue = imgSrcs.slice();
+            for (var k = imgQueue.length - 1; k > 0; k--) {
+              var j = Math.floor(Math.random() * (k + 1));
+              var tmp = imgQueue[k];
+              imgQueue[k] = imgQueue[j];
+              imgQueue[j] = tmp;
+            }
+          }
+          return imgQueue.pop();
+        }
+
+        var boot = document.getElementById('boot');
+        var layer = document.getElementById('boot-imgs');
+
+        // 一张贴图：随机尺寸 + 随机位置，淡入→全程放大→淡出（动画本体在 CSS）
+        function spawnImg() {
+          var el = document.createElement('img');
+          el.className = 'boot-img';
+          el.src = nextImg();
+          el.style.height = 20 + Math.random() * 30 + 'vh';
+          el.style.left = 12 + Math.random() * 76 + 'vw';
+          el.style.top = 14 + Math.random() * 72 + 'vh';
+          layer.appendChild(el);
+          setTimeout(function () {
+            el.remove();
+          }, IMG_LIFE + 150);
+        }
+
+        // ---- 时间轴：旋律一次性排进 WebAudio 时钟，画面用挂钟 + rAF 跟拍 ----
+        // 起跑点：预读发起后 PRELOAD_LEAD（200ms）必定开播，不管素材下完没有（下完的靠缓存，没下完的现取）
+        var startAt = 0;
+        // 终章跟第 10 个音：判定用「和其余 9 张同一格的 Math.round 网格」，不是挂钟加一段 lead。
+        // 原来写的是 9×460 + 120 = 4260ms（末音之后 120ms），而随机贴图在 (i-0.5)×460 就出，
+        // 于是 final 比同一节奏的其它图晚约 350ms —— 看着像漏了一拍。
+        var FINAL_IDX = MELODY.length - 1;
+        var finalAt = (FINAL_IDX - 0.5) * NOTE_GAP; // 网格跨进第 10 格的瞬间，与随机贴图同一条规则
+        var endAt = finalAt + FINAL_DUR;
+        var firedFinal = false;
+
+        function start() {
+            startAt = performance.now();
+            for (var ni = 0; ni < MELODY.length; ni++) {
+              // + NOTE_DELAY：与同一格城市声的出声点对齐（画面那侧不等，见 frame() 的挂钟跟拍）
+              strike(MELODY[ni], ni * NOTE_GAP + NOTE_DELAY, ni === MELODY.length - 1 ? LAST_DECAY : NOTE_DECAY);
+            }
+            requestAnimationFrame(frame);
+        }
+
+        // ---- 退出：淡出由本层自己做（不依赖 Solid 还活着）----
+        function finish() {
+          if (finish.done) return;
+          finish.done = true;
+          window.__bootClosed = true; // 主进程侧的全屏退出据此触发（见 main.tsx）
+          window.dispatchEvent(new Event('mtg-boot-close'));
+          boot.classList.add('boot-hide');
+          setTimeout(function () {
+            boot.remove();
+          }, 260);
+        }
+        window.__bootFinish = finish;
+
+        function frame() {
+          var now = performance.now() - startAt;
+          var idx = Math.round(now / NOTE_GAP);
+          // 只配前 9 个音：第 10 个音是终章（固定音轨 + 固定图），不叠随机声图
+          if (idx >= 0 && idx < MELODY.length - 1 && !frame['n' + idx]) {
+            frame['n' + idx] = true;
+            playCity();
+            spawnImg();
+          }
+          if (!firedFinal && idx >= FINAL_IDX) {
+            firedFinal = true;
+            var fin = document.createElement('img');
+            fin.className = 'boot-img-final';
+            fin.src = BASE + 'img/final.jpg';
+            layer.appendChild(fin);
+            boot.classList.add('lines');
+            try {
+              var pr = mtr.play(); // 从头播（不再 seek）
+              if (pr && pr.catch) pr.catch(function () {});
+            } catch (e) {
+              /* 声音缺席不影响画面 */
+            }
+          }
+          if (finish.done) return;
+          if (now < endAt) {
+            requestAnimationFrame(frame);
+          } else {
+            window.__bootAnimDone = true;
+            // 动画放完但界面还没起来 → 留在终章画面等（Solid 挂了时还兜着白屏）
+            if (window.__bootReady) finish();
+          }
+        }
+        setTimeout(start, PRELOAD_LEAD);
+
+        // ---- 点击退出：Solid 挂载前（__bootReady）一律不响应 ----
+        boot.addEventListener('click', function () {
+          if (!window.__bootReady) return;
+          finish();
+        });
+      })();
     </script>
     <!-- FFBox-UI 不走这里注入：实测 index.html 注入 + main.tsx import 时，
          Rollup 会把模块在两个入口间共享（产物字节数完全相同，无重复），

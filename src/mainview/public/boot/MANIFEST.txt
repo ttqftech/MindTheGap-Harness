@@ -1,0 +1,45 @@
+# 启动动画素材对照表（拷贝重命名自 B:\作品\MTG-Harness\MindTheGap 动画）
+# 重新同步素材时按此表命名；编号顺序 = 源文件名排序
+
+[sound]
+city01.flac  <-  00 台北.flac
+city02.flac  <-  03 杭港.flac
+city03.flac  <-  100 东莞.flac
+city04.flac  <-  20 成都.flac
+city05.flac  <-  21 杭州.flac
+city06.flac  <-  25 海宁.flac
+city07.flac  <-  25 深圳.flac
+city08.flac  <-  28 深圳.flac
+city09.flac  <-  38 深圳.flac
+city10.flac  <-  41 郑州.flac
+city11.flac  <-  50 天津.flac
+city12.flac  <-  51 天津.flac
+city13.flac  <-  60 长沙.flac
+city14.flac  <-  91 台州.flac
+# 未拷贝：香港地铁底噪.flac（按要求排除）
+
+[img]
+gap01.jpg  <-  01_Pleasemindthegap隙.jpg
+gap02.jpg  <-  02_gap.jpg
+gap03.jpg  <-  03_小心站台间隙WarningGap.jpg
+gap04.jpg  <-  04_小心站台间隙MindtheGap.jpg
+gap05.jpg  <-  05_please mind the gap其实是请注意空窗期.jpg
+gap06.jpg  <-  06_北京地铁灵异事件（倒也没有.jpg
+gap07.jpg  <-  07_请小心空隙Pleasemindthe.jpg
+gap08.jpg  <-  08_开始想离职的第1天！.jpg
+gap09.jpg  <-  09_请小心空隙Pleasemindthe.jpg
+gap10.jpg  <-  10_小心站台间隙MindtheGapMi.jpg
+gap11.jpg  <-  11_PleasemindthegapTS.jpg
+gap12.jpg  <-  12_当心缝隙Mindthegap.jpg
+gap13.jpg  <-  13_每天早上想辞职看到上海地铁就不敢了.jpg
+gap14.jpg  <-  14_PleasemindthegapPl.jpg
+gap15.webp  <-  15_深圳不愧是牛马之城.webp
+gap16.jpg  <-  16_突然get到，原来地铁每天都在提醒.jpg
+gap17.jpg  <-  17_周末人模狗样上班T牛仔裤这深圳待着不烧心.jpg
+final.jpg  <-  final_几乎是一瞬间我红了眼眶.jpg
+
+[mtr]
+MIND THE GAP 启动动画尾声_缩混.flac  <-  用户自备的终章音轨（4.37s，从头播），取代原 mtr-close.mp3
+MIND THE GAP.flac  <-  用户自备，当前未被启动动画引用
+# 已不再引用：mtr-close.mp3（<- src/mainview/App/ExitOverlay/assets/mtr-close 带噪音_缩混.flac 的拷贝），文件仍留在目录里
+# ⚠️ 这两个文件名含中文与空格，代码里必须过 encodeURIComponent 再拼 BASE

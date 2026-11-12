@@ -168,6 +168,12 @@ export const windowHandlers = {
 		}
 	},
 
+	/** 启动动画收尾时退出全屏（进全屏在建窗时做，见 index.ts） */
+	windowSetFullScreen: (params: { fullScreen: boolean }): RpcResult<void> =>
+		safe(() => {
+			mainWindow?.setFullScreen(params.fullScreen);
+		}),
+
 	/**
 	 * 前端报告退场进度。只有这一个入口（不再为每个时点加一条 RPC）：
 	 *   collapse = 外壳开始收 → 先停会话与 Service，窗口留着放完动画
@@ -200,6 +206,7 @@ export function buildRpcHandlers() {
 			windowGetFrame: windowHandlers.windowGetFrame,
 			windowSetFrame: windowHandlers.windowSetFrame,
 			windowSetFrameUnlocked: windowHandlers.windowSetFrameUnlocked,
+			windowSetFullScreen: windowHandlers.windowSetFullScreen,
 			exitStage: windowHandlers.exitStage,
 		},
 		messages: {

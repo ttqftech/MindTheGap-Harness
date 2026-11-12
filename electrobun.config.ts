@@ -21,6 +21,9 @@ export default {
 		copy: {
 			"dist/mainview/index.html": "views/mainview/index.html",
 			"dist/mainview/assets": "views/mainview/assets",
+			// 启动动画素材（vite 把 src/mainview/public 原样拷到 outDir 根）：内联脚本按 new URL('boot/', document.baseURI) 取，
+			// prod 走 views://mainview/index.html，所以必须显式收进 views/mainview/boot —— 少了它启动动画只有画面没声没图
+			"dist/mainview/boot": "views/mainview/boot",
 			// Service 独立进程的产物：主进程 spawn <app>/bin/cottontail.exe 跑它（见 src/desktop/service.ts）
 			// dev 下没有这份拷贝也无妨 —— dev 走 node <repo>/dist/MTGService/MTGService.mjs
 			// ⚠️ 目标目录不能是 views/（views:// 资源根，前端可 fetch 到后端代码），也不能是 app/bun/（electrobun 写死的主进程 bundle 输出）
