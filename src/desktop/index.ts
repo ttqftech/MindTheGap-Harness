@@ -80,7 +80,9 @@ async function createMainWindow() {
 	});
 	
 	// 启动动画期间整窗铺满屏幕（含盖任务栏），动画收尾由前端经 windowSetFullScreen 退出（见 main.tsx）
-	mainWindow.setFullScreen(true);
+	setTimeout(() => {
+		mainWindow!.setFullScreen(true);
+	}, 0);
 
 	// 窗口控制类 RPC 需要实例，创建后再注入（详见 rpc-handlers.ts 文件头）
 	setMainWindow(mainWindow);

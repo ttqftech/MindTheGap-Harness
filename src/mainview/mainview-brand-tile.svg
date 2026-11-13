@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 100">
+  <!--
+    背景平铺水印图块。尺寸必须与 index.html#bg-marquee 的 \-\-mq-tile-* 一致。
+    font-family 取自 index.html 根 font-family（\-\-font-brand），
+    注意：作为 background 图片渲染时无法使用页面 @font-face 加载的
+    Archivo/Inter 等网络字体，栈中只有系统中已安装的字体才会生效。
+  -->
+  <g
+    font-family="Scania Sans, Archivo, Inter, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif"
+    font-size="32"
+    font-weight="700"
+    fill="#7d8a99"
+    fill-opacity="0.22"
+    text-anchor="middle"
+  >
+    <text x="140" y="36">MIND THE GAP</text>
+    <text x="0" y="88">MIND THE GAP</text>
+    <text x="280" y="88">MIND THE GAP</text>
+  </g>
+</svg>

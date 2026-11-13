@@ -44,7 +44,7 @@
         z-index: 100;
         background: var(--boot-bg);
         color: var(--boot-fg);
-        font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        font-family: "Scania Sans", "Archivo", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         user-select: none;
         -webkit-user-select: none;
         cursor: default;
@@ -173,7 +173,7 @@
         }
         100% {
           opacity: 0;
-          transform: scale(100%, 100%);
+          transform: scale(80%, 100%);
         }
       }
       /* 三行错开起跑 */
@@ -236,11 +236,59 @@
         }
       }
     </style>
+
+    <!-- 页面背景装饰：全屏「MIND THE GAP」跑马文字，纯 CSS（无 JS、无外部资源）。
+         做法：一层倾斜 15°（顺时针）的文字面，图块用内联 SVG 平铺 → 横向纵向自动铺满；
+         动画只沿倾斜后的自身 X 轴平移「正好一个图块宽」，于是首尾相接、无缝循环，视觉上是自左向右滚。
+         层级 z-index:-1 + pointer-events:none：压在所有元素之下，且不抢鼠标。 -->
+    <style>
+      #bg-marquee {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        /* 图块尺寸：--mq-tile-* 必须与 mainview-brand-tile.svg 的 width/height 一致（改一处要同步另一处） */
+        --mq-tile-w: 560px;
+        --mq-tile-h: 200px;
+        --mq-dur: 3s; /* 滚过一格的时间，越小越快 */
+      }
+      #bg-marquee .mq-run {
+        position: absolute;
+        /* 四周都留出富余：倾斜后仍要盖住整屏，横向还要多铺一格供平移 */
+        top: -50%;
+        bottom: -50%;
+        left: calc(-50% - var(--mq-tile-w));
+        right: calc(-50% - var(--mq-tile-w));
+        background-image: url("./mainview-brand-tile.svg");
+        background-repeat: repeat;
+        background-size: var(--mq-tile-w) var(--mq-tile-h);
+        animation: mq-run var(--mq-dur) linear infinite;
+        will-change: transform;
+      }
+      @keyframes mq-run {
+        from {
+          transform: rotate(15deg) translateX(calc(-1 * var(--mq-tile-w)));
+        }
+        to {
+          transform: rotate(15deg) translateX(0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #bg-marquee .mq-run {
+          animation: none;
+          transform: rotate(15deg);
+        }
+      }
+    </style>
   </head>
 
   <body>
     <!-- 启动动画层：Solid 挂载后允许点击退出（见 main.tsx） -->
     <div id="boot">
+      <div id="bg-marquee" aria-hidden="true">
+        <div class="mq-run"></div>
+      </div>
       <div id="boot-imgs"></div>
       <div id="boot-lines">
         <div class="boot-line boot-line-1">MIND THE GAP</div>
@@ -258,7 +306,7 @@
       // 全部内联（不引外部 js / css）：先预读素材，200ms 后开播（不等预读放完，也不等 Solid）。
       // 素材清单见 public/boot/MANIFEST.txt。
       (function () {
-        var NOTE_GAP = 460; // 音符间隔 ms（实测努比亚开机音约 0.45s 一个音头）
+        var NOTE_GAP = 500; // 音符间隔 ms（实测原曲音头在 0.023 + n×0.500s，10 个音跨 4.5s）
         var NOTE_DECAY = 2700; // 每个音的延音时长（相邻音会叠 3~4 层，靠 MASTER 压总响度）
         var LAST_DECAY = 3800; // 末音延音，长过终章起跑点
         var NOTE_DELAY = 40; // 合成音晚 40ms 起：城市声走 <audio> 元素，play() 到出声有这段延迟，WebAudio 没有，不补就是音符抢拍
@@ -314,11 +362,30 @@
           crystal: { peak: 0.46, noise: 0.08, partials: [[1, 1, 1.4], [1.0017, 0.75, 1.3], [3.05, 0.2, 0.7]] },
           // F. 琴槌 / 木鱼：瞬态最重、音调最短，偏打击乐而不是延音
           mallet: { peak: 0.4, noise: 0.4, partials: [[1, 1, 0.55], [3.4, 0.25, 0.3]] },
-          brighter: { peak: 0.44, noise: 0.24, partials: [[1, 1, 1], [2.76, 0.4, 0.8], [5.4, 0.25, 0.6], [8.93, 0.3, 0.35]] },
+          brighter: { peak: 0.35, noise: 0.24, partials: [[1, 1, 1], [2.76, 0.4, 0.8], [5.4, 0.25, 0.6], [8.93, 0.3, 0.35]] },
         };
 
         // ★★★ 用这一款音色 ★★★
         var TIMBRE = TIMBRES.brighter;
+
+        // ---- 和弦轨：努比亚正谱的垫底和声，每 3 个旋律音进一次、延音跨满 3 格 ----
+        // 对 nubia_mile.ogg 做「攻击后谱 − 攻击前谱」差分提出来的基音集合（含实测相对音量）：
+        // 第 1/4/7/10 音分别进 Fmaj9 / Em7 / Em7→Dm7 / Cadd9，其余格子只有延音、没有新攻击。
+        // ⚠️ 这份和声是跟 nubia 旋律配对的；换 MELODY 档位时要么同步改 CHORDS，要么置空数组。
+        var CHORDS = [
+          [['F3', 0.45], ['C4', 0.5], ['F4', 1], ['G4', 0.22], ['A4', 0.58], ['E5', 0.68]], null, null,
+          [['E3', 1], ['B3', 0.36], ['D4', 0.65], ['G4', 0.42], ['D5', 0.2]], null, null,
+          [['D3', 0.9], ['C4', 0.33], ['F4', 1], ['A4', 0.2], ['C5', 0.87]], null, null,
+          [['C3', 0.3], ['G3', 0.48], ['C4', 0.62], ['D4', 0.9], ['G4', 0.33], ['D5', 0.17]],
+        ];
+        // 和弦音色：比旋律档柔、泛音更少近倍频（垫底声部，不要抢旋律的「铁」味）
+        var CHORD_TIMBRE = { peak: 0.3, noise: 0.04, partials: [[1, 1, 1.35], [2.01, 0.22, 0.8], [2.98, 0.1, 0.55], [5.41, 0.05, 0.35]] };
+        var CHORD_DECAY = 3000; // 和弦延音：盖满 3 格（3×500）再收
+        // 水滴声：每 3 个音（第 1/4/7/10 音）一颗，正压在换和弦的音头上
+        // 实测原曲半格处（音头+250ms）没有独立瞬态，7 个方格逐格比过也没有；
+        // 唯一的额外能量是换和弦音头那一瞬（700~1200Hz），所以水滴跟音头同一时刻落
+        var DROP_EVERY = 3;
+        var DROP_OFFSET = 0; // 0 = 与音头同刻（改这里等于改水滴时机）
 
         // ---- 三角铁音色：基音 + 不成倍泛音 + 打击瞬态，指数衰减 ----
         // ⚠️ WebView2 的自动播放策略可能把首次 AudioContext 挂起；挂起时只是没声，画面与节奏照走
@@ -350,10 +417,12 @@
           return noiseBuf;
         }
 
-        function strike(freq, atMs, durMs) {
+        // spec / vel 可选：和弦轨复用同一条合成链，只是换音色规格、按实测音量打折
+        function strike(freq, atMs, durMs, spec, vel) {
           if (!actx) return;
+          spec = spec || TIMBRE;
+          var peak = spec.peak * (vel == null ? 1 : vel);
           var t0 = actx.currentTime + atMs / 1000;
-          var spec = TIMBRE;
           spec.partials.forEach(function (p) {
             var d = Math.max(0.05, (durMs / 1000) * p[2]);
             var osc = actx.createOscillator();
@@ -361,7 +430,7 @@
             osc.frequency.value = freq * p[0];
             var g = actx.createGain();
             g.gain.setValueAtTime(0.0001, t0);
-            g.gain.exponentialRampToValueAtTime(spec.peak * p[1], t0 + 0.006);
+            g.gain.exponentialRampToValueAtTime(peak * p[1], t0 + 0.006);
             g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
             osc.connect(g).connect(bus);
             osc.start(t0);
@@ -375,10 +444,89 @@
           bp.frequency.value = Math.min(9000, Math.max(2200, freq * 5.4));
           bp.Q.value = 0.7;
           var ng = actx.createGain();
-          ng.gain.setValueAtTime(spec.peak * spec.noise, t0);
+          ng.gain.setValueAtTime(peak * spec.noise, t0);
           ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.06);
           src.connect(bp).connect(ng).connect(bus);
           src.start(t0);
+        }
+
+        // 水滴用的白噪：0.4s 平包络，落点 tick 与水花共用这一块，靠 GainNode 塑形
+        var wetBuf = null;
+        function wetNoise() {
+          if (!wetBuf) {
+            var n = Math.floor(actx.sampleRate * 0.4);
+            wetBuf = actx.createBuffer(1, n, actx.sampleRate);
+            var ch = wetBuf.getChannelData(0);
+            for (var i = 0; i < n; i++) ch[i] = Math.random() * 2 - 1;
+          }
+          return wetBuf;
+        }
+
+        // 一段带通噪声：只换频段与包络
+        function noiseBurst(t0, freq, q, peak, dur) {
+          var src = actx.createBufferSource();
+          src.buffer = wetNoise();
+          var bp = actx.createBiquadFilter();
+          bp.type = 'bandpass';
+          bp.frequency.value = freq;
+          bp.Q.value = q;
+          var g = actx.createGain();
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + 0.002);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+          src.connect(bp).connect(g).connect(bus);
+          src.start(t0);
+          src.stop(t0 + dur + 0.02);
+        }
+
+        // ---- 水滴声：落水闷响 + 气泡上滑 + 一点水花 ----
+        // 原曲 550Hz 以上没有独立瞬态（高频全是旋律/和弦的泛音），所以水滴不做亮头。
+        // 每次调用重新掷一遍音高 / 轻重 / 尾长 / 水花频段，四颗不会一模一样。
+        function drop(atMs, vel, pitch) {
+          if (!actx) return;
+          var t0 = actx.currentTime + atMs / 1000;
+          var v = (vel == null ? 1 : vel) * (0.85 + Math.random() * 0.3); // 这一颗的轻重
+          var p = (pitch == null ? 1 : pitch) * (0.93 + Math.random() * 0.15); // 音高 ±6%
+          var top = p * (1150 + Math.random() * 160); // 上滑终点
+          var bodyDur = 0.26 + Math.random() * 0.1; // 气泡尾长
+          // 落水闷响：低频下坠
+          var thump = actx.createOscillator();
+          thump.type = 'sine';
+          thump.frequency.setValueAtTime(170 * p, t0);
+          thump.frequency.exponentialRampToValueAtTime(120 * p, t0 + 0.08);
+          var tg = actx.createGain();
+          tg.gain.setValueAtTime(0.0001, t0);
+          tg.gain.exponentialRampToValueAtTime((0.18 + Math.random() * 0.1) * v, t0 + 0.005);
+          tg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
+          thump.connect(tg).connect(bus);
+          thump.start(t0);
+          thump.stop(t0 + 0.15);
+          // 气泡腔体：上滑的「滴」主体
+          var body = actx.createOscillator();
+          body.type = 'sine';
+          body.frequency.setValueAtTime(820 * p, t0);
+          body.frequency.exponentialRampToValueAtTime(top, t0 + 0.045);
+          var bg = actx.createGain();
+          bg.gain.setValueAtTime(0.0001, t0);
+          bg.gain.exponentialRampToValueAtTime(0.95 * v, t0 + 0.004);
+          bg.gain.exponentialRampToValueAtTime(0.0001, t0 + bodyDur);
+          body.connect(bg).connect(bus);
+          body.start(t0);
+          body.stop(t0 + bodyDur + 0.04);
+          // 腔体泛音：跟着上滑，收得更快
+          var over = actx.createOscillator();
+          over.type = 'sine';
+          over.frequency.setValueAtTime(820 * 2.305 * p, t0);
+          over.frequency.exponentialRampToValueAtTime(top * 2.305, t0 + 0.04);
+          var og = actx.createGain();
+          og.gain.setValueAtTime(0.0001, t0);
+          og.gain.exponentialRampToValueAtTime((0.1 + Math.random() * 0.1) * v, t0 + 0.003);
+          og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.09);
+          over.connect(og).connect(bus);
+          over.start(t0);
+          over.stop(t0 + 0.12);
+          // 水花：短短一层，别做 4kHz 亮头（原曲没有）
+          noiseBurst(t0, 1450 + Math.random() * 400, 1.2 + Math.random() * 0.5, (0.04 + Math.random() * 0.05) * v, 0.09 + Math.random() * 0.06);
         }
 
         // ---- 城市声池：14 条各一个 Audio，每次挑当前没在响的那条 → 并行叠放，绝不打断上一条 ----
@@ -386,7 +534,7 @@
         for (var ci = 1; ci <= CITY_COUNT; ci++) {
           var ca = new Audio(BASE + 'sound/city' + (ci < 10 ? '0' + ci : ci) + '.flac');
           ca.preload = 'auto';
-          ca.volume = 0.9;
+          ca.volume = 0.75;
           ca.load(); // 预读：不 load() 的话要等首次 play() 才发请求
           cityPool.push(ca);
         }
@@ -458,8 +606,7 @@
         // 起跑点：预读发起后 PRELOAD_LEAD（200ms）必定开播，不管素材下完没有（下完的靠缓存，没下完的现取）
         var startAt = 0;
         // 终章跟第 10 个音：判定用「和其余 9 张同一格的 Math.round 网格」，不是挂钟加一段 lead。
-        // 原来写的是 9×460 + 120 = 4260ms（末音之后 120ms），而随机贴图在 (i-0.5)×460 就出，
-        // 于是 final 比同一节奏的其它图晚约 350ms —— 看着像漏了一拍。
+        // 别改成「末音之后再等一段」：随机贴图在 (i-0.5)×NOTE_GAP 就出，写死 offset 会让 final 比同一节奏的其它图晚一截。
         var FINAL_IDX = MELODY.length - 1;
         var finalAt = (FINAL_IDX - 0.5) * NOTE_GAP; // 网格跨进第 10 格的瞬间，与随机贴图同一条规则
         var endAt = finalAt + FINAL_DUR;
@@ -469,7 +616,17 @@
             startAt = performance.now();
             for (var ni = 0; ni < MELODY.length; ni++) {
               // + NOTE_DELAY：与同一格城市声的出声点对齐（画面那侧不等，见 frame() 的挂钟跟拍）
-              strike(MELODY[ni], ni * NOTE_GAP + NOTE_DELAY, ni === MELODY.length - 1 ? LAST_DECAY : NOTE_DECAY);
+              var at = ni * NOTE_GAP + NOTE_DELAY;
+              strike(MELODY[ni], at, ni === MELODY.length - 1 ? LAST_DECAY : NOTE_DECAY);
+              // 和弦轨：只在有攻击的格子进（其余格子吃延音），各音按实测音量打折
+              var ch = CHORDS[ni];
+              if (ch) {
+                for (var ci = 0; ci < ch.length; ci++) {
+                  strike(hz(ch[ci][0]), at, CHORD_DECAY, CHORD_TIMBRE, ch[ci][1]);
+                }
+              }
+              // 水滴声：每 3 个音一颗（第 1 音也有一颗），和同一格的和弦一起落
+              if (ni % DROP_EVERY === 0) drop(at + DROP_OFFSET, 1, 1);
             }
             requestAnimationFrame(frame);
         }
