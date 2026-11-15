@@ -11,7 +11,7 @@
    从 agent 目录迁入本目录（本次重构唯一的目录结构变化）。
    ========================================================================== */
 
-import type { LlmMessage, LlmTool, LlmToolCall, ModelConfig, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
+import type { LlmMessage, LlmTool, LlmToolCall, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
 import { logMsg, safeParseJson } from '../../shared/utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 
@@ -968,5 +968,78 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 
 /** 供 runner 复用的派生类型 */
 export type { LlmToolCall };
+
+// #endregion
+
+// #region 连通性测试（设置页每个模型行上的「测试连通性」）
+
+/** 从上游错误体里抠一句人话：优先 `error.message`，否则截断原文 */
+function explainUpstreamError(text: string): string {
+	const raw = (text ?? '').trim();
+	if (!raw) return '';
+	try {
+		const parsed = JSON.parse(raw) as { error?: { message?: string } | string; message?: string };
+		const msg = typeof parsed.error === 'string' ? parsed.error : (parsed.error?.message ?? parsed.message);
+		if (msg) return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+	} catch {
+		// 不是 JSON：原样截断
+	}
+	return raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+}
+
+/**
+ * 用**一个最小请求**打一次真实上游：不带历史、不带工具，只要一个非流式响应。
+ *
+ * ⚠️ 为什么不复用 `callLlm`：那条路会开流式、写 requestLog、把记录挂在某个会话上；
+ * 而测试发生在「可能还没有会话、参数还没填完」的时候。这里只回答一件事：「地址 + Key + 模型名」这三样凑在一起，能不能换来一个 2xx。
+ *
+ * 代价是一次真实请求（max_tokens 极小），所以只在用户点按钮时调用。
+ */
+export async function testModelConnectivity(config: ModelConfig): Promise<ModelTestResult> {
+	const startedAt = Date.now();
+	const endpoint = config.apiFormat === 'openai-chat'
+		? 'chat/completions'
+		: config.apiFormat === 'openai-responses' ? 'responses' : 'messages';
+	const url = genStreamUrl(config.baseUrl, endpoint);
+
+	const ping = [{ role: 'user', content: 'ping' }];
+	const body: Record<string, unknown> = config.apiFormat === 'openai-responses'
+		? { model: config.modelId, input: 'ping', max_output_tokens: 16 }
+		: { model: config.modelId, messages: ping, max_tokens: 1 };
+	// 自定义参数照常合并（有些中转要求必填的额外字段），但 stream 由测试强制关掉
+	if (config.customParams) Object.assign(body, config.customParams);
+	body.model = config.modelId;
+	body.stream = false;
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 20_000);
+	try {
+		const resp = await fetch(url, {
+			method: 'POST',
+			headers: buildHeaders(config.apiKey, config.apiFormat === 'anthropic' ? { 'anthropic-version': '2023-06-01' } : {}),
+			body: JSON.stringify(body),
+			signal: controller.signal,
+		});
+		const latencyMs = Date.now() - startedAt;
+		const text = await resp.text().catch(() => '');
+		if (!resp.ok) {
+			return { ok: false, latencyMs, status: resp.status, message: `${resp.status} ${explainUpstreamError(text) || resp.statusText}`.trim() };
+		}
+		return { ok: true, latencyMs, status: resp.status, message: `连通正常 · ${latencyMs} ms` };
+	} catch (e) {
+		const latencyMs = Date.now() - startedAt;
+		const err = e as Error & { cause?: { code?: string; message?: string } };
+		const aborted = err?.name === 'AbortError';
+		// `fetch failed` 本身没信息量，真正的原因（ECONNREFUSED / ENOTFOUND / 证书）在 cause 里
+		const cause = err?.cause ? (err.cause.code ?? err.cause.message) : '';
+		return {
+			ok: false,
+			latencyMs,
+			message: aborted ? '超时 20s：上游没有响应' : `请求失败：${err?.message ?? String(e)}${cause ? `（${cause}）` : ''}`,
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 // #endregion

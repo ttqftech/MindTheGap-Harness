@@ -1,0 +1,107 @@
+{
+	"id": "work-v51",
+	"name": "通用 v51",
+	"description": "通用多 Agent 编排框架：识别任务结构、分解子问题、调度合适的 Agent（code / research / 用户插件）、整合结果",
+	"rootAgent": "orchestrator",
+	"maxDepth": "[maxDepth]",
+	"taskList": {
+		"enabled": false,
+		"writable": false
+	},
+	"mcpDisabled": false,
+	"limits": {
+		"totalRounds": "[totalRounds]",
+		"agentInstanceRounds": "[agentInstanceRounds]",
+		"warnAtRemaining": "[warnAtRemaining]"
+	},
+	"params": {
+		"intensity": "medium",
+		"maxDepth": 3,
+		"totalRounds": 300,
+		"agentInstanceRounds": 150,
+		"warnAtRemaining": 15,
+		"rOrchestrator": 1,
+		"isLow": false,
+		"isMedium": true,
+		"isHigh": false,
+		"isUltra": false
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "影响分解深度、协调轮数与质量验证严格程度",
+			"options": [
+				{
+					"label": "低 · 单层分解",
+					"value": "low",
+					"description": "单层任务分解，直接委托子 Agent 执行，汇总结果。适合结构清晰的任务",
+					"vars": {
+						"maxDepth": 2,
+						"totalRounds": 180,
+						"agentInstanceRounds": 100,
+						"warnAtRemaining": 12,
+						"rOrchestrator": 0,
+						"isLow": true,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": false
+					}
+				},
+				{
+					"label": "中 · 分解与协调",
+					"value": "medium",
+					"description": "多步分解，跟踪子任务状态，处理依赖关系，验证子结果一致性",
+					"vars": {
+						"maxDepth": 3,
+						"totalRounds": 300,
+						"agentInstanceRounds": 150,
+						"warnAtRemaining": 15,
+						"rOrchestrator": 1,
+						"isLow": false,
+						"isMedium": true,
+						"isHigh": false,
+						"isUltra": false
+					}
+				},
+				{
+					"label": "高 · 多阶段编排",
+					"value": "high",
+					"description": "多阶段任务规划，显式依赖管理，子结果交叉验证，迭代优化",
+					"vars": {
+						"maxDepth": 4,
+						"totalRounds": 450,
+						"agentInstanceRounds": 200,
+						"warnAtRemaining": 18,
+						"rOrchestrator": 1,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": true,
+						"isUltra": false
+					}
+				},
+				{
+					"label": "极高 · 全程追溯",
+					"value": "ultra",
+					"description": "全程任务追溯，子任务版本控制，多路径探索，综合质量评估。适合复杂多方协作任务",
+					"vars": {
+						"maxDepth": 5,
+						"totalRounds": 600,
+						"agentInstanceRounds": 250,
+						"warnAtRemaining": 20,
+						"rOrchestrator": 2,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": true
+					}
+				}
+			]
+		}
+	],
+	"ui": {
+		"icon": "🎯",
+		"accent": "purple"
+	}
+}

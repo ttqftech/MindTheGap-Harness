@@ -838,6 +838,17 @@ export interface ModelProviderModel {
 	displayName: string;
 	role: 'standard' | 'economy';
 	customParams?: Record<string, unknown>;
+	contextWindow?: { input?: number; output?: number };
+	supportsVision?: boolean;
+	thinking?: { param: string; values: string[] };
+}
+
+/** 测试连通性的结果（`POST /api/settings/test-model`） */
+export interface ModelTestResult {
+	ok: boolean;
+	latencyMs: number;	// 往返耗时（ms）
+	status?: number;	// 上游 HTTP 状态码（连不上时没有）
+	message: string;	// 成功时是简短说明，失败时是错误摘要
 }
 
 /** 开发用 mock：把 LLM 请求转给后端内置的 mock 服务（**工具仍真实执行**） */

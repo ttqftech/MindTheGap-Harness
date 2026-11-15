@@ -1,0 +1,107 @@
+{
+	"id": "research-v51",
+	"name": "研究 v51",
+	"description": "知识综合与验证：跨领域信息收集、证据链构建、多源交叉验证、结论输出",
+	"rootAgent": "researcher",
+	"maxDepth": "[maxDepth]",
+	"taskList": {
+		"enabled": false,
+		"writable": false
+	},
+	"mcpDisabled": false,
+	"limits": {
+		"totalRounds": "[totalRounds]",
+		"agentInstanceRounds": "[agentInstanceRounds]",
+		"warnAtRemaining": "[warnAtRemaining]"
+	},
+	"params": {
+		"intensity": "medium",
+		"maxDepth": 2,
+		"totalRounds": 200,
+		"agentInstanceRounds": 120,
+		"warnAtRemaining": 12,
+		"rResearcher": 1,
+		"isLow": false,
+		"isMedium": true,
+		"isHigh": false,
+		"isUltra": false
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "影响信息源数量、验证深度与证据链完整性要求",
+			"options": [
+				{
+					"label": "低 · 快速调研",
+					"value": "low",
+					"description": "单一信息源，基本事实收集，不做交叉验证。适合快速了解某个话题",
+					"vars": {
+						"maxDepth": 1,
+						"totalRounds": 120,
+						"agentInstanceRounds": 80,
+						"warnAtRemaining": 10,
+						"rResearcher": 0,
+						"isLow": true,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": false
+					}
+				},
+				{
+					"label": "中 · 多源验证",
+					"value": "medium",
+					"description": "多个信息源，关键事实交叉验证，列出不一致之处",
+					"vars": {
+						"maxDepth": 2,
+						"totalRounds": 200,
+						"agentInstanceRounds": 120,
+						"warnAtRemaining": 12,
+						"rResearcher": 1,
+						"isLow": false,
+						"isMedium": true,
+						"isHigh": false,
+						"isUltra": false
+					}
+				},
+				{
+					"label": "高 · 证据链构建",
+					"value": "high",
+					"description": "完整证据链，每个关键结论标注来源，主动寻找反例，评估可信度",
+					"vars": {
+						"maxDepth": 3,
+						"totalRounds": 320,
+						"agentInstanceRounds": 160,
+						"warnAtRemaining": 15,
+						"rResearcher": 1,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": true,
+						"isUltra": false
+					}
+				},
+				{
+					"label": "极高 · 系统性综述",
+					"value": "ultra",
+					"description": "系统性信息收集，对立观点对比，方法学评估，明确知识边界。适合决策依据",
+					"vars": {
+						"maxDepth": 3,
+						"totalRounds": 450,
+						"agentInstanceRounds": 200,
+						"warnAtRemaining": 18,
+						"rResearcher": 2,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": true
+					}
+				}
+			]
+		}
+	],
+	"ui": {
+		"icon": "🔬",
+		"accent": "cyan"
+	}
+}

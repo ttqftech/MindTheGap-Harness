@@ -9,13 +9,13 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, ModelConfig, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './runner';
 import * as auth from './auth';
 import { getBuiltinToolNames } from './tools';
 import { normalizeSafety, SAFETY_VALUES } from './safety';
-import { setMockResolver } from './llm/model';
+import { setMockResolver, testModelConnectivity } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequest, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
@@ -536,6 +536,19 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				if (params.standard !== undefined) settings.currentStandardModel = params.standard;
 				if (params.economy !== undefined) settings.currentEconomyModel = params.economy;
 				sendJson(res, 200, { ok: true });
+				return;
+			}
+
+			// 测试连通性：设置页每个模型行上的按钮。
+			// 不写 requestLog、不碰会话 —— 只是拿「地址 + Key + 模型名」换一个 2xx。
+			if (req.method === 'POST' && path === '/api/settings/test-model') {
+				const body = await readBody(req);
+				const config = JSON.parse(body || '{}') as ModelConfig;
+				if (!config.baseUrl || !config.modelId || !config.apiFormat) {
+					sendJson(res, 400, { ok: false, error: '需要 { apiFormat, baseUrl, modelId, apiKey }' });
+					return;
+				}
+				sendJson(res, 200, await testModelConnectivity(config));
 				return;
 			}
 

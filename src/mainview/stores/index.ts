@@ -12,7 +12,7 @@
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/bridges/localBridge';
 import * as agentBridge from '@mainview/bridges/agentBridge';
-import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModelProviderModel, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
 import { createEmptyOverlay, type OverlayCtx } from '@mainview/logic/projection';
@@ -792,6 +792,7 @@ export const actions = {
 			});
 		}
 		scheduleSaveBackend();
+		return p.id;
 	},
 	updateProvider(id: string, patch: Partial<ModelProvider>) {
 		setState(
@@ -799,6 +800,62 @@ export const actions = {
 			produce((list) => {
 				const p = list.find((p) => p.id === id);
 				if (p) Object.assign(p, patch);
+			}),
+		);
+		scheduleSaveBackend();
+	},
+	/**
+	 * 复制一个提供商（含模型目录与全部参数），副本**紧跟**在原条目下方、名称加「副本」后缀。
+	 * 用途：同一个站点开不同 Key（渠道 / 额度分开算）。
+	 */
+	copyProvider(id: string) {
+		let newId: string | null = null;
+		setState(
+			'providers',
+			produce((list) => {
+				const i = list.findIndex((p) => p.id === id);
+				if (i < 0) return;
+				const clone = JSON.parse(JSON.stringify(list[i])) as ModelProvider;
+				clone.id = uid();
+				clone.name = `${list[i].name} 副本`;
+				newId = clone.id;
+				list.splice(i + 1, 0, clone);
+			}),
+		);
+		scheduleSaveBackend();
+		return newId as string | null;
+	},
+	/**
+	 * 改单个模型（就地改，**不替换 models 数组**）。
+	 * 换数组会让 `<For>` 认为每一行都是新对象、把整片 DOM 重建一遍 ——
+	 * 编辑面板里每改一个字段就闪一次，正在输入的文本框还会丢焦点。
+	 */
+	updateProviderModel(providerId: string, index: number, patch: Partial<ModelProviderModel>) {
+		setState(
+			'providers',
+			produce((list) => {
+				const model = list.find((p) => p.id === providerId)?.models[index];
+				if (model) Object.assign(model, patch);
+			}),
+		);
+		scheduleSaveBackend();
+	},
+	addProviderModel(providerId: string) {
+		setState(
+			'providers',
+			produce((list) => {
+				const p = list.find((p) => p.id === providerId);
+				if (p) p.models.push({ id: '', displayName: '', role: 'standard', customParams: {} });
+			}),
+		);
+		scheduleSaveBackend();
+	},
+	removeProviderModel(providerId: string, index: number) {
+		setState(
+			'providers',
+			produce((list) => {
+				const p = list.find((p) => p.id === providerId);
+				if (p) p.models.splice(index, 1);
 			}),
 		);
 		scheduleSaveBackend();

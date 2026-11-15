@@ -1,0 +1,6 @@
+{
+	"id": "orchestrator",
+	"name": "编排员",
+	"description": "通用任务编排：分析用户需求，分解成可执行的子任务，选择合适的 Agent 执行，整合子结果",
+	"delegatable": ["orchestrator", "dev", "check", "explore"]
+}

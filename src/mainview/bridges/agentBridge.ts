@@ -6,7 +6,7 @@
  * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
  */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelProvider, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, UserConfig } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelConfig, ModelProvider, ModelTestResult, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import { sha256Hex } from '@shared/sha256';
 
@@ -357,6 +357,22 @@ export async function setProviders(providers: ModelProvider[]): Promise<boolean>
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * 测试某个模型的连通性（设置页每行的按钮）。
+ * **必须在服务端发请求**：WebView 里带 Authorization 的跨域请求过不了 CORS 预检。
+ */
+export async function testProviderModel(config: ModelConfig): Promise<ModelTestResult> {
+	try {
+		return await httpFetch<ModelTestResult>('/api/settings/test-model', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config),
+		});
+	} catch (e) {
+		return { ok: false, latencyMs: 0, message: `请求失败：${(e as Error)?.message ?? String(e)}` };
 	}
 }
 

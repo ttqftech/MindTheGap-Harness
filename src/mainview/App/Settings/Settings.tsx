@@ -4,20 +4,19 @@
      面板直接编辑该文件的源码；基座提示词独立成「提示词」Tab，存后端 settings.basePrompt）
    ========================================================================== */
 
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type JSX } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
 import styles from './Settings.module.css';
-import { createStore, produce } from 'solid-js/store';
+import { createStore } from 'solid-js/store';
 import { state, actions, hasPermission, serviceOriginLabel } from '@mainview/stores';
 import { getCurrentThemeMode } from '@mainview/theme/theme';
 import { setAppTheme } from '@mainview/logic/appCommands';
-import { z } from 'zod';
 import type { ModelProvider } from '@mainview/stores';
 import type { ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition, UserConfig } from '@shared/agent';
 import { PERMISSION_LABELS } from '@shared/agent';
 import { sha256Hex } from '@shared/sha256';
 import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
-import { testMcpServer, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers, getRequestLogLevel, setRequestLogLevel } from '@mainview/bridges/agentBridge';
+import { testMcpServer, testProviderModel, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers, getRequestLogLevel, setRequestLogLevel } from '@mainview/bridges/agentBridge';
 import { shell } from '@mainview/bridges/localBridge';
 import { startSettingsDrag, setSettingsTravelMeasure } from './useSettingsDrag';
 import { EXIT_THEME_OPTIONS, previewExitTheme, themeById } from '@mainview/App/ExitOverlay';
@@ -257,127 +256,18 @@ function GeneralTab() {
 	);
 }
 
-/* ---------- 模型 Tab ---------- */
-
-const jsonSchema = z.record(z.unknown());
-
-function ModelsTab() {
-	const [editingProvider, setEditingProvider] = createSignal<ModelProvider | null>(null);
-	const [jsonError, setJsonError] = createSignal<string>("");
-
-	const startAdd = () => {
-		setEditingProvider({
-			id: "",
-			name: "新提供商",
-			apiFormat: "openai-chat",
-			baseUrl: "https://api.deepseek.com/v1",
-			apiKey: "",
-			models: [
-				{ id: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash", role: "economy" },
-			],
-			customParams: {},
-		});
-		setJsonError("");
-	};
-
-	const startEdit = (provider: ModelProvider) => {
-		setEditingProvider({ ...provider });
-		setJsonError("");
-	};
-
-	const handleSave = () => {
-		const p = editingProvider();
-		if (!p) return;
-
-		if (p.id) {
-			actions.updateProvider(p.id, p);
-		} else {
-			actions.addProvider(p);
-		}
-		setEditingProvider(null);
-	};
-
-	const handleDelete = async (p: ModelProvider) => {
-		const ok = await confirmMsgbox(
-			"删除模型提供商",
-			`确定要删除「${p.name}」吗？其下的 ${p.models.length} 个模型将一并移除。`,
-			"删除",
-		);
-		if (ok) {
-			actions.removeProvider(p.id);
-		}
-	};
-
-	const handleCancel = () => {
-		setEditingProvider(null);
-		setJsonError("");
-	};
-
-	return (
-		<div>
-			<Show when={!editingProvider()}>
-				<div style={{ marginBottom: "16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-					<div class={styles['setting-group-label']}>已配置的模型提供商</div>
-					<ffbox-button type="primary" onclick={startAdd}>
-						+ 添加提供商
-					</ffbox-button>
-				</div>
-
-				<div class={styles['provider-list']}>
-					<Show when={state.providers.length === 0}>
-						<div style={{
-							padding: "24px",
-							textAlign: "center",
-							color: "var(--fontColorMuted)",
-							backgroundColor: "hwb(var(--bg95) / 1)",
-							borderRadius: "10px",
-						}}>
-							还没有配置任何模型提供商。点击上方 "添加提供商" 开始。
-						</div>
-					</Show>
-
-					<For each={state.providers}>
-						{(p) => (
-							<div class={styles['provider-item']}>
-								<div>
-									<div class={styles['provider-item-name']}>{p.name}</div>
-									<div style={{ fontSize: "12px", color: "var(--fontColorMuted)", marginTop: "2px" }}>
-										{p.models.length} 个模型 · {p.baseUrl}
-									</div>
-								</div>
-								<span class={styles['provider-item-type']}>
-									{p.apiFormat === "openai-chat" && "OpenAI Chat"}
-									{p.apiFormat === "openai-responses" && "OpenAI Responses"}
-									{p.apiFormat === "anthropic" && "Anthropic"}
-								</span>
-								<div class={styles['provider-item-actions']}>
-									<ffbox-button onclick={() => startEdit(p)}>编辑</ffbox-button>
-									<ffbox-button type="danger" onclick={() => void handleDelete(p)}>删除</ffbox-button>
-								</div>
-							</div>
-						)}
-					</For>
-				</div>
-			</Show>
-
-			<Show when={editingProvider()}>
-				<ProviderEditor
-					provider={editingProvider()!}
-					onChange={setEditingProvider}
-					onSave={handleSave}
-					onCancel={handleCancel}
-					jsonError={jsonError()}
-					onJsonError={setJsonError}
-				/>
-			</Show>
-		</div>
-	);
-}
+/* ---------- 模型 Tab ----------
+   设计稿：docs/设计-模型设置页重设计.html
+   三条硬规则：
+   ① 列表是表格（提供商 / API 格式 / 请求地址 / 模型 / 操作）：URL 等宽截断，模型是带角色圆点的小胶囊
+   ② **没有保存按钮**：任何改动直接进 store，由 `scheduleSaveBackend` 防抖落盘
+   ③ 「编辑」= 就地拉高当前行（同时只展开一行）；旁边「复制」一键克隆（含模型目录与参数）
+   -------------------------------------------------------------------------- */
 
 const API_FORMAT_OPTIONS = [
-	{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
-	{ value: 'openai-responses', label: 'OpenAI Responses' },
-	{ value: 'anthropic', label: 'Anthropic Messages' },
+	{ value: 'openai-chat', label: 'OpenAI Chat Completions', short: 'OpenAI Chat' },
+	{ value: 'openai-responses', label: 'OpenAI Responses', short: 'OpenAI Responses' },
+	{ value: 'anthropic', label: 'Anthropic Messages', short: 'Anthropic' },
 ] as const;
 
 const MODEL_ROLE_OPTIONS = [
@@ -385,260 +275,571 @@ const MODEL_ROLE_OPTIONS = [
 	{ value: 'economy', label: '节省' },
 ] as const;
 
-function ProviderEditor(props: {
+/** 上下文窗口的快捷预设（点一下直接填进输入框） */
+const CTX_PRESETS_IN = [128_000, 256_000, 512_000, 1_000_000] as const;
+const CTX_PRESETS_OUT = [4_000, 16_000, 32_000, 128_000] as const;
+
+const formatShort = (f: string) => API_FORMAT_OPTIONS.find((o) => o.value === f)?.short ?? f;
+
+/** 1000000 → 1M、128000 → 128k（预设按钮上的短标签） */
+function shortTokens(n: number): string {
+	return n >= 1_000_000 ? `${n / 1_000_000}M` : `${Math.round(n / 1000)}k`;
+}
+
+const modelLabel = (m: ModelProviderModel) => m.displayName || m.id || '(未命名)';
+
+/** 竖排的「小标签 + 控件」（设计稿里的 `label.f`） */
+function Field(props: { label: string; hint?: string; wide?: boolean; children: JSX.Element }) {
+	return (
+		<div class={`${styles['field']}${props.wide ? ` ${styles['span2']}` : ''}`}>
+			<span class={styles['field-label']}>{props.label}</span>
+			{props.children}
+			<Show when={props.hint}>
+				<span class={styles['field-hint']}>{props.hint}</span>
+			</Show>
+		</div>
+	);
+}
+
+/** 表格「模型」列的小胶囊：圆点区分标准 / 节省，超过 2 个折成 +N */
+function ModelChips(props: { models: ModelProviderModel[] }) {
+	const shown = () => props.models.slice(0, 2);
+	const rest = () => props.models.length - shown().length;
+	return (
+		<div class={styles['m-chips']}>
+			<For each={shown()}>
+				{(m) => (
+					<span class={styles['m-chip']} title={m.id ? `${modelLabel(m)} · ${m.id}` : '未填写模型名称'}>
+						<span class={`${styles['m-chip-dot']}${m.role === 'economy' ? ` ${styles['eco']}` : ''}`} />
+						{modelLabel(m)}
+					</span>
+				)}
+			</For>
+			<Show when={rest() > 0}>
+				<span class={`${styles['m-chip']} ${styles['more']}`}>+{rest()}</span>
+			</Show>
+		</div>
+	);
+}
+
+/**
+ * 模型目录里的一行：模型名称 / 显示名称 / 模式 + 连通性，参数挂在下面一条虚线之后。
+ *
+ * ⚠️ 每次改动都走 `actions.updateProviderModel`（**就地**改对象，不换数组）：
+ * 换数组会让 `<For>` 认为整片行都是新对象、把 DOM 重建一遍 —— 正在输入的框会丢焦点。
+ */
+function ModelRow(props: {
 	provider: ModelProvider;
-	onChange: (p: ModelProvider) => void;
-	onSave: () => void;
-	onCancel: () => void;
-	jsonError: string;
-	onJsonError: (e: string) => void;
+	model: ModelProviderModel;
+	index: () => number;
+	onSaved: () => void;
+	onRemove: () => void;
 }) {
-	const [local, setLocal] = createStore<{ provider: ModelProvider }>({
-		provider: JSON.parse(JSON.stringify(props.provider)),
+	const [jsonText, setJsonText] = createSignal(JSON.stringify(props.model.customParams ?? {}, null, 2));
+	const [jsonError, setJsonError] = createSignal('');
+	const [tagDraft, setTagDraft] = createSignal('');
+	const [test, setTest] = createSignal<{ kind: 'idle' | 'busy' | 'ok' | 'err'; text: string }>({
+		kind: 'idle',
+		text: '未测试',
 	});
 
-	const [providerJsonText, setProviderJsonText] = createSignal(
-		JSON.stringify(local.provider.customParams, null, 2) || "{}",
-	);
-	const [modelJsonTexts, setModelJsonTexts] = createSignal<Record<string, string>>({});
-	const [modelJsonErrors, setModelJsonErrors] = createSignal<Record<string, string>>({});
+	// 换到另一个提供商时组件实例会被复用：草稿与测试态都重置。
+	// ⚠️ 只跟踪 provider.id，**不能跟踪 customParams** —— 否则在 JSON 框里每敲一个字都会
+	//    把草稿按 JSON.stringify 重排一遍（光标乱跳、缩进被抹掉）。所以读取用 untrack。
+	createEffect(() => {
+		props.provider.id;
+		setJsonText(untrack(() => JSON.stringify(props.model.customParams ?? {}, null, 2)));
+		setJsonError('');
+		setTest({ kind: 'idle', text: '未测试' });
+	});
 
-	const getModelJsonText = (modelIdx: number) => {
-		const model = local.provider.models[modelIdx];
-		if (!model) return "{}";
-		const key = `__model_${modelIdx}`;
-		const existing = modelJsonTexts()[key];
-		if (existing !== undefined) return existing;
-		return JSON.stringify(model.customParams ?? {}, null, 2);
+	const patch = (p: Partial<ModelProviderModel>) => {
+		actions.updateProviderModel(props.provider.id, props.index(), p);
+		props.onSaved();
 	};
 
-	const addModel = () => {
-		const newModel: ModelProviderModel = {
-			id: "",
-			displayName: "",
-			role: "standard",
-			customParams: {},
-		};
-		setLocal("provider", "models", (prev) => [...prev, newModel]);
+	/** 上下文窗口：只收数字，清空 = 用默认值 */
+	const patchCtx = (key: 'input' | 'output', raw: string) => {
+		const digits = raw.replace(/[^\d]/g, '');
+		patch({ contextWindow: { ...props.model.contextWindow, [key]: digits ? Number(digits) : undefined } });
 	};
 
-	const removeModel = (modelIdx: number) => {
-		setLocal("provider", "models", (prev) => prev.filter((_, i) => i !== modelIdx));
-	};
-
-	const validateProviderJson = () => {
-		try {
-			const parsed = JSON.parse(providerJsonText());
-			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-				props.onJsonError("必须是一个 JSON 对象");
-			} else {
-				props.onJsonError("");
-				setLocal("provider", "customParams", parsed as Record<string, unknown>);
-			}
-		} catch (e) {
-			props.onJsonError("JSON 格式错误");
-		}
-	};
-
-	const validateModelJson = (modelIdx: number) => {
-		const model = local.provider.models[modelIdx];
-		if (!model) return;
-		const key = `__model_${modelIdx}`;
-		const text = modelJsonTexts()[key] ?? JSON.stringify(model.customParams ?? {}, null, 2);
-		try {
-			const parsed = JSON.parse(text);
-			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-				setModelJsonErrors((prev) => ({ ...prev, [key]: "必须是一个 JSON 对象" }));
-			} else {
-				setModelJsonErrors((prev) => ({ ...prev, [key]: "" }));
-				setLocal("provider", "models", modelIdx, "customParams", parsed as Record<string, unknown>);
-			}
-		} catch (e) {
-			setModelJsonErrors((prev) => ({ ...prev, [key]: "JSON 格式错误" }));
-		}
-	};
-
-	const doSave = () => {
-		try {
-			jsonSchema.parse(local.provider.customParams);
-		} catch (e: any) {
-			props.onJsonError("提供商自定义参数必须是合法的 JSON 对象");
+	/** JSON 只有「能解析成对象」才写进配置；解析失败只标红，不落盘 */
+	const onJsonInput = (text: string) => {
+		setJsonText(text);
+		if (!text.trim()) {
+			setJsonError('');
+			patch({ customParams: {} });
 			return;
 		}
-
-		for (const model of local.provider.models) {
-			if (!model.id.trim()) {
-				void alertMsgbox("无法保存", "模型 ID 不能为空，请填写后再保存。");
+		try {
+			const parsed = JSON.parse(text);
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				setJsonError('必须是一个 JSON 对象');
 				return;
 			}
-			if (!model.displayName.trim()) {
-				void alertMsgbox("无法保存", `模型 "${model.id}" 的显示名称不能为空，请填写后再保存。`);
-				return;
-			}
+			setJsonError('');
+			patch({ customParams: parsed as Record<string, unknown> });
+		} catch {
+			setJsonError('JSON 格式错误，修改未生效');
 		}
+	};
 
-		props.onChange(JSON.parse(JSON.stringify(local.provider)));
-		props.onSave();
+	const thinkValues = () => props.model.thinking?.values ?? [];
+	const setThinkValues = (values: string[], param = props.model.thinking?.param ?? '') => patch({ thinking: { param, values } });
+
+	const addTag = () => {
+		const v = tagDraft().trim();
+		if (!v) return;
+		if (!thinkValues().includes(v)) setThinkValues([...thinkValues(), v]);
+		setTagDraft('');
+	};
+
+	/** 连通性按「提供商 + 这个模型」测：地址与 Key 来自提供商，模型名来自这一行 */
+	const runTest = async () => {
+		const id = (props.model.id ?? '').trim();
+		if (!id) {
+			setTest({ kind: 'err', text: '先填「模型名称」' });
+			return;
+		}
+		setTest({ kind: 'busy', text: '测试中…' });
+		const p = props.provider;
+		const result = await testProviderModel({
+			providerId: p.id,
+			modelId: id,
+			apiFormat: p.apiFormat,
+			baseUrl: p.baseUrl,
+			apiKey: p.apiKey,
+			customParams: { ...p.customParams, ...(props.model.customParams ?? {}) },
+		});
+		setTest({ kind: result.ok ? 'ok' : 'err', text: result.ok ? `✓ ${result.message}` : `✗ ${result.message}` });
+	};
+
+	return (
+		<div class={styles['mrow']}>
+			<div class={styles['mrow-top']}>
+				<Field label="模型名称">
+					<input
+						class={`${styles['field-input']} ${styles.mono}`}
+						value={props.model.id}
+						placeholder="deepseek-v4-pro"
+						oninput={(e) => patch({ id: e.currentTarget.value })}
+					/>
+				</Field>
+				<Field label="显示名称">
+					<input
+						class={styles['field-input']}
+						value={props.model.displayName}
+						placeholder="留空则显示模型名称"
+						oninput={(e) => patch({ displayName: e.currentTarget.value })}
+					/>
+				</Field>
+				<Field label="模式">
+					<select
+						class={styles['field-input']}
+						value={props.model.role}
+						onchange={(e) => patch({ role: e.currentTarget.value as ModelProviderModel['role'] })}
+					>
+						<For each={MODEL_ROLE_OPTIONS}>{(o) => <option value={o.value}>{o.label}</option>}</For>
+					</select>
+				</Field>
+				<Field label="连通性">
+					<div class={styles['conn-line']}>
+						<ffbox-button size="small" prop:disabled={test().kind === 'busy'} onclick={() => void runTest()}>
+							测试连通性
+						</ffbox-button>
+						<span class={styles['conn-status']} data-kind={test().kind} title={test().text}>{test().text}</span>
+					</div>
+				</Field>
+				<div class={styles['mrow-del']}>
+					<ffbox-button size="small" type="danger" title="删除此模型" onclick={() => props.onRemove()}>
+						<XIcon />
+					</ffbox-button>
+				</div>
+			</div>
+
+			<div class={styles['mparams']}>
+				<Field label="上下文窗口（Token）" hint="留空则使用该模型的默认值" wide>
+					<div class={styles['ctx-line']}>
+						<span class={styles['tag-lab']}>输入</span>
+						<input
+							class={`${styles['field-input']} ${styles.mono}`}
+							value={props.model.contextWindow?.input ?? ''}
+							placeholder="请输入数值，留空则使用最佳默认值"
+							inputmode="numeric"
+							onchange={(e) => patchCtx('input', e.currentTarget.value)}
+						/>
+						<div class={styles['presets']}>
+							<For each={CTX_PRESETS_IN}>
+								{(v) => (
+									<button type="button" class={styles['chip-btn']} onclick={() => patch({ contextWindow: { ...props.model.contextWindow, input: v } })}>
+										{shortTokens(v)}
+									</button>
+								)}
+							</For>
+						</div>
+					</div>
+					<div class={styles['ctx-line']}>
+						<span class={styles['tag-lab']}>输出</span>
+						<input
+							class={`${styles['field-input']} ${styles.mono}`}
+							value={props.model.contextWindow?.output ?? ''}
+							placeholder="请输入数值，留空则使用最佳默认值"
+							inputmode="numeric"
+							onchange={(e) => patchCtx('output', e.currentTarget.value)}
+						/>
+						<div class={styles['presets']}>
+							<For each={CTX_PRESETS_OUT}>
+								{(v) => (
+									<button type="button" class={styles['chip-btn']} onclick={() => patch({ contextWindow: { ...props.model.contextWindow, output: v } })}>
+										{shortTokens(v)}
+									</button>
+								)}
+							</For>
+						</div>
+					</div>
+				</Field>
+
+				<Field label="支持图片输入">
+					<label class={styles['check-line']}>
+						<ffbox-checkbox prop:checked={!!props.model.supportsVision} onchange={(e) => patch({ supportsVision: e.detail === true })} />
+						<span>该模型可以接收图片</span>
+					</label>
+				</Field>
+
+				<Field label="思考模式" hint="填模型 API 文档里的强度参数路径（嵌套用点号）；可选值回车添加，点 × 删除" wide>
+					<div class={styles['ctx-line']}>
+						<span class={styles['tag-lab']}>参数名</span>
+						<input
+							class={`${styles['field-input']} ${styles.mono}`}
+							value={props.model.thinking?.param ?? ''}
+							placeholder="reasoning_effort 或 reasoning.effort"
+							oninput={(e) => patch({ thinking: { param: e.currentTarget.value, values: thinkValues() } })}
+						/>
+					</div>
+					{/* 可选值直接长在输入框里：标签是框内的 chip，回车添加、点 × 删除 */}
+					<div class={styles['tags-box']}>
+						<For each={thinkValues()}>
+							{(v) => (
+								<span class={styles['tag']}>
+									{v}
+									<button type="button" class={styles['tag-x']} title="移除" onclick={() => setThinkValues(thinkValues().filter((x) => x !== v))}>
+										×
+									</button>
+								</span>
+							)}
+						</For>
+						<input
+							class={styles['tags-input']}
+							value={tagDraft()}
+							placeholder="输入思考强度，如 low / high，回车添加"
+							oninput={(e) => setTagDraft(e.currentTarget.value)}
+							onkeydown={(e) => {
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									addTag();
+								} else if (e.key === 'Backspace' && !tagDraft() && thinkValues().length > 0) {
+									setThinkValues(thinkValues().slice(0, -1));
+								}
+							}}
+						/>
+					</div>
+				</Field>
+
+				<Field label="自定义参数（JSON，合并到该模型的每次请求）" wide>
+					<textarea
+						class={`${styles['json-textarea']}${jsonError() ? ` ${styles['error']}` : ''}`}
+						value={jsonText()}
+						oninput={(e) => onJsonInput(e.currentTarget.value)}
+						placeholder='{"temperature": 0.7}'
+						rows={2}
+					/>
+					<Show when={jsonError()}>
+						<span class={styles['field-err']}>⚠️ {jsonError()}</span>
+					</Show>
+				</Field>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * 提供商的行内编辑面板（不跳页）：基本信息 + 模型目录 + 提供商级自定义参数。
+ * 右上角那枚「✓ 已生效」是保存按钮的替代品 —— 它只是提示，不承担任何写盘职责。
+ */
+function ProviderEditor(props: {
+	provider: ModelProvider;
+	live: () => boolean;
+	onSaved: () => void;
+	onCollapse: () => void;
+}) {
+	const [jsonText, setJsonText] = createSignal(JSON.stringify(props.provider.customParams ?? {}, null, 2));
+	const [jsonError, setJsonError] = createSignal('');
+
+	createEffect(() => {
+		props.provider.id;
+		// 同上：customParams 是用户正在编辑的草稿，不能当依赖
+		setJsonText(untrack(() => JSON.stringify(props.provider.customParams ?? {}, null, 2)));
+		setJsonError('');
+	});
+
+	const patch = (p: Partial<ModelProvider>) => {
+		actions.updateProvider(props.provider.id, p);
+		props.onSaved();
+	};
+
+	const onJsonInput = (text: string) => {
+		setJsonText(text);
+		if (!text.trim()) {
+			setJsonError('');
+			patch({ customParams: {} });
+			return;
+		}
+		try {
+			const parsed = JSON.parse(text);
+			if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				setJsonError('必须是一个 JSON 对象');
+				return;
+			}
+			setJsonError('');
+			patch({ customParams: parsed as Record<string, unknown> });
+		} catch {
+			setJsonError('JSON 格式错误，修改未生效');
+		}
+	};
+
+	return (
+		<div class={styles['editor']}>
+			<div class={styles['editor-head']}>
+				<div>
+					<div class={styles['overline']}>Edit Provider · 编辑中</div>
+					<div class={styles['editor-title']}>编辑提供商「{props.provider.name || '未命名'}」</div>
+				</div>
+				<div class={styles['editor-head-right']}>
+					<span class={styles['live']} classList={{ [styles['show']]: props.live() }}>
+						✓ 已生效 <span class={styles['live-note']}>· 修改即时写入，无需保存</span>
+					</span>
+					<ffbox-button size="small" onclick={props.onCollapse}>收起 ▴</ffbox-button>
+				</div>
+			</div>
+
+			<div class={styles['egrid']}>
+				<Field label="显示名称">
+					<input
+						class={styles['field-input']}
+						value={props.provider.name}
+						placeholder="我的提供商"
+						oninput={(e) => patch({ name: e.currentTarget.value })}
+					/>
+				</Field>
+				<Field label="API 格式">
+					<select
+						class={styles['field-input']}
+						value={props.provider.apiFormat}
+						onchange={(e) => patch({ apiFormat: e.currentTarget.value as ModelProvider['apiFormat'] })}
+					>
+						<For each={API_FORMAT_OPTIONS}>{(o) => <option value={o.value}>{o.label}</option>}</For>
+					</select>
+				</Field>
+				<Field label="请求地址">
+					<input
+						class={`${styles['field-input']} ${styles.mono}`}
+						value={props.provider.baseUrl}
+						placeholder="https://api.openai.com/v1"
+						oninput={(e) => patch({ baseUrl: e.currentTarget.value })}
+					/>
+				</Field>
+				<Field label="API Key" hint="仅保存在本机 settings.json，请求时放进鉴权头">
+					<input
+						class={`${styles['field-input']} ${styles.mono}`}
+						value={props.provider.apiKey}
+						placeholder="sk-..."
+						oninput={(e) => patch({ apiKey: e.currentTarget.value })}
+					/>
+				</Field>
+			</div>
+
+			<div class={styles['esec']}>
+				<h4>模型目录</h4>
+				<span class={styles['esec-n']}>{props.provider.models.length} 个模型</span>
+				<span class={styles['esec-line']} />
+				<ffbox-button
+					size="small"
+					onclick={() => {
+						actions.addProviderModel(props.provider.id);
+						props.onSaved();
+					}}
+				>
+					＋ 添加模型
+				</ffbox-button>
+			</div>
+
+			<div class={styles['models']}>
+				<For each={props.provider.models}>
+					{(m, i) => (
+						<ModelRow
+							provider={props.provider}
+							model={m}
+							index={i}
+							onSaved={props.onSaved}
+							onRemove={() => {
+								actions.removeProviderModel(props.provider.id, i());
+								props.onSaved();
+							}}
+						/>
+					)}
+				</For>
+				<Show when={props.provider.models.length === 0}>
+					<div class={styles['models-empty']}>这个提供商下还没有模型，点上面的「＋ 添加模型」。</div>
+				</Show>
+			</div>
+
+			<div class={styles['esec']}>
+				<h4>自定义参数（提供商级）</h4>
+				<span class={styles['esec-line']} />
+			</div>
+			<textarea
+				class={`${styles['json-textarea']}${jsonError() ? ` ${styles['error']}` : ''}`}
+				value={jsonText()}
+				oninput={(e) => onJsonInput(e.currentTarget.value)}
+				placeholder='{"temperature": 0.7}'
+				rows={2}
+			/>
+			<Show when={jsonError()}>
+				<span class={styles['field-err']}>⚠️ {jsonError()}</span>
+			</Show>
+			<div class={styles['field-hint']}>JSON 对象，会合并到该提供商下所有模型的每次请求（模型级参数优先）。</div>
+		</div>
+	);
+}
+
+function ModelsTab() {
+	const [openId, setOpenId] = createSignal<string | null>(null);
+	const [live, setLive] = createSignal(false);
+	let liveTimer: ReturnType<typeof setTimeout> | undefined;
+	onCleanup(() => clearTimeout(liveTimer));
+
+	/** 「✓ 已生效」闪一下：每次写入都调它，代替保存按钮（它只负责提示，不负责写盘） */
+	const touch = () => {
+		setLive(true);
+		clearTimeout(liveTimer);
+		liveTimer = setTimeout(() => setLive(false), 1800);
+	};
+
+	const modelCount = () => state.providers.reduce((n, p) => n + p.models.length, 0);
+
+	const startAdd = () => {
+		const id = actions.addProvider({
+			name: '新提供商',
+			apiFormat: 'openai-chat',
+			baseUrl: 'https://api.deepseek.com/v1',
+			apiKey: '',
+			models: [{ id: '', displayName: '', role: 'standard', customParams: {} }],
+			customParams: {},
+		});
+		setOpenId(id);
+	};
+
+	const handleCopy = (p: ModelProvider) => {
+		const id = actions.copyProvider(p.id);
+		// 副本直接展开：复制出来的多半是「同站不同 Key」，下一步就是改 Key
+		if (id) setOpenId(id);
+	};
+
+	const handleDelete = async (p: ModelProvider) => {
+		const ok = await confirmMsgbox(
+			'删除模型提供商',
+			`确定要删除「${p.name}」吗？其下的 ${p.models.length} 个模型将一并移除。`,
+			'删除',
+		);
+		if (!ok) return;
+		if (openId() === p.id) setOpenId(null);
+		actions.removeProvider(p.id);
 	};
 
 	return (
 		<div>
-			<h3 style={{ margin: "0 0 16px", fontSize: "15px", fontWeight: 600 }}>
-				{local.provider.id ? "编辑提供商" : "添加提供商"}
-			</h3>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>名称</div>
-				<ffbox-normal-input
-					class={styles['ffbox-input']}
-					prop:value={local.provider.name}
-					placeholder="我的提供商"
-					onchange={(e) => setLocal("provider", "name", e.detail)}
-				/>
-			</div>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>API 格式</div>
-				<ffbox-dropdown-input
-					class={styles['ffbox-dropdown']}
-					prop:list={toMenuItems(API_FORMAT_OPTIONS)}
-					prop:text={labelOf(API_FORMAT_OPTIONS, local.provider.apiFormat)}
-					prop:readonly={true}
-					onchange={(e) => setLocal("provider", "apiFormat", e.detail as ModelProvider['apiFormat'])}
-				/>
-			</div>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>请求地址</div>
-				<ffbox-normal-input
-					class={styles['ffbox-input']}
-					prop:value={local.provider.baseUrl}
-					placeholder="https://api.openai.com/v1"
-					onchange={(e) => setLocal("provider", "baseUrl", e.detail)}
-				/>
-			</div>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>API Key</div>
-				<ffbox-normal-input
-					class={styles['ffbox-input']}
-					// type="password"
-					prop:value={local.provider.apiKey}
-					placeholder="sk-..."
-					onchange={(e) => setLocal("provider", "apiKey", e.detail)}
-				/>
-			</div>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']} style={{ display: "flex", justifyContent: "space-between" }}>
-					模型目录
-					<ffbox-button onclick={addModel}>+ 添加模型</ffbox-button>
+			<div class={styles['models-head']}>
+				<div>
+					<div class={styles['overline']}>Model Providers</div>
+					<div class={styles['models-title']}>
+						已配置的模型提供商
+						<span class={styles['count-pill']}>{state.providers.length} 个提供商 · {modelCount()} 个模型</span>
+					</div>
+					<div class={styles['models-desc']}>推理请求按「提供商 → 模型」两级配置发出；任意修改即刻写入配置，无需保存。</div>
 				</div>
+				<ffbox-button type="primary" onclick={startAdd}>＋ 添加提供商</ffbox-button>
+			</div>
 
-				<div class={styles['setting-group-desc']} style={{ marginBottom: "8px" }}>
-					每个模型可独立配置 ID、名称、角色和自定义参数。新添加的模型请填写 ID 和显示名称后保存。
-				</div>
-
-				<div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-					<For each={local.provider.models}>
-						{(model, idx) => {
-							const mIdx = idx();
-							const jsonKey = `__model_${mIdx}`;
-							const jsonErr = () => modelJsonErrors()[jsonKey] ?? "";
-							return (
-								<div style={{
-									padding: "12px",
-									backgroundColor: "hwb(var(--bg95) / 1)",
-									borderRadius: "8px",
-									border: "1px solid var(--borderLight)",
-								}}>
-									<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-										<div style={{ flex: 1, display: "flex", gap: "8px" }}>
-											<ffbox-normal-input
-												class={styles['ffbox-input']}
-												style={{ flex: 1 }}
-												prop:value={model.id}
-												placeholder="模型 ID（如 deepseek-v4-pro）"
-												onchange={(e) => setLocal("provider", "models", mIdx, "id", e.detail)}
-											/>
-											<ffbox-normal-input
-												class={styles['ffbox-input']}
-												style={{ flex: 1 }}
-												prop:value={model.displayName}
-												placeholder="显示名称"
-												onchange={(e) => setLocal("provider", "models", mIdx, "displayName", e.detail)}
-											/>
-										</div>
-										<ffbox-dropdown-input
-											class={styles['ffbox-dropdown-auto']}
-											prop:list={toMenuItems(MODEL_ROLE_OPTIONS)}
-											prop:text={labelOf(MODEL_ROLE_OPTIONS, model.role)}
-											prop:readonly={true}
-											onchange={(e) => setLocal("provider", "models", mIdx, "role", e.detail as ModelProviderModel['role'])}
-										/>
-										<ffbox-button
-											type="danger"
-											size="small"
-											title="删除此模型"
-											onclick={() => removeModel(mIdx)}
-										>
-											<XIcon />
-										</ffbox-button>
-									</div>
-									<div>
-										<div style={{ fontSize: "11px", color: "var(--fontColorMuted)", marginBottom: "4px" }}>
-											自定义参数（JSON，合并到该模型的每次请求）
-										</div>
-										<textarea
-											class={`${styles['json-textarea']}${jsonErr() ? ` ${styles.error}` : ""}`}
-											value={getModelJsonText(mIdx)}
-											oninput={(e) => {
-												setModelJsonTexts((prev) => ({ ...prev, [jsonKey]: e.currentTarget.value }));
-												setModelJsonErrors((prev) => ({ ...prev, [jsonKey]: "" }));
-											}}
-											onblur={() => validateModelJson(mIdx)}
-											placeholder='{"temperature": 0.7}'
-											rows={2}
-											style={{ fontSize: "12px" }}
-										/>
-										<Show when={jsonErr()}>
-											<div style={{ fontSize: "11px", color: "var(--error)", marginTop: "2px" }}>
-												⚠️ {jsonErr()}
+			<div class={styles['table-wrap']}>
+				<table class={styles['ptable']}>
+					<thead>
+						<tr>
+							<th class={styles['col-p']}>提供商</th>
+							<th class={styles['col-f']}>API 格式</th>
+							<th class={styles['col-u']}>请求地址</th>
+							<th class={styles['col-m']}>模型</th>
+							<th class={styles['col-a']}>操作</th>
+						</tr>
+					</thead>
+					<tbody>
+						<For each={state.providers}>
+							{(p) => (
+								<>
+									<tr class={styles['row-main']} classList={{ [styles['open']]: openId() === p.id }}>
+										<td>
+											<div class={styles['p-name']}>
+												<span class={styles['p-dot']} />
+												{p.name || '(未命名)'}
 											</div>
-										</Show>
-									</div>
-								</div>
-							);
-						}}
-					</For>
-				</div>
-			</div>
-
-			<div class={styles['setting-group']}>
-				<div class={styles['setting-group-label']}>提供商级自定义参数</div>
-				<div class={styles['setting-group-desc']}>
-					JSON 对象，会被合并到该提供商下所有模型的每次请求中（模型级参数优先）。
-				</div>
-				<textarea
-					class={`${styles['json-textarea']}${props.jsonError ? ` ${styles.error}` : ""}`}
-					value={providerJsonText()}
-					oninput={(e) => {
-						setProviderJsonText(e.currentTarget.value);
-						props.onJsonError("");
-					}}
-					onblur={validateProviderJson}
-					placeholder='{"temperature": 0.7}'
-				/>
-				<Show when={props.jsonError}>
-					<div style={{ fontSize: "12px", color: "var(--error)", marginTop: "4px" }}>
-						⚠️ {props.jsonError}
+											<div class={styles['p-meta']}>{p.models.length} 个模型</div>
+										</td>
+										<td>
+											<span class={styles['badge']} data-format={p.apiFormat}>{formatShort(p.apiFormat)}</span>
+										</td>
+										<td>
+											<span class={`${styles['p-url']} ${styles.mono}`} title={p.baseUrl}>{p.baseUrl}</span>
+										</td>
+										<td>
+											<ModelChips models={p.models} />
+										</td>
+										<td>
+											<div class={styles['row-actions']}>
+												<ffbox-button size="small" onclick={() => setOpenId(openId() === p.id ? null : p.id)}>
+													{openId() === p.id ? '收起' : '编辑'}
+												</ffbox-button>
+												<ffbox-button size="small" onclick={() => handleCopy(p)}>复制</ffbox-button>
+												<ffbox-button size="small" type="danger" onclick={() => void handleDelete(p)}>删除</ffbox-button>
+											</div>
+										</td>
+									</tr>
+									<Show when={openId() === p.id}>
+										<tr class={styles['row-edit']}>
+											<td colspan={5}>
+												<ProviderEditor
+													provider={p}
+													live={live}
+													onSaved={touch}
+													onCollapse={() => setOpenId(null)}
+												/>
+											</td>
+										</tr>
+									</Show>
+								</>
+							)}
+						</For>
+					</tbody>
+				</table>
+				<Show when={state.providers.length === 0}>
+					<div class={styles['models-empty']} style={{ padding: '24px', 'text-align': 'center' }}>
+						还没有配置任何模型提供商。点右上角「＋ 添加提供商」开始。
 					</div>
 				</Show>
 			</div>
 
-			<div style={{ display: "flex", gap: "10px", marginTop: "24px" }}>
-				<ffbox-button type="primary" onclick={doSave}>保存</ffbox-button>
-				<ffbox-button type="danger" onclick={props.onCancel}>取消</ffbox-button>
+			<div class={styles['models-foot']}>
+				<span class={styles['spark']}>◆</span>
+				更改即时生效 · 配置写入 <code class={styles.mono}>~/.mindthegap-harness/settings.json</code> · 「测试连通性」每个模型单独发一次最小请求
 			</div>
 		</div>
 	);
