@@ -1,0 +1,141 @@
+{
+	"id": "code-v35",
+	"name": "编码 v35",
+	"description": "code-v24 + 反思只提代码/行为层面的缺口，不许要求换命令重跑或补环境",
+	"rootAgent": "dev",
+	"maxDepth": "[maxDepth]",
+	"taskList": {
+		"enabled": false,
+		"writable": false
+	},
+	"mcpDisabled": false,
+	"limits": {
+		"totalRounds": "[totalRounds]",
+		"agentInstanceRounds": "[agentInstanceRounds]",
+		"warnAtRemaining": "[warnAtRemaining]"
+	},
+	"params": {
+		"intensity": "medium",
+		"maxDepth": 2,
+		"totalRounds": 240,
+		"agentInstanceRounds": 140,
+		"warnAtRemaining": 14,
+		"rDev": 1,
+		"rCheck": 0,
+		"isLow": false,
+		"isMedium": true,
+		"isHigh": false,
+		"isUltra": false,
+		"isFragile": false,
+		"softRounds": 85
+	},
+	"form": [
+		{
+			"key": "intensity",
+			"label": "强度",
+			"type": "select",
+			"description": "只影响预算、深度与尾部指令，不换人也不换系统提示词",
+			"options": [
+				{
+					"label": "低 · 一个人",
+					"value": "low",
+					"description": "单实例读完就改、改完验一次就交付。适合改文案、调常量、修一个明确报错",
+					"vars": {
+						"maxDepth": 1,
+						"totalRounds": 150,
+						"agentInstanceRounds": 100,
+						"warnAtRemaining": 12,
+						"rDev": 0,
+						"rCheck": 0,
+						"isLow": true,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": false,
+						"isFragile": false,
+						"softRounds": 60
+					}
+				},
+				{
+					"label": "中 · 自查",
+					"value": "medium",
+					"description": "自己做完整件事，收尾前对照需求逐条过一遍；可以让核对角色独立复验",
+					"vars": {
+						"maxDepth": 2,
+						"totalRounds": 240,
+						"agentInstanceRounds": 140,
+						"warnAtRemaining": 14,
+						"rDev": 1,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": true,
+						"isHigh": false,
+						"isUltra": false,
+						"isFragile": false,
+						"softRounds": 85
+					}
+				},
+				{
+					"label": "高 · 先谋后动",
+					"value": "high",
+					"description": "先摸清影响面再动手，改完由核对角色独立验证并审一遍改动面",
+					"vars": {
+						"maxDepth": 3,
+						"totalRounds": 360,
+						"agentInstanceRounds": 180,
+						"warnAtRemaining": 16,
+						"rDev": 1,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": true,
+						"isUltra": false,
+						"isFragile": false,
+						"softRounds": 105
+					}
+				},
+				{
+					"label": "极高 · 分阶段",
+					"value": "ultra",
+					"description": "分阶段推进、每阶段增量验证、最后逐条回读用户需求。适合大改、动公共接口",
+					"vars": {
+						"maxDepth": 4,
+						"totalRounds": 480,
+						"agentInstanceRounds": 220,
+						"warnAtRemaining": 18,
+						"rDev": 2,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": true,
+						"isFragile": false,
+						"softRounds": 130
+					}
+				},
+				{
+					"label": "弱模型 · 收紧",
+					"value": "fragile",
+					"description": "给不收敛、爱无效输出的模型（dots3 一类）：轮数压到 24，每轮只推一个逻辑点，反思开到 2 次。强模型别用这档",
+					"vars": {
+						"maxDepth": 1,
+						"totalRounds": 60,
+						"agentInstanceRounds": 24,
+						"warnAtRemaining": 5,
+						"rDev": 2,
+						"rCheck": 0,
+						"isLow": false,
+						"isMedium": false,
+						"isHigh": false,
+						"isUltra": false,
+						"isFragile": true,
+						"softRounds": 10
+					}
+				}
+			]
+		}
+	],
+	"ui": {
+		"icon": "🧩",
+		"accent": "blue"
+	}
+}

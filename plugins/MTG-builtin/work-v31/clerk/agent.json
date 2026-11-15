@@ -1,0 +1,24 @@
+{
+	"id": "clerk",
+	"name": "办公助理",
+	"promptFile": "prompt.md",
+	"statePromptFile": "prompt.state.md",
+	"reflectionCount": "[rClerk]",
+	"delegatable": [
+		"clerk",
+		"reader",
+		"check"
+	],
+	"ability": {
+		"tools": {
+			"allow": [
+				"file_read", "file_list", "file_search",
+				"file_write", "file_edit", "file_delete", "file_rename",
+				"shell", "web_fetch", "web_search",
+				"ask_user",
+				"delegate", "resume_pending_child", "resume_completed_child", "ask_child",
+				"finish"
+			]
+		}
+	}
+}

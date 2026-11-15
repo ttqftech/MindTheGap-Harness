@@ -20,7 +20,7 @@
 
 import { join } from 'node:path';
 import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, ConversationRunStatus, LlmMessage, LlmPurpose, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
-import { callLlm } from './llm/model';
+import { callLlm, LlmEmptyResponseError } from './llm/model';
 import { mcpManager } from './mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
 import { conversations, ensureConversationDir, settings } from './storage';
@@ -43,6 +43,22 @@ const TRANSIENT_LLM_ERROR = /(timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSE
 const LLM_TRANSIENT_RETRIES = 2;
 const LLM_TRANSIENT_BACKOFF_MS = [1500, 6000];
 
+/**
+ * 空壳响应的重试预算比其他瞬时错误宽。
+ *
+ * 判据要求「连 token 用量都没有」⇒ 这一发没计费，重发的代价只有等待；而其他瞬时错误多半是计费请求，多试就是多花钱。
+ * 反过来，放弃重试的代价是整轮 run 标 failed：实测一次 taskC medium 跑到 27 轮、已烧 697k tokens 时连续三次空壳直接夭折
+ * （同一会话 53 条请求里 13 条空壳 ≈ 24%，3 次尝试的致死率约 1.4%/轮，任务越长越必然）。所以空壳要比其他瞬时错误多给几次机会、
+ * 退避拉到十几秒 —— 上游是分钟级的抖动，等得久一点比丢掉整轮便宜。
+ *
+ * ⚠️ 2026-11-03 实测「6 次」仍然不够：`cv34b-r2` 在第 12 轮连着 **6 次全空、整串只跨 40 秒**（退避 1.5/3/6/10/15s 全走完）
+ * 就被判死刑，同一时间窗里 code-v34 的 82 条请求有 28 条空壳（34%）。⇒ 抖动是**成串的**，不是独立事件，
+ * 按次数算致死率会低估；改成**再加两次、单次退避封顶 20s**（总等待 ≈2 分钟），把「丢掉整轮连同已经改对的代码」
+ * 换成「多等一分半」——空壳不计费，这笔账始终划算。
+ */
+const LLM_EMPTY_RETRIES = 8;
+const LLM_EMPTY_BACKOFF_MS = [1500, 3000, 6000, 10000, 15000, 15000, 20000, 20000];
+
 const isTransientLlmError = (e: unknown) => {
 	const err = e as Error & { name?: string; status?: number };
 	if (!err) return false;
@@ -51,25 +67,46 @@ const isTransientLlmError = (e: unknown) => {
 	if (typeof err.status === 'number' && err.status >= 400 && err.status < 500 && err.status !== 429) return false;
 	// 我们自己的超时（`LlmTimeoutError`）明确按瞬时处理：判据用 `name` 不靠 message 里恰好有个英文 "timeout"
 	if (err.name === 'LlmTimeoutError') return true;
+	// 空响应同理：上游 200 + 空 body，重试一次基本就回来了
+	if (err.name === 'LlmEmptyResponseError') return true;
 	return TRANSIENT_LLM_ERROR.test(err.message || '');
 };
 
+/**
+ * 「这一轮什么都没回来」的判据：无正文、无思考、无工具调用，而且**用量也是 0**。
+ *
+ * 用量是这里的决定项：模型真选择沉默地收尾（正文空但有输出 token）是合法行为，走原来的结束路径；
+ * 只有连 token 都没有才说明是传输层给了个空壳。反思 / finish 解析 / 工具内请求一律不判——
+ * 反思的空输出本来就是「没有缺口」的哨兵。
+ */
+const isEmptyAgentTurn = (result: Awaited<ReturnType<typeof callLlm>>, meta: Parameters<typeof callLlm>[1]) =>
+	meta.purpose === 'agent_loop'
+	&& !result.text?.trim()
+	&& !result.reasoningContent?.trim()
+	&& result.toolCalls.length === 0
+	&& !result.usage?.input
+	&& !result.usage?.output
+	&& !result.usage?.total;
+
 const callLlmWithRetry: typeof callLlm = async (...args) => {
 	let lastErr: unknown;
-	for (let attempt = 0; attempt <= LLM_TRANSIENT_RETRIES; attempt++) {
+	for (let attempt = 0; ; attempt++) {
 		if (attempt > 0) {
-			const wait = LLM_TRANSIENT_BACKOFF_MS[attempt - 1] ?? 6000;
+			const empty = (lastErr as Error)?.name === 'LlmEmptyResponseError';
+			const wait = (empty ? LLM_EMPTY_BACKOFF_MS : LLM_TRANSIENT_BACKOFF_MS)[attempt - 1] ?? 15000;
 			logMsg.error(`[Runner] LLM 调用出错（${(lastErr as Error)?.message?.slice(0, 90)}），${wait}ms 后第 ${attempt} 次重试`);
 			await new Promise((r) => setTimeout(r, wait));
 		}
 		try {
-			return await callLlm(...args);
+			const result = await callLlm(...args);
+			if (isEmptyAgentTurn(result, args[1])) throw new LlmEmptyResponseError(result.logId);
+			return result;
 		} catch (e) {
 			lastErr = e;
 			if (!isTransientLlmError(e)) throw e;
+			if (attempt >= ((e as Error)?.name === 'LlmEmptyResponseError' ? LLM_EMPTY_RETRIES : LLM_TRANSIENT_RETRIES)) throw e;
 		}
 	}
-	throw lastErr;
 };
 
 /**
@@ -769,6 +806,15 @@ export class AgentRunner {
 				this.emitStream({ type: 'error', agentInstanceId, message: err.message });
 				this.emitStream({ type: 'agent_end', agentInstanceId, status: 'failed', summary: err.message });
 				this.handleChildTerminal(instance);
+				// ⭐ 根实例自己出错时，这个 run 就没人推进了：`handleChildTerminal` 只对有 parent 的子实例生效，
+				//    根实例没有 childLink ⇒ 直接 return，`donePromise` 永不 resolve，SSE 一直挂着。
+				//    实测上游空壳抖动打死根实例两次（第 2 轮 `cv24post-r1`、本轮 `cv34b-r2`），
+				//    客户端与串行基准都只能干等到 20 分钟墙钟才放弃 —— 白烧的是排队时间，不是 token。
+				if (instance.agentInstanceId === this.ctx.rootAgentInstanceId) {
+					this.emitStream({ type: 'done', summary: err.message });
+					this.persist();
+					this.finishDone();
+				}
 			}
 		} finally {
 			// 重入统一放这里：任何 return 路径（含结束路径的反思轮）都先释放 busy 再重入，

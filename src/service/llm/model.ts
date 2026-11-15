@@ -104,6 +104,24 @@ export class LlmTimeoutError extends Error {
 	}
 }
 
+/**
+ * 上游 HTTP 成功、流里却一个字节都没有（实测 packy 中转约 4 次里 1 次：`text/event-stream` + 空 body）。
+ *
+ * 解析层看不出这是故障，它拿到的是「空文本 + 零工具调用 + 零用量」；而 runner 的轮次结束条件正是
+ * 「这一轮没有工具调用」——于是整次 run 什么都没做，却被标成 succeeded，交付正文是 `(无输出)`。
+ * 这比直接报错更贵：用户和判分都以为它干完了。所以在这里把它当**瞬时错误**抛出去，交给重试。
+ *
+ * 只在 `purpose='agent_loop'` 上判：反思的「空输出」是合法哨兵（表示没有要补的缺口），不是故障。
+ */
+export class LlmEmptyResponseError extends Error {
+	logId: string;
+	constructor(logId: string) {
+		super('LLM 空响应：请求成功但没有返回任何文本、工具调用或 token 用量');
+		this.name = 'LlmEmptyResponseError';
+		this.logId = logId;
+	}
+}
+
 export interface LlmTimeouts {
 	idleMs: number;	// 两次数据之间允许的最长静默（起点是发出请求那一刻）
 	totalMs: number;	// 整次请求的总上限（兜底「每段都不超 idle，但总时长失控」）
