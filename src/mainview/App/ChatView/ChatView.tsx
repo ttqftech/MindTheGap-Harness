@@ -13,11 +13,12 @@
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
-import type { Folder, ModelConfig, ModeParamControl, ParamValue } from '@shared/agent';
+import type { Folder, LlmImageRef, ModelConfig, ModeParamControl, ParamValue } from '@shared/agent';
 import { findOption, resolveModeParams, sameParamValue } from '@shared/modeParams';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/logic/projection';
 import type { RenderAgentNode } from '@mainview/logic/projection';
+import { collectContextUsage } from '@mainview/logic/contextUsage';
 import * as agentBridge from '@mainview/bridges/agentBridge';
 import { requestFolderPath } from '@mainview/bridges/localBridge';
 import { startRun, stopRun } from '@mainview/logic/runController';
@@ -26,7 +27,7 @@ import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
 import { alertMsgbox, showMenu } from '@mainview/bridges/ffboxBridge';
 import DiagramView from './DiagramView/DiagramView';
 import MTGlogo from './MTG-logo-transparent.svg';
-import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow } from '@mainview/App/ChatView/RenderTree/shared';
+import { FolderChipIcon, ImageChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow, fmtTokens } from '@mainview/App/ChatView/RenderTree/shared';
 import RenderTreeView from './RenderTree/RenderTree';
 import { createOpenState } from './RenderTree/openState';
 import styles from './ChatView.module.css';
@@ -36,6 +37,16 @@ import styles from './ChatView.module.css';
 export default function ChatView() {
 
 	const [inputText, setInputText] = createSignal('');
+	/**
+	 * 本轮待发送的图片（存 **File 本身 + 本地预览 URL**）。
+	 * 发送时先把字节 POST 到会话附件目录（连的可能是另一台机器上的 Service），
+	 * 再把后端返回的 `LlmImageRef` 交给 run —— 不把本地路径当附件用。
+	 */
+	const [pendingImages, setPendingImages] = createSignal<{ file: File; name: string; previewUrl: string }[]>([]);
+	/** 正在上传图片（这期间禁用发送，避免只发出半套附件） */
+	const [uploading, setUploading] = createSignal(false);
+	/** 隐藏的文件选择框：走浏览器原生 `accept` 过滤，不依赖主进程对话框 */
+	let imageInputRef: HTMLInputElement | undefined;
 	/**
 	 * 「当前查看的会话是不是正在跑」—— 直接从后端下发的三态 runStatus 派生，不再有本地镜像。
 	 *
@@ -64,7 +75,8 @@ export default function ChatView() {
 	 */
 	const ENABLE_RENDER_TREE_DIFF = true;
 	let prevTree: RenderAgentNode | null = null;
-	const renderTree = createMemo(() => {
+	/** 已提交 ctx + 在飞 overlay（渲染树与上下文用量共用这一份合并结果） */
+	const mergedCtx = createMemo(() => {
 		const conversation = getActiveConversation();
 		// 在飞内容的「版本号」：overlay 是 store，但这里只取到 proxy 引用、访问不到具体属性，
 		// 建立不了依赖 ⇒ 得靠这个按会话隔离的计数器把重算推起来（见 store 的 streamTickState）。
@@ -73,22 +85,70 @@ export default function ChatView() {
 		// 只取当前查看的会话那份 —— 其它会话的在飞内容不会串进来，
 		// 也不会被「给别的会话开一轮 run」清空。
 		const overlayForActive = getOverlay(appState.activeConversationId ?? '');
-		const newTree = foldCtxToRenderTree(mergeOverlayCtx(conversation?.agentCtx, overlayForActive));
+		return mergeOverlayCtx(conversation?.agentCtx, overlayForActive);
+	});
+	const renderTree = createMemo(() => {
+		const newTree = foldCtxToRenderTree(mergedCtx());
 		const result = ENABLE_RENDER_TREE_DIFF ? diffRenderTree(prevTree, newTree) : newTree;
 		prevTree = result;
 		return result;
 	});
 
+	/**
+	 * 模型 id → 上下文窗口（input）。
+	 * 优先用该实例**最近一次请求的模型**（历史会话可能已经换过模型）；找不到再退回当前选中的模型。
+	 */
+	const contextLimitOfModel = (modelId: string | undefined): number | undefined => {
+		const lookup = (id: string | undefined) => {
+			if (!id) return undefined;
+			for (const provider of appState.providers) {
+				const model = provider.models.find((m) => m.id === id);
+				if (model?.contextWindow?.input) return model.contextWindow.input;
+			}
+			return undefined;
+		};
+		const fromLastUsage = lookup(modelId);
+		if (fromLastUsage) return fromLastUsage;
+		const current = appState.currentStandardModel;
+		return lookup(current?.modelId);
+	};
+
+	/**
+	 * 根 Agent + 各子 Agent 的上下文用量。
+	 *
+	 * 优先取**该实例最近一次请求的 prompt_tokens**（`UsageEntry.input`，两种协议都已是总输入）；
+	 * 从没跑过请求的实例才退回字符估算（见 `logic/contextUsage.ts`，界面用 ≈ 区分）。
+	 */
+	const contextUsage = createMemo(() =>
+		collectContextUsage(mergedCtx(), (modelId) => contextLimitOfModel(modelId)),
+	);
+	/** 发送按钮左侧那颗小 chip 只显示根 Agent 的占比，明细放在悬停面板里 */
+	const rootContextUsage = createMemo(() => contextUsage()[0]);
+
 	// #region 显示文本
 
-	const currentModelDisplay = () => {
+	/** 当前选中的 provider + model（找不到 = null） */
+	const currentModelEntry = () => {
 		const ref = appState.currentStandardModel;
-		if (!ref) return '未选择模型';
+		if (!ref) return null;
 		const provider = getProviderById(ref.providerId);
 		const model = provider?.models.find((m) => m.id === ref.modelId);
-		if (!provider || !model) return '未选择模型';
-		return `${provider.name} / ${model.displayName}`;
+		return provider && model ? { provider, model } : null;
 	};
+
+	const currentModelDisplay = () => {
+		const entry = currentModelEntry();
+		if (!entry) return '未选择模型';
+		const level = thinkingLevelOf(entry.provider.id, entry.model.id);
+		return `${entry.provider.name} / ${entry.model.displayName}${level ? ` · ${level}` : ''}`;
+	};
+
+	/** 当前模型能不能收图（设置页 model.supportsVision）；没选模型一律当不支持 */
+	const currentModelSupportsVision = () => !!currentModelEntry()?.model.supportsVision;
+
+	/** 百分比文案：没有上下文窗口配置就显示 — */
+	const percentText = (percent: number | undefined): string =>
+		percent === undefined ? '—' : `${percent >= 100 ? Math.round(percent) : percent.toFixed(1)}%`;
 
 	/**
 	 * 当前的工作目录（= 会话所属的文件夹），**空白会话也有**。
@@ -255,29 +315,67 @@ export default function ChatView() {
 		if (conv) void agentBridge.updateConversation(conv.id, { modeId: value });
 	};
 
+	/** 当前模型配置的思考强度档位（缺省 = 默认 / 不传参数） */
+	const thinkingLevelOf = (providerId: string, modelId: string): string =>
+		appState.ui.thinkingLevels[`${providerId}/${modelId}`] ?? '';
+
 	const modelMenu = createMemo<MenuItem[]>(() => {
 		const current = appState.currentStandardModel;
 		if (appState.providers.length === 0) {
 			return [{ type: 'normal', value: '__none__', label: '还没有配置模型，去设置里添加吧', disabled: true }];
 		}
+		// 三级结构：提供商 → 模型 → 思考强度。没有配强度档位的模型直接是第二级叶子。
 		return appState.providers.map((provider) => ({
 			type: 'submenu' as const,
 			label: provider.name,
-			subMenu: provider.models.map((model) => ({
-				type: 'radio' as const,
-				value: `${provider.id}/${model.id}`,
-				label: model.displayName,
-				tooltip: model.id,
-				checked: current?.providerId === provider.id && current?.modelId === model.id,
-			})),
+			subMenu: provider.models.map((model) => {
+				const key = `${provider.id}/${model.id}`;
+				const isCurrent = current?.providerId === provider.id && current?.modelId === model.id;
+				const values = model.thinking?.param ? (model.thinking.values ?? []) : [];
+				if (!values.length) {
+					return {
+						type: 'radio' as const,
+						value: key,
+						label: model.displayName,
+						tooltip: model.id,
+						checked: isCurrent,
+					};
+				}
+				const level = thinkingLevelOf(provider.id, model.id);
+				return {
+					type: 'submenu' as const,
+					label: `${model.displayName}${level ? ` · ${level}` : ''}`,
+					subMenu: [
+						{
+							type: 'radio' as const,
+							value: `${key}|`,
+							label: '默认（不传强度）',
+							checked: isCurrent && !level,
+						},
+						...values.map((v) => ({
+							type: 'radio' as const,
+							value: `${key}|${v}`,
+							label: v,
+							checked: isCurrent && level === v,
+						})),
+					],
+				};
+			}),
 		}));
 	});
 	const applyModel = (value: string) => {
 		if (isGenerating()) return;	// 运行期间禁止改运行语义（同「回复过程中不能点发送」）
 		if (typeof value !== 'string') return;
-		const sep = value.indexOf('/');
+		// 第三级菜单的 value 形如 `provider/model|档位`；没有 `|` = 该模型没有强度档位
+		const bar = value.indexOf('|');
+		const level = bar >= 0 ? value.slice(bar + 1) : undefined;
+		const refPart = bar >= 0 ? value.slice(0, bar) : value;
+		const sep = refPart.indexOf('/');
 		if (sep <= 0) return;
-		actions.setCurrentStandardModel({ providerId: value.slice(0, sep), modelId: value.slice(sep + 1) });
+		const providerId = refPart.slice(0, sep);
+		const modelId = refPart.slice(sep + 1);
+		actions.setCurrentStandardModel({ providerId, modelId });
+		if (level !== undefined) actions.setThinkingLevel(providerId, modelId, level || null);
 	};
 
 	// #endregion
@@ -436,18 +534,85 @@ export default function ChatView() {
 
 	// #region 发送 / 停止 / 回答提问
 
+	/**
+	 * 把图片文件收进待发送区（选图 / 粘贴共用）。
+	 * 预览用本地 object URL；真正发出去前才上传，不在选择时上传。
+	 */
+	const addImageFiles = (files: File[]) => {
+		const accepted = files.filter((f) => /^image\/(png|jpeg|webp|gif)$/.test(f.type));
+		if (!accepted.length) return;
+		setPendingImages((prev) => [
+			...prev,
+			...accepted.map((file) => ({
+				file,
+				name: file.name || `image-${Date.now()}`,
+				previewUrl: URL.createObjectURL(file),
+			})),
+		]);
+	};
+
+	/** 点「图片」按钮：走隐藏的 `<input type=file accept=image/*>`（WebView2 / 远程浏览器都可用） */
+	const pickImages = () => {
+		if (isGenerating()) return;
+		if (!currentModelSupportsVision()) {
+			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
+			return;
+		}
+		imageInputRef?.click();
+	};
+
+	const onImageInputChange = (e: Event) => {
+		const input = e.currentTarget as HTMLInputElement;
+		addImageFiles([...(input.files ?? [])]);
+		input.value = '';	// 清空才能再次选同一张
+	};
+
+	/** Ctrl+V 粘贴截图：与选图走同一条待发送队列（纯文本粘贴仍交给 textarea 默认行为） */
+	const handlePaste = (e: ClipboardEvent) => {
+		const files = [...(e.clipboardData?.items ?? [])]
+			.filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+			.map((item) => item.getAsFile())
+			.filter((f): f is File => !!f);
+		if (!files.length || isGenerating()) return;
+		e.preventDefault();
+		if (!currentModelSupportsVision()) {
+			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
+			return;
+		}
+		addImageFiles(files);
+	};
+
+	const removePendingImage = (index: number) => {
+		setPendingImages((prev) => {
+			const removed = prev[index];
+			if (removed) URL.revokeObjectURL(removed.previewUrl);
+			return prev.filter((_, i) => i !== index);
+		});
+	};
+
+	/** 清空待发送图片并回收本地预览 URL */
+	const clearPendingImages = () => {
+		setPendingImages((prev) => {
+			for (const img of prev) URL.revokeObjectURL(img.previewUrl);
+			return [];
+		});
+	};
+
+	onCleanup(() => {
+		for (const img of pendingImages()) URL.revokeObjectURL(img.previewUrl);
+	});
+
 	const handleSend = async () => {
 		const text = inputText().trim();
-		if (!text || isGenerating()) return;
+		const images = pendingImages();
+		if ((!text && !images.length) || isGenerating() || uploading()) return;
 
 		/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
 		function buildModelConfig(): ModelConfig | null {
-			const ref = appState.currentStandardModel;
-			if (!ref) return null;
-			const provider = appState.providers.find((p) => p.id === ref.providerId);
-			if (!provider) return null;
-			const model = provider.models.find((m) => m.id === ref.modelId);
-			if (!model) return null;
+			const entry = currentModelEntry();
+			if (!entry) return null;
+			const { provider, model } = entry;
+			const level = thinkingLevelOf(provider.id, model.id);
 			return {
 				providerId: provider.id,
 				modelId: model.id,
@@ -455,6 +620,9 @@ export default function ChatView() {
 				baseUrl: provider.baseUrl,
 				apiKey: provider.apiKey,
 				customParams: { ...provider.customParams, ...model.customParams },
+				supportsVision: !!model.supportsVision,
+				// 只有用户显式选过档位才写参数；「默认」= 不传
+				thinking: level && model.thinking?.param ? { param: model.thinking.param, value: level } : undefined,
 			};
 		}
 
@@ -462,6 +630,10 @@ export default function ChatView() {
 		const modelConfig = buildModelConfig() ?? (appState.mock.enabled ? MOCK_PLACEHOLDER_MODEL : null);
 		if (!modelConfig) {
 			void alertMsgbox('未配置模型', '请先在「设置 → 模型」里配置模型提供商与模型，然后再发起任务。');
+			return;
+		}
+		if (images.length && !modelConfig.supportsVision) {
+			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
 			return;
 		}
 		if (appState.modes.length === 0) {
@@ -479,11 +651,11 @@ export default function ChatView() {
 				const folder = appState.folders.find((f) => sameFolderPath(f.id, draft.id)) ?? actions.addFolder(draft.id);
 				folderId = folder?.id ?? draft.id;
 			}
-			conv = await actions.createConversation(folderId, text.slice(0, 20) || '新会话');
+			conv = await actions.createConversation(folderId, text.slice(0, 20) || (images.length ? '图片任务' : '新会话'));
 			if (!conv) return;
 		} else if (!conv.agentCtx) {
 			// 会话还没有跑过 → 用首句当标题（旧逻辑用 messages 为空判断，现在等价于「没有 ctx」）
-			await actions.renameConversation(conv.id, text.slice(0, 30));
+			await actions.renameConversation(conv.id, text.slice(0, 30) || (images.length ? '图片任务' : '新会话'));
 		}
 		const convId = conv.id;
 
@@ -491,7 +663,29 @@ export default function ChatView() {
 		// 由后端回退到 process.cwd()。文件夹改过之后，下一轮 run 自动用新目录。
 		const runningDir = appState.folders.find((f) => f.id === conv.folderId)?.path;
 
+		/**
+		 * 先把图片**上传**进会话附件目录，再带着 `LlmImageRef` 发起 run。
+		 * ⚠️ 不能传本地路径：前端连的可能是另一台机器上的 Service（保留远程连接能力）。
+		 */
+		const imageRefs: LlmImageRef[] = [];
+		if (images.length) {
+			setUploading(true);
+			try {
+				for (const img of images) {
+					const result = await agentBridge.uploadAttachment(convId, img.file);
+					if (!result.ok || !result.image) {
+						void alertMsgbox('图片上传失败', `${img.name}：${result.error ?? '未知错误'}`);
+						return;	// 输入文本与待发送图片都保留，让用户重试
+					}
+					imageRefs.push(result.image);
+				}
+			} finally {
+				setUploading(false);
+			}
+		}
+
 		setInputText('');
+		clearPendingImages();
 		// 用户自己发的消息必须让他看见：哪怕刚才滚上去读历史，也重新贴住底部（之后靠跟随保持）
 		bottomFollow?.jump();
 		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
@@ -504,6 +698,7 @@ export default function ChatView() {
 			modeId: appState.currentModeId,
 			runningDir,
 			model: modelConfig,
+			images: imageRefs,
 			params: runParams(),
 		});
 	};
@@ -655,14 +850,55 @@ export default function ChatView() {
 				<div class={styles['input-wrapper']}>
 					<textarea
 						class={styles['input-textarea']}
-						placeholder="描述任务，或输入 / 唤起指令；shift + enter 换行"
+						placeholder="描述任务，或输入 / 唤起指令；shift + enter 换行；Ctrl+V 可粘贴截图"
 						value={inputText()}
 						oninput={(e) => setInputText(e.currentTarget.value)}
 						onkeydown={handleKeyDown}
+						onpaste={handlePaste}
 						rows={1}
 					/>
 
+					{/* 隐藏的文件选择框：`accept` 在系统文件对话框里就过滤成图片，不会退化成「选文件夹」 */}
+					<input
+						ref={imageInputRef}
+						type="file"
+						accept="image/png,image/jpeg,image/webp,image/gif"
+						multiple
+						style={{ display: 'none' }}
+						onchange={onImageInputChange}
+					/>
+
+					{/* 待发送的图片：本地 object URL 直接出缩略图；发送时才上传 */}
+					<Show when={pendingImages().length > 0}>
+						<div class={styles['input-attachments']}>
+							<For each={pendingImages()}>{(img, index) => (
+								<span class={styles['attachment-chip']} title={img.name}>
+									<img class={styles['attachment-thumb']} src={img.previewUrl} alt={img.name} />
+									<span class={styles['attachment-name']}>{img.name}</span>
+									<button
+										class={styles['attachment-remove']}
+										title="移除这张图片"
+										onclick={() => removePendingImage(index())}
+									>
+										×
+									</button>
+								</span>
+							)}</For>
+						</div>
+					</Show>
+
 					<div class={styles['input-toolbar']}>
+						{/* 图片附件：模型不支持视觉时禁用，点按给出明确提示 */}
+						<button
+							class={styles['ctx-chip']}
+							title={currentModelSupportsVision() ? '添加图片（发送时随请求一起交给模型）' : '当前模型未开启「支持图片输入」，去「设置 → 模型」里打开'}
+							disabled={isGenerating() || uploading()}
+							onclick={pickImages}
+						>
+							<ImageChipIcon />
+							<span class={styles['ctx-chip-text']}>图片</span>
+						</button>
+
 						{/* 运行文件夹 */}
 						<button
 							class={styles['ctx-chip']}
@@ -723,12 +959,45 @@ export default function ChatView() {
 
 						<span class={styles['input-toolbar-spacer']} />
 
+						{/* 上下文用量：发送按钮左边。chip 显示根 Agent 的「长度 · 占比」，悬停弹出根 + 各子 Agent 明细 */}
+						<Show when={contextUsage().length > 0}>
+							<div class={styles['ctx-usage']}>
+								<div class={styles['ctx-usage-pop']}>
+									<div class={styles['ctx-usage-title']}>上下文用量（取自最近一次请求的 prompt_tokens）</div>
+									<For each={contextUsage()}>{(row) => (
+										<div
+											class={styles['ctx-usage-row']}
+											style={{ 'padding-left': `${Math.min(row.depth, 4) * 12}px` }}
+										>
+											<span class={styles['ctx-usage-name']} title={row.agentName}>
+												{row.depth === 0 ? '根 Agent' : row.agentName}
+											</span>
+											<span class={styles['ctx-usage-count']}>
+												{row.estimated ? '≈' : ''}{fmtTokens(row.tokens)}{row.limit ? ` / ${fmtTokens(row.limit)}` : ''}
+											</span>
+											<span
+												class={styles['ctx-usage-percent']}
+												classList={{ [styles['is-warn']]: !!row.percent && row.percent >= 90 }}
+											>
+												{percentText(row.percent)}
+											</span>
+										</div>
+									)}</For>
+								</div>
+								<button class={styles['ctx-usage-chip']} title="根 Agent 的上下文占用；悬停可看每个子 Agent">
+									<span class={styles['ctx-chip-text']}>
+										ctx {rootContextUsage()!.estimated ? '≈' : ''}{fmtTokens(rootContextUsage()!.tokens)} · {percentText(rootContextUsage()!.percent)}
+									</span>
+								</button>
+							</div>
+						</Show>
+
 						<Show when={!isGenerating()}>
 							<button
 								class={styles['input-send-btn']}
 								title="发送"
 								onclick={() => void handleSend()}
-								disabled={!inputText().trim()}
+								disabled={uploading() || (!inputText().trim() && !pendingImages().length)}
 							>
 								<SendIcon />
 							</button>

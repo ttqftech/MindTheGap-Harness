@@ -8,6 +8,7 @@
  * modes / agent/answer / plugins/reload / requests / tasklist
  */
 
+import { createReadStream, existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, ModelConfig, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
@@ -21,6 +22,7 @@ import { clearRequests, readRequest, readRequests, setRequestLogOptions } from '
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
 import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers, flushAll } from './storage';
+import { guessMimeByFileName, attachmentPath, MAX_IMAGE_BYTES, saveImageBuffer } from './attachments';
 import { logMsg } from '../shared/utils';
 
 // 端口可用 MTG_HTTP_PORT 覆盖：调试时想起第二个实例（不杀正在跑的那个）就走它。
@@ -79,6 +81,28 @@ function readBody(req: IncomingMessage): Promise<string> {
 		let data = '';
 		req.on('data', (chunk) => (data += chunk));
 		req.on('end', () => resolve(data));
+		req.on('error', reject);
+	});
+}
+
+/**
+ * 读二进制请求体（图片上传）。
+ * 超过 `maxBytes` 直接返回 null —— 边读边判，避免先把整段字节留在内存里再检查。
+ */
+function readBinaryBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | null> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let total = 0;
+		req.on('data', (chunk: Buffer) => {
+			total += chunk.length;
+			if (total > maxBytes) {
+				resolve(null);
+				req.destroy();
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on('end', () => resolve(Buffer.concat(chunks)));
 		req.on('error', reject);
 	});
 }
@@ -169,7 +193,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 	activeRunners.set(conversationId, runner);
 
 	runner
-		.run(params.userMessage)
+		.run(params.userMessage, params.images)
 		.then(() => runner.waitDone())
 		.then(() => {
 			if (activeRunners.get(conversationId) === runner) activeRunners.delete(conversationId);
@@ -268,8 +292,10 @@ export function startHttpServer(options: { channel?: string } = {}) {
 			//    位置很关键 —— 必须排在 /api/health（主进程探活）、/api/shutdown（仅 loopback）、
 			//    /api/auth/*（登录 / 登出本身）之后，否则「登不进去」和「停不下来」。
 			// ⚠️ SSE 例外：EventSource 不能自定义请求头，前端把 sessionId 放 query 里（与 FFBox 的 WS 同一做法）。
-			//    只对 `/api/agent/stream` 认 query，别的接口一律只认 Authorization 头。
-			const querySession = path === '/api/agent/stream' ? url.searchParams.get('sessionId') : null;
+			//    `<img>` 同理不能带 Authorization 头，所以附件读取也认 query；别的接口一律只认 Authorization 头。
+			const isStreamPath = path === '/api/agent/stream';
+			const isAttachmentPath = /^\/api\/conversations\/[^/]+\/attachments\//.test(path);
+			const querySession = isStreamPath || isAttachmentPath ? url.searchParams.get('sessionId') : null;
 			const authInfo: AuthInfo | null = auth.resolveAuth(
 				req.headers['authorization'] ?? (querySession ? `Bearer ${querySession}` : undefined),
 			);
@@ -415,6 +441,47 @@ export function startHttpServer(options: { channel?: string } = {}) {
 						sendJson(res, 200, {
 							taskList: getConversationCtxById(conversationId)?.taskList ?? '',
 						});
+						return;
+					}
+				}
+
+				// 上传附件（图片）：前端把字节直接 POST 上来。Content-Type 即图片 mime，文件名走 query（避免请求头编码问题）。
+				if (rest === 'attachments' && req.method === 'POST') {
+					if (!conversations[conversationId]) {
+						sendJson(res, 404, { ok: false, error: '会话不存在' });
+						return;
+					}
+					const name = url.searchParams.get('name') ?? '';
+					const mime = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+					const data = await readBinaryBody(req, MAX_IMAGE_BYTES);
+					if (!data) {
+						sendJson(res, 413, { ok: false, error: `图片超过 ${MAX_IMAGE_BYTES / 1000 / 1000} MB 上限` });
+						return;
+					}
+					const image = saveImageBuffer(conversationId, name, mime, data);
+					if (!image) {
+						sendJson(res, 400, { ok: false, error: '不支持的图片类型（仅 png / jpeg / webp / gif）或内容为空' });
+						return;
+					}
+					sendJson(res, 200, { ok: true, image });
+					return;
+				}
+
+				// 会话附件（图片）：`<img src>` 直接读，鉴权走 query sessionId（见上面的闸门例外）
+				if (rest.startsWith('attachments/')) {
+					if (req.method === 'GET') {
+						const file = decodeURIComponent(rest.slice('attachments/'.length));
+						const filePath = attachmentPath(conversationId, file);
+						if (!existsSync(filePath)) {
+							sendJson(res, 404, { ok: false, error: '附件不存在' });
+							return;
+						}
+						// 文件名带随机串、内容不会变，可以放心长缓存
+						res.writeHead(200, {
+							'Content-Type': guessMimeByFileName(file),
+							'Cache-Control': 'private, max-age=31536000, immutable',
+						});
+						createReadStream(filePath).pipe(res);
 						return;
 					}
 				}

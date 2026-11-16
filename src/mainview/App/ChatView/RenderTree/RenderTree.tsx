@@ -5,6 +5,7 @@ import { runOfTurn } from '@mainview/logic/projection';
 import type { UsageEntry } from '@shared/agent';
 import { answerAskUser } from '@mainview/logic/runController';
 import { showMenu } from '@mainview/bridges/ffboxBridge';
+import { getAttachmentUrl } from '@mainview/bridges/agentBridge';
 import AskUserCard from '@mainview/App/ChatView/AskUserCard/AskUserCard';
 import MarkdownText from './MarkdownText';
 import { copyText, showRequestDetailMsgbox } from './requestDetail';
@@ -46,7 +47,10 @@ function runSummaryTooltip(run: RunUsage): string {
  * 本组件负责「聊天消息列表」这种投影。
  */
 export default function RenderTreeView(props: { tree: RenderAgentNode; openState: OpenState; convId: string }) {
-	const { openState, convId } = props;
+	// ⚠️ `convId` 不能解构：本组件跨会话常驻（`<For>` 要持久化做 reconciliation），
+	//    解构会把首次挂载时的会话 id 永久钉死，切回会话后图片 URL 指向旧会话 → 404（图片空白）。
+	//    读取一律走 `props.convId`，让 img src 跟着当前会话走。
+	const { openState } = props;
 
 	/**
 	 * 「原始输出」开关：按 text 子块的 key 记。
@@ -164,7 +168,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 			label: '查看这条 LLM 请求的详细信息…',
 			disabled: !logId,
 			onClick: () => {
-				if (logId) showRequestDetailMsgbox(convId, logId, usage?.seq);
+				if (logId) showRequestDetailMsgbox(props.convId, logId, usage?.seq);
 			},
 		});
 
@@ -224,7 +228,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 			label: safetyLogId ? '查看这次命令的安全审核…' : '（这次调用没有安全审查记录）',
 			disabled: !safetyLogId,
 			onClick: () => {
-				if (safetyLogId) showRequestDetailMsgbox(convId, safetyLogId);
+				if (safetyLogId) showRequestDetailMsgbox(props.convId, safetyLogId);
 			},
 		});
 		showMenu({
@@ -450,7 +454,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 						{(ask) => (
 							<AskUserCard
 								block={ask()}
-								onSubmit={(text) => void answerAskUser(convId, tool().callId, text)}
+								onSubmit={(text) => void answerAskUser(props.convId, tool().callId, text)}
 							/>
 						)}
 					</Show>
@@ -528,7 +532,27 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 							<span class={styles['message-head-spacer']} />
 							<span class={styles['message-head-time']}>{fmtClock(user().updatedAt)}</span>
 						</div>
-						<div class={styles['user-bubble']}>{user().content}</div>
+						<div class={styles['user-bubble']}>
+							<Show when={user().content?.trim()}>
+								<div>{user().content}</div>
+							</Show>
+							<Show when={user().images?.length}>
+								<div class={styles['user-images']}>
+									<For each={user().images}>{(img) => (
+										<a
+											class={styles['user-image']}
+											href={getAttachmentUrl(props.convId, img.file)}
+											target="_blank"
+											rel="noreferrer"
+											title={`${img.name} · ${img.mime}`}
+										>
+											<img src={getAttachmentUrl(props.convId, img.file)} alt={img.name} loading="lazy" />
+											<span class={styles['user-image-name']}>{img.name}</span>
+										</a>
+									)}</For>
+								</div>
+							</Show>
+						</div>
 					</div>
 				)}
 			</Match>

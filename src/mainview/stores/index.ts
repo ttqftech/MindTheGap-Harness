@@ -112,6 +112,12 @@ export type UIState = {
 	 *   自己不去记住「用户上次选了什么强度」。换模式再换回来时靠这份表恢复。
 	 */
 	modeParams: Record<string, Record<string, ParamValue>>;
+	/**
+	 * 每个模型的思考强度偏好：key = `providerId/modelId`，value = 设置页 `thinking.values` 里的某一档。
+	 *
+	 * ⚠️ 缺省 / 空串 = 「默认（不传参数）」；只有用户显式选了档位才会真的写进请求体。
+	 */
+	thinkingLevels: Record<string, string>;
 };
 
 export type AppState = {
@@ -164,6 +170,7 @@ const initialUI: UIState = {
 	viewMode: 'chat',
 	unreadConversationIds: [],
 	modeParams: {},
+	thinkingLevels: {},
 };
 
 export const defaultState: AppState = {
@@ -354,6 +361,7 @@ function saveLocalSettings() {
 		viewMode: state.ui.viewMode,
 		unreadConversationIds: state.ui.unreadConversationIds,
 		modeParams: state.ui.modeParams,
+		thinkingLevels: state.ui.thinkingLevels,
 	});
 	localSettings.set('themeMode', state.themeMode);
 	localSettings.set('currentModeId', state.currentModeId);
@@ -907,6 +915,18 @@ export const actions = {
 				if (k !== key && controlKeys.has(k)) next[k] = v;
 			}
 			all[modeId] = next;
+		}));
+		saveLocalSettings();
+	},
+	/**
+	 * 设置某模型的思考强度档位（模型下拉框第三级菜单）。
+	 * 传 null / 空串 = 回到「默认（不传参数）」。
+	 */
+	setThinkingLevel(providerId: string, modelId: string, level: string | null) {
+		const key = `${providerId}/${modelId}`;
+		setState('ui', 'thinkingLevels', produce((all) => {
+			if (level) all[key] = level;
+			else delete all[key];
 		}));
 		saveLocalSettings();
 	},

@@ -6,7 +6,7 @@
  * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
  */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelConfig, ModelProvider, ModelTestResult, ModeSummary, Folder, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, UserConfig } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelConfig, ModelProvider, ModelTestResult, ModeSummary, Folder, LlmImageRef, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, UserConfig } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import { sha256Hex } from '@shared/sha256';
 
@@ -44,6 +44,42 @@ function baseUrlOf(host: string, port: number): string {
 /** 展示用的 `host:port` */
 export function endpointText(e: ServiceEndpoint = endpoint): string {
 	return `${e.host}:${e.port}`;
+}
+
+/**
+ * 会话附件的展示 URL（直接塞给 `<img src>`）。
+ *
+ * ⚠️ `<img>` 不能自定义 Authorization 头，所以 sessionId 放 query；
+ *    后端只对 `/api/agent/stream` 与 `/api/conversations/:id/attachments/*` 放行 query 凭据。
+ */
+export function getAttachmentUrl(conversationId: string, file: string): string {
+	const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+	return `${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(file)}${query}`;
+}
+
+/**
+ * 上传一张图片到会话附件目录（字节走 HTTP，**不依赖前端能访问服务器文件系统**）。
+ * 文件名放 query、mime 放 Content-Type；返回后端落盘后的 `LlmImageRef`。
+ */
+export async function uploadAttachment(conversationId: string, file: File): Promise<{ ok: boolean; image?: LlmImageRef; error?: string }> {
+	const query = new URLSearchParams({ name: file.name });
+	try {
+		const resp = await fetch(
+			`${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/attachments?${query.toString()}`,
+			{
+				method: 'POST',
+				headers: authHeaders({ 'Content-Type': file.type || 'application/octet-stream' }),
+				body: file,
+			},
+		);
+		const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; image?: LlmImageRef; error?: string };
+		if (!resp.ok || !data.ok || !data.image) {
+			return { ok: false, error: data.error ?? `HTTP ${resp.status}` };
+		}
+		return { ok: true, image: data.image };
+	} catch (e) {
+		return { ok: false, error: (e as Error)?.message ?? String(e) };
+	}
 }
 
 // #endregion

@@ -10,7 +10,7 @@
  * 设计稿：docs/设计-ctx唯一真相与动态投影.md §4
  */
 
-import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, ReflectionInfo, ToolResultInfo, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, LlmImageRef, ReflectionInfo, ToolResultInfo, UsageEntry } from '@shared/agent';
 
 // #region 渲染树类型
 
@@ -133,6 +133,7 @@ export type RenderSubBlock = RenderReasoningSub | RenderTextSub | RenderToolSub 
 export interface RenderUserBlock extends BlockBase {
 	type: 'user';
 	content: string;
+	images?: LlmImageRef[];
 }
 
 /**
@@ -180,6 +181,13 @@ function addUsage(bucket: UsageBucket, u: UsageEntry): void {
 
 function sameBucket(a: UsageBucket, b: UsageBucket): boolean {
 	return a.calls === b.calls && a.input === b.input && a.output === b.output && a.cached === b.cached;
+}
+
+/** 图片引用按落盘文件名比较；引用本身不可变，不需要逐字段深比 */
+function sameImages(a?: LlmImageRef[], b?: LlmImageRef[]): boolean {
+	if (!a?.length && !b?.length) return true;
+	if (!a || !b || a.length !== b.length) return false;
+	return a.every((img, i) => img.file === b[i].file);
 }
 
 /** `run` 每次投影都是新对象，所以 diff 必须**按值**比较，否则每帧都判定「变了」→ 整块重建 DOM */
@@ -396,7 +404,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		// ⑤ 用户发言（根实例 = 用户每轮的原话；子实例的任务在节点头部显示）
 		if (entry.role === 'user') {
 			turn += 1;	// 用户消息 = 新一轮的开始
-			blocks.push({ type: 'user', key: entry.id, updatedAt: entry.updatedAt, turn, content: entry.content });
+			blocks.push({ type: 'user', key: entry.id, updatedAt: entry.updatedAt, turn, content: entry.content, images: entry.images });
 			continue;
 		}
 
@@ -561,7 +569,7 @@ function diffBlock(old: RenderBlock, nu: RenderBlock): RenderBlock {
 	switch (nu.type) {
 		case 'user': {
 			const o = old as RenderUserBlock;
-			if (o.content === nu.content && o.updatedAt === nu.updatedAt) return old;
+			if (o.content === nu.content && o.updatedAt === nu.updatedAt && sameImages(o.images, nu.images)) return old;
 			return nu;
 		}
 		case 'llm': {

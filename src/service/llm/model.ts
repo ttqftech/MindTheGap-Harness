@@ -11,7 +11,7 @@
    从 agent 目录迁入本目录（本次重构唯一的目录结构变化）。
    ========================================================================== */
 
-import type { LlmMessage, LlmTool, LlmToolCall, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
+import type { LlmImageRef, LlmMessage, LlmTool, LlmToolCall, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
 import { logMsg, safeParseJson } from '../../shared/utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 
@@ -141,6 +141,63 @@ export function resolveLlmTimeouts(): LlmTimeouts {
 		idleMs: num('MTG_LLM_TIMEOUT_MS', 180_000),
 		totalMs: num('MTG_LLM_TIMEOUT_TOTAL_MS', 900_000),
 	};
+}
+
+// #endregion
+
+// #region 思考强度 / 图片 wire 转换
+
+/**
+ * 思考强度参数按**点路径**写进请求体。
+ * 设置页允许写 `reasoning_effort`，也允许写 `reasoning.effort` 这种嵌套字段
+ * （例：OpenAI `reasoning.effort`、Anthropic `thinking.budget_tokens`）。
+ */
+function setParamByPath(target: Record<string, unknown>, path: string, value: unknown): void {
+	const keys = path.split('.').filter(Boolean);
+	if (!keys.length) return;
+	let cursor = target;
+	for (const key of keys.slice(0, -1)) {
+		const next = cursor[key];
+		if (!next || typeof next !== 'object') cursor[key] = {};
+		cursor = cursor[key] as Record<string, unknown>;
+	}
+	cursor[keys[keys.length - 1]] = value;
+}
+
+/** 设置页里用户填的是字符串；能当数字 / 布尔 / null 解析的就按对应类型发出去 */
+function coerceParamValue(raw: string): unknown {
+	const text = raw.trim();
+	if (text === 'true') return true;
+	if (text === 'false') return false;
+	if (text === 'null') return null;
+	if (text !== '' && Number.isFinite(Number(text))) return Number(text);
+	return raw;
+}
+
+/** 用户在三级菜单里选的强度档位 → 请求体。没选（或「默认」）就一个字段都不加 */
+function applyThinkingParams(body: Record<string, unknown>, config: ModelConfig): void {
+	const thinking = config?.thinking;
+	if (!thinking?.param || !thinking.value) return;
+	setParamByPath(body, thinking.param, coerceParamValue(thinking.value));
+}
+
+/** 真正能发给模型的图片：模型支持视觉 + runner 已经读出 base64 */
+function visionImages(msg: LlmMessage, config: ModelConfig): LlmImageRef[] {
+	if (!config?.supportsVision) return [];
+	return (msg.images ?? []).filter((img) => !!img.base64);
+}
+
+/** OpenAI 系的图片是 data URL 内联，**不需要 CDN / 公网 URL** */
+function toImageDataUrl(img: LlmImageRef): string {
+	return `data:${img.mime};base64,${img.base64}`;
+}
+
+/** 日志 / dump 里剥掉 base64：一张图就是几 MB，留着会把 requestLog 撑爆 */
+function messagesWithoutImageBase64(list: LlmMessage[]): LlmMessage[] {
+	return list.map((msg) => {
+		if (!msg.images?.length) return msg;
+		return { ...msg, images: msg.images.map(({ base64: _base64, ...rest }) => rest) };
+	});
 }
 
 // #endregion
@@ -284,6 +341,16 @@ async function streamOpenAiChat(
 				}
 				return out;
 			}
+			// 用户消息带图 → content 变 parts 数组；纯文本仍保持字符串（兼容老网关）
+			const images = visionImages(msg, config);
+			if (msg.role === 'user' && images.length) {
+				const parts: Array<Record<string, unknown>> = [];
+				if (msg.content) parts.push({ type: 'text', text: msg.content });
+				for (const img of images) {
+					parts.push({ type: 'image_url', image_url: { url: toImageDataUrl(img) } });
+				}
+				return { role: 'user', content: parts };
+			}
 			return { role: msg.role, content: msg.content };
 		});
 	}
@@ -303,6 +370,7 @@ async function streamOpenAiChat(
 	if (tools.length > 0) body.tools = tools;
 	if (responseFormat) body.response_format = responseFormat;
 	if (config.customParams) Object.assign(body, config.customParams);
+	applyThinkingParams(body, config);	// 下拉框选的强度档位，覆盖 customParams 里的静态默认
 
 	const resp = await fetch(url, {
 		method: 'POST',
@@ -453,6 +521,18 @@ async function streamOpenAiResponses(
 			inputMsgs.push({ role: 'function_call_output', call_id: m.toolCallId, output: m.content });
 			continue;
 		}
+		// 用户消息带图 → Responses 的 input_image 同样吃 data URL
+		const images = visionImages(m, config);
+		if (m.role === 'user' && images.length) {
+			inputMsgs.push({
+				role: 'user',
+				content: [
+					...(m.content ? [{ type: 'input_text', text: m.content }] : []),
+					...images.map((img) => ({ type: 'input_image', image_url: toImageDataUrl(img) })),
+				],
+			});
+			continue;
+		}
 		inputMsgs.push({ role: m.role, content: m.content });
 	}
 
@@ -464,6 +544,7 @@ async function streamOpenAiResponses(
 	if (leadSystem) body.instructions = leadSystem.content;
 	if (tools.length > 0) body.tools = tools.map((t) => ({ type: t.type, ...t.function }));
 	if (config.customParams) Object.assign(body, config.customParams);
+	applyThinkingParams(body, config);
 
 	const resp = await fetch(url, {
 		method: 'POST',
@@ -568,6 +649,21 @@ async function streamAnthropic(
 			});
 			continue;
 		}
+		// 用户消息带图 → Anthropic 的 base64 image block（media_type 必须写对）
+		const images = visionImages(m, config);
+		if (m.role === 'user' && images.length) {
+			convMsgs.push({
+				role: 'user',
+				content: [
+					...(m.content ? [{ type: 'text', text: m.content }] : []),
+					...images.map((img) => ({
+						type: 'image',
+						source: { type: 'base64', media_type: img.mime, data: img.base64 },
+					})),
+				],
+			});
+			continue;
+		}
 		convMsgs.push({ role: m.role, content: m.content });
 	}
 
@@ -587,6 +683,7 @@ async function streamAnthropic(
 		body.tool_choice = { type: 'auto' };
 	}
 	if (config.customParams) Object.assign(body, config.customParams);
+	applyThinkingParams(body, config);
 
 	const resp = await fetch(url, {
 		method: 'POST',
@@ -915,6 +1012,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		if (signal) signal.removeEventListener('abort', onExternalAbort);
 		const endedAt = Date.now();
 		const logOptions = getRequestLogOptions();
+		const loggedMessages = messagesWithoutImageBase64(messages);	// 日志只保留图片名（不含 base64），避免 requestLog 被几张图撑成几十 MB
 		const record: LlmRequestRecord = {
 			seq,
 			logId,
@@ -942,11 +1040,11 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 				// 尾部 system 消息（effort / state）：每轮可能不同，是**预期**的，不计入前缀稳定性
 				tailSystemChars: tailSystemText.length,
 				tailSystemHash: tailSystemText ? hashString(tailSystemText) : undefined,
-				totalChars: JSON.stringify(messages).length + JSON.stringify(tools).length,
+				totalChars: JSON.stringify(loggedMessages).length + JSON.stringify(tools).length,
 				stream: true,
 				// 等级 ≥「仅输入」时把 messages 原文一起存下（界面上「导出详细信息」靠它）；
 				// 默认等级只留形状，日志体积与本项目历史上的 requestLog 一致。
-				messages: logOptions.level === 'default' ? undefined : messages,
+				messages: logOptions.level === 'default' ? undefined : loggedMessages,
 			},
 			// 只有「完整」才落输出：等级「仅输入」的语义就是「只看模型看到了什么」
 			response: logOptions.level === 'full'
@@ -962,7 +1060,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 			endedAt,
 		};
 		appendRequestRecord(record);
-		dumpPayload(meta.conversationId, logId, { request: { config, messages, tools }, record });
+		dumpPayload(meta.conversationId, logId, { request: { config, messages: loggedMessages, tools }, record });
 	}
 }
 
@@ -1008,6 +1106,7 @@ export async function testModelConnectivity(config: ModelConfig): Promise<ModelT
 		: { model: config.modelId, messages: ping, max_tokens: 1 };
 	// 自定义参数照常合并（有些中转要求必填的额外字段），但 stream 由测试强制关掉
 	if (config.customParams) Object.assign(body, config.customParams);
+	applyThinkingParams(body, config);
 	body.model = config.modelId;
 	body.stream = false;
 

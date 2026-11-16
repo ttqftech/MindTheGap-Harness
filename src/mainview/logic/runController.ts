@@ -31,7 +31,7 @@ import {
 	markConversationUnread,
 } from '@mainview/stores';
 import type { OverlayCtx } from '@mainview/logic/projection';
-import type { AgentInstanceMessage, AgentStreamEvent, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
+import type { AgentInstanceMessage, AgentStreamEvent, LlmImageRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
 
 // #region 订阅集合
 
@@ -182,6 +182,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			const existing = messages.find((m) => m.id === event.messageId);
 			if (existing) {
 				existing.content = content;
+				existing.images = event.images;
 				existing.updatedAt = event.timestamp;
 			} else {
 				// 发送时已经本地乐观种过一条（`seedUserMessage`），它还没有后端 id ——
@@ -190,9 +191,10 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				if (seeded) {
 					seeded.id = event.messageId;
 					seeded.content = content;
+					seeded.images = event.images;
 					seeded.updatedAt = event.timestamp;
 				} else {
-					messages.push({ id: event.messageId, role: 'user', content, updatedAt: event.timestamp });
+					messages.push({ id: event.messageId, role: 'user', content, images: event.images, updatedAt: event.timestamp });
 				}
 			}
 			break;
@@ -439,6 +441,7 @@ export interface StartRunParams {
 	modeId: string;
 	runningDir?: string;
 	model: ModelConfig;
+	images?: LlmImageRef[];
 	/** Composer 下方动态表单的选择（覆盖 mode.json 的 params 默认值），见 shared/modeParams.ts */
 	params?: Record<string, ParamValue>;
 }
@@ -461,6 +464,7 @@ export async function startRun(params: StartRunParams): Promise<void> {
 			modeId: params.modeId,
 			runningDir: params.runningDir,
 			model: params.model,
+			images: params.images,
 			params: params.params,
 		});
 		if (!result.ok) {

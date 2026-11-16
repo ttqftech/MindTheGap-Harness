@@ -242,13 +242,26 @@ export interface LlmToolCall {
 	function: { name: string; arguments: string };
 }
 
+/**
+ * - OpenAI Chat：`image_url.url` 可以是 `data:image/png;base64,...`
+ * - OpenAI Responses：`input_image.image_url` 同上
+ * - Anthropic：`{ type:'image', source:{ type:'base64', media_type, data } }`
+ */
+export interface LlmImageRef {
+	name: string;	// 原始文件名（聊天框里用它指代这张图）
+	mime: string;	// image/png、image/jpeg、image/webp、image/gif
+	file: string;	// conversations/<id>/attachments/ 内的文件名，真正发给模型时由 runner 读成 `base64` 再交给 llm 层
+	size?: number;	// 原始字节数
+	base64?: string;
+}
+
 export interface LlmMessage {
 	role: LlmRole;
 	content: string;
 	toolCalls?: LlmToolCall[];
 	toolCallId?: string;
-	/** 思考模型的推理内容，多轮工具调用时必须回传 */
-	reasoningContent?: string;
+	reasoningContent?: string;	// 思考模型的推理内容，多轮工具调用时必须回传
+	images?: LlmImageRef[];	// 用户消息附带的图片（仅 `supportsVision` 的模型会真正发出去）
 }
 
 export interface LlmTool {
@@ -499,7 +512,7 @@ export type AgentStreamEvent = StreamEventBase & (
 	| { type: 'reasoning'; agentInstanceId: string; messageId: string; chunk: string }
 	| { type: 'tool_start'; agentInstanceId: string; messageId: string; callId: string; toolName: string; args: unknown; reason: string }
 	| { type: 'tool_end'; agentInstanceId: string; messageId: string; callId: string; toolName: string; result: ToolResult }
-	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string }
+	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; images?: LlmImageRef[] }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
 	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
 	| { type: 'reflection_start'; agentInstanceId: string; messageId: string; remaining: number }
@@ -541,6 +554,12 @@ export interface ModelConfig {
 	baseUrl: string;
 	apiKey: string;
 	customParams?: Record<string, unknown>;
+	supportsVision?: boolean;
+	/**
+	 * 本次请求要写的思考强度：`param` 是模型设置里的参数名（支持 `a.b` 嵌套路径），
+	 * `value` 是用户在下拉框三级菜单里选的档位。不选 = undefined（不传，走模型默认）。
+	 */
+	thinking?: { param: string; value: string };
 }
 
 // #endregion
@@ -554,6 +573,12 @@ export interface AgentRunRequest {
 	modeId: string;
 	runningDir?: string;
 	model: ModelConfig;
+	/**
+	 * 用户本轮附带的图片（**已经是上传到服务器的附件引用**，不是本地路径）。
+	 * 前端先 `POST /api/conversations/:id/attachments` 把字节传进会话附件目录，
+	 * 这里只带 `{ name, mime, file, size }`；ctx 里只存引用，请求时才读成 base64。
+	 */
+	images?: LlmImageRef[];
 	/**
 	 * Composer 下方动态表单的选择（`{ [controlKey]: 选项 value }`）。
 	 * 后端用它覆盖 `mode.json` 的 `params` 默认值；不传 = 全用默认。
