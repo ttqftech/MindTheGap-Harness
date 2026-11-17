@@ -4,7 +4,7 @@
 	"description": "裸模型：无系统提示词、无内置工具",
 	"rootAgent": "plain",
 	"maxDepth": 0,
-	"taskList": { "enabled": false, "writable": false },
+	"todoList": { "enabled": false, "writable": false },
 	"mcpDisabled": true,
 	"ui": { "icon": "⬜", "accent": "gray" }
 }

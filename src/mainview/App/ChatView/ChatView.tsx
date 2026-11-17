@@ -116,8 +116,8 @@ export default function ChatView() {
 	/**
 	 * 根 Agent + 各子 Agent 的上下文用量。
 	 *
-	 * 优先取**该实例最近一次请求的 prompt_tokens**（`UsageEntry.input`，两种协议都已是总输入）；
-	 * 从没跑过请求的实例才退回字符估算（见 `logic/contextUsage.ts`，界面用 ≈ 区分）。
+	 * 优先取该实例**最近一次请求的 prompt_tokens + completion_tokens**（`UsageEntry.input` / `output`），
+	 * 再加上那次调用之后新追加的消息；从没跑过请求的实例才退回字符估算（见 `logic/contextUsage.ts`，界面用 ≈ 区分）。
 	 */
 	const contextUsage = createMemo(() =>
 		collectContextUsage(mergedCtx(), (modelId) => contextLimitOfModel(modelId)),
@@ -963,7 +963,7 @@ export default function ChatView() {
 						<Show when={contextUsage().length > 0}>
 							<div class={styles['ctx-usage']}>
 								<div class={styles['ctx-usage-pop']}>
-									<div class={styles['ctx-usage-title']}>上下文用量（取自最近一次请求的 prompt_tokens）</div>
+									<div class={styles['ctx-usage-title']}>上下文用量（上次请求的输入 + 输出 + 之后新增消息）</div>
 									<For each={contextUsage()}>{(row) => (
 										<div
 											class={styles['ctx-usage-row']}

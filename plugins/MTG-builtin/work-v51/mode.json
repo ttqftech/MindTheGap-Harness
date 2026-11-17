@@ -4,7 +4,7 @@
 	"description": "通用多 Agent 编排框架：识别任务结构、分解子问题、调度合适的 Agent（code / research / 用户插件）、整合结果",
 	"rootAgent": "orchestrator",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

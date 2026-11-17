@@ -250,7 +250,7 @@ function interpolateTree(node: unknown, vars: Record<string, ParamValue>): unkno
 /**
  * 把变量灌进模式定义，得到**本次 run 生效的**一份副本（入参不动 —— `getMode()` 是全局共享对象）。
  *
- * 之后 `reflectionCount` / `ability.tools.allow` / `limits` / `maxDepth` / `taskList` 读的都是插值后的值。
+ * 之后 `reflectionCount` / `ability.tools.allow` / `limits` / `maxDepth` / `todoList` 读的都是插值后的值。
  */
 export function applyModeVars<T extends ModeDefinition>(mode: T, vars: Record<string, ParamValue>): T {
 	let cloned: T;

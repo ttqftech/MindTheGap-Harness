@@ -1122,7 +1122,7 @@ function ModeJsonEditor(props: { modeId: string }) {
 				该模式的全部配置就是这一个文件（<code>{jsonPath() || '…'}</code>），保存即写回插件目录并重新加载插件。
 				<br />
 				字段：<code>rootAgent</code>（根 Agent）· <code>maxDepth</code>（最大委托深度）·
-				<code>taskList</code>（任务清单开关 / 是否可写）· <code>mcp</code>（<code>none</code> /{' '}
+				<code>todoList</code>（待办清单开关 / 是否可写）· <code>mcp</code>（<code>none</code> /{' '}
 				<code>all</code> / 服务器 id 数组）·
 				<code>limits.totalRounds</code> / <code>limits.agentInstanceRounds</code> /{' '}
 				<code>limits.warnAtRemaining</code>（循环预算，缺省 1000 / 200 / 0；根实例与子 Agent 同一个上限）· <code>ui</code>（图标 / 配色）。
@@ -1362,7 +1362,7 @@ function PluginModeTab() {
 /* ---------- 提示词 Tab ----------
    基座提示词是后端设置的一部分（settings.basePrompt），所有模式共享。
    它由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌；被内嵌时按当前作用域再渲染一遍，
-   所以这里可以写 {{platform}} / {{time}} / {{taskList}} 等任意作用域变量。
+   所以这里可以写 {{platform}} / {{time}} / {{todoList}} 等任意作用域变量。
    没有默认值：留空就是空串（合法状态），代码不会拿任何内置文案去补。
    -------------------------------------------------------------------------- */
 

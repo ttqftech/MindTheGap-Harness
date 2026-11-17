@@ -66,7 +66,7 @@
           hasTools / hasTool.finish · hasTool.delegate · hasTool.ask_user …
     委托  delegatableAgents —— 数组，每项有 id / name
           canDelegate / depthExhausted
-    清单  taskList（清单原文）/ hasTaskList / taskListEnabled
+    清单  todoList（清单原文）/ hasTodoList / todoListEnabled
     子实例 children / hasChildren —— 数组，每项：agentInstanceId / agentId / agentName /
            depth / status / statusLabel / taskLine / interruptReason
            unfinished / hasUnfinished —— 同上，且只含「还没跑完」的

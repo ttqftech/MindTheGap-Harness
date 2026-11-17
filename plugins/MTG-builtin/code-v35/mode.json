@@ -4,7 +4,7 @@
 	"description": "code-v24 + 反思只提代码/行为层面的缺口，不许要求换命令重跑或补环境",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

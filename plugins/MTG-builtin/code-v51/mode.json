@@ -4,7 +4,7 @@
 	"description": "第四轮基线：v40 功能不变，仅重命名版本号",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

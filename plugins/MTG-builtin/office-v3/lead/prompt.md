@@ -49,8 +49,8 @@
 - 材料本身的问题：缺项、重复、金额异常、口径对不上
 - 没做 / 做不了的，需要用户拍板的
 
-{{#if hasTaskList}}
-材料多、步骤多时用 `task_list_write` 记进度，收尾前把做完的标 `done`。
+{{#if hasTodoList}}
+材料多、步骤多时用 `todo_list_write` 记进度，收尾前把做完的标 `done`。
 {{/if}}
 
 <safety_policy>

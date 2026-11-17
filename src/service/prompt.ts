@@ -20,7 +20,7 @@
    ========================================================================== */
 
 import { join } from 'node:path';
-import type { AgentDefinition, AgentInstance, ModeDefinition, ToolSafety } from '@shared/agent';
+import type { AgentDefinition, AgentInstance, BackgroundTask, ModeDefinition, ToolSafety } from '@shared/agent';
 import { isReadonlySafety } from './safety';
 
 // #region 模板引擎
@@ -269,7 +269,9 @@ export interface PromptContext {
 	budget?: { totalLeft: number; agentInstanceLeft: number; warn: boolean; exhausted: boolean; total?: number; spent?: number };
 	/** 委托是否已达最大深度 */
 	depthExhausted?: boolean;
-	taskList?: string;
+	todoList?: string;
+	/** 后台任务（含已结束的；进程本体在 Service 内存里，这里只用于提示词展示） */
+	backgroundTasks?: BackgroundTask[];
 	/** MCP 外部工具说明（按策略过滤后的） */
 	mcpSection?: string;
 }
@@ -289,14 +291,26 @@ const TOOL_USAGE: Record<string, string> = {
 	shell: '执行 shell 命令（Windows 下为 cmd.exe；git / 构建 / 跑脚本等）',
 	web_search: '多引擎网络搜索：合并各引擎候选 → 独立模型按相关性打分 → 直接返回最相关页面的正文',
 	web_fetch: '抓取一个 URL 的正文（先 HTTP 直取，页面是 JS 空壳时自动改用无头浏览器渲染）',
-	task_list_read: '读取当前任务清单',
-	task_list_write: '增删改任务清单',
+	todo_list_read: '读取当前待办清单',
+	todo_list_write: '增删改待办清单',
+	background_start: '在后台启动一条常驻 shell 命令（dev server / watch / 长跑服务），立刻返回任务 id',
+	background_output: '读取某个后台任务的终端输出（默认只给增量，full=true 给全文）',
+	background_wait: '等一个后台任务结束并取走它的输出（相当于把它当普通 shell 用）',
+	background_stop: '停止一个后台任务（连子进程一起收掉）',
 	delegate: '把子任务委托给其他 Agent（可一次委托多条，并行执行）',
 	finish: '提交本次工作的总结，结束你这一轮',
 	resume_pending_child: '恢复一个被中断 / 挂起的子 Agent',
 	resume_completed_child: '重新唤醒一个已完成的子 Agent，让它接着做',
 	ask_child: '向某个子 Agent 提问（只读它已有的记录，不改变它的状态）',
 	ask_user: '向用户提问并等待回答（会暂停你的进程，用户回答后继续）',
+};
+
+/** 后台任务状态的人话标签（模板里 `{{statusLabel}}` 用） */
+const BACKGROUND_STATUS_LABEL: Record<BackgroundTask['status'], string> = {
+	running: '运行中',
+	completed: '已正常退出',
+	failed: '已异常退出',
+	stopped: '已被停止',
 };
 
 function platformLabel(): string {
@@ -366,13 +380,13 @@ function childEntry(agentInstance: AgentInstance): Record<string, unknown> {
  * | `parentPrompt` `hasParentPrompt` | 父 Agent 下发的任务 |
  * | `tools` `hasTools` `hasTool` | 工具清单（`hasTool.finish` / `hasTool.delegate` …） |
  * | `delegatableAgents` `canDelegate` `depthExhausted` | 委托能力 |
- * | `taskList` `hasTaskList` `taskListEnabled` | 任务清单 |
+ * | `todoList` `hasTodoList` `todoListEnabled` | 待办清单 |
  * | `children` `hasChildren` | 子实例名册 |
  * | `unfinished` `hasUnfinished` | 尚未完成的子实例（含 `interruptReason`） |
  * | `hasBudget` `budgetTotalLeft` `budgetAgentInstanceLeft` `budgetWarn` `budgetExhausted` | 循环预算（**硬限制**，正常流程用不到） |
  * | `rounds` `softRounds` `softCheckpoint` | 本实例已跑轮数与**软收尾点**（到了就提醒收尾，不强制） |
  * | `mcpSection` `hasMcp` | MCP 外部工具说明 |
- * | `backgroundTasks` `hasBackgroundTasks` | 后台任务（占位，恒空 / 恒 false） |
+ * | `backgroundTasks` `hasBackgroundTasks` `runningBackgroundTasks` `endedBackgroundTasks` | 后台任务（含已结束的；结束通知在 Runner 里拼尾部 system 消息） |
  * | `params` `mode.<var>` `<var>` | 模式参数（mode.json 的 `params` 被 Composer 表单覆盖后的结果，三种写法等价；平铺时内置变量优先） |
  *
  * `children` / `unfinished` 的每一项：`agentInstanceId` `agentId` `agentName` `depth`
@@ -387,7 +401,19 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 	const children = (ctx.childAgentInstances ?? []).map(childEntry);
 	const unfinished = (ctx.unfinishedAgentInstances ?? []).map(childEntry);
 	const budget = ctx.budget;
-	const taskList = (ctx.taskList ?? '').trim();
+	const todoList = (ctx.todoList ?? '').trim();
+	const backgroundTasks = (ctx.backgroundTasks ?? []).map((t) => ({
+		id: t.id,
+		command: t.command,
+		description: t.description,
+		status: t.status,
+		statusLabel: BACKGROUND_STATUS_LABEL[t.status],
+		startedAt: t.startedAt,
+		endedAt: t.endedAt ?? 0,
+		exitCode: t.exitCode ?? null,
+	}));
+	const runningBackgroundTasks = backgroundTasks.filter((t) => t.status === 'running');
+	const endedBackgroundTasks = backgroundTasks.filter((t) => t.status !== 'running');
 	const mcpSection = (ctx.mcpSection ?? '').trim();
 	const isSubAgent = !!agentInstance.parentAgentInstanceId;
 	// ⭐ 软收尾点：hard 预算（totalRounds / agentInstanceRounds）是**防死循环的硬限制**，取值远高于真实任务的
@@ -454,10 +480,10 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		canDelegate: delegatableAgents.length > 0,
 		depthExhausted: !!ctx.depthExhausted,
 
-		// 任务清单
-		taskList,
-		hasTaskList: !!taskList,
-		taskListEnabled: !!ctx.mode.taskList?.enabled,
+		// 待办清单
+		todoList,
+		hasTodoList: !!todoList,
+		todoListEnabled: !!ctx.mode.todoList?.enabled,
 
 		// 子实例
 		children,
@@ -485,9 +511,13 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 		mcpSection,
 		hasMcp: !!mcpSection,
 
-		// 后台任务（本版不实现，保留变量位置）
-		backgroundTasks: [],
-		hasBackgroundTasks: false,
+		// 后台任务（结束通知由 Runner 直接拼尾部 system 消息，模板只用得到「当前状态」）
+		backgroundTasks,
+		hasBackgroundTasks: backgroundTasks.length > 0,
+		runningBackgroundTasks,
+		hasRunningBackgroundTasks: runningBackgroundTasks.length > 0,
+		endedBackgroundTasks,
+		hasEndedBackgroundTasks: endedBackgroundTasks.length > 0,
 	};
 
 	// ⭐ 模式参数（mode.json 的 params + Composer 下方表单的选择）。三种写法都认：
@@ -501,7 +531,7 @@ export function buildPromptScope(ctx: PromptContext): Record<string, unknown> {
 	}
 
 	// stateChanged：把当前 scope 快照与上轮逐键比对，供 prompt.state.md 用 `{{#if stateChanged.xxx}}` 消费。
-	// **边沿语义**：只在值跟上轮不同时为真 —— 模板里判断「当前是什么状态」要用 `budgetWarn` / `hasTaskList`
+	// **边沿语义**：只在值跟上轮不同时为真 —— 模板里判断「当前是什么状态」要用 `budgetWarn` / `hasTodoList`
 	// 这类电平变量，别用 stateChanged。这里不提供 any：各块自己判断要不要出现，全都不出现时
 	// renderStatePrompt 渲染出空串，调用方自然就不拼这条消息。
 	const currentSnap: Record<string, string> = {};

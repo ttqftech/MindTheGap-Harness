@@ -4,7 +4,7 @@
 	"description": "code-v38（尾部 <stop_rules> + 反思 gap 约束）+ code-v39 的 <delivery_checklist> 交付前清点 —— 验「最便宜的 v38 再补上唯一掉的那一项（不经主入口的多入口要求）」能不能同时要",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

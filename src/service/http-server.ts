@@ -5,7 +5,7 @@
  * Service 可脱离 electrobun 独立运行。
  *
  * v2 的接口见 docs/Agent架构-v2设计.md §12：
- * modes / agent/answer / plugins/reload / requests / tasklist
+ * modes / agent/answer / plugins/reload / requests / todolist
  */
 
 import { createReadStream, existsSync } from 'node:fs';
@@ -21,6 +21,7 @@ import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequest, readRequests, setRequestLogOptions } from './llm/requestLog';
 import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } from './plugins/loader';
 import { mcpManager } from './mcp/manager';
+import * as background from './background';
 import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers, flushAll } from './storage';
 import { guessMimeByFileName, attachmentPath, MAX_IMAGE_BYTES, saveImageBuffer } from './attachments';
 import { logMsg } from '../shared/utils';
@@ -429,18 +430,61 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 			// #region 会话内的子资源
 
-			// /api/conversations/:id/{tasklist|requests}
+			// /api/conversations/:id/{todolist|tasks|requests}
 
 			const convSub = /^\/api\/conversations\/([^/]+)\/(.+)$/.exec(path);
 			if (convSub) {
 				const conversationId = decodeURIComponent(convSub[1]);
 				const rest = convSub[2];
 
-				if (rest === 'tasklist') {
+				// 待办清单
+				if (rest === 'todolist') {
 					if (req.method === 'GET') {
+						sendJson(res, 200, { todoList: getConversationCtxById(conversationId)?.todoList ?? '' });
+						return;
+					}
+				}
+
+				// 后台任务：列表 / 输出 / 停止
+				if (rest === 'tasks' && req.method === 'GET') {
+					sendJson(res, 200, { tasks: background.listTasks(conversationId) });
+					return;
+				}
+				if (rest.startsWith('tasks/')) {
+					const [taskId, action] = rest.slice('tasks/'.length).split('/');
+					const id = decodeURIComponent(taskId ?? '');
+					if (!action && req.method === 'GET') {
+						const task = background.getTask(conversationId, id);
+						if (!task) {
+							sendJson(res, 404, { ok: false, error: '后台任务不存在' });
+							return;
+						}
+						sendJson(res, 200, { ok: true, task });
+						return;
+					}
+					if (action === 'output' && req.method === 'GET') {
+						const full = url.searchParams.get('full') === '1' || url.searchParams.get('full') === 'true';
+						const result = background.readTask(conversationId, id, { full });
+						if (!result.ok) {
+							sendJson(res, 404, { ok: false, error: result.error });
+							return;
+						}
 						sendJson(res, 200, {
-							taskList: getConversationCtxById(conversationId)?.taskList ?? '',
+							ok: true,
+							output: result.content,
+							status: result.status,
+							exitCode: result.exitCode ?? null,
+							truncated: result.truncated,
 						});
+						return;
+					}
+					if (action === 'stop' && req.method === 'POST') {
+						const result = background.stopTask(conversationId, id);
+						if (!result.ok) {
+							sendJson(res, 404, { ok: false, error: result.error });
+							return;
+						}
+						sendJson(res, 200, { ok: true, task: result.task });
 						return;
 					}
 				}
@@ -560,6 +604,8 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				const id = decodeURIComponent(path.slice('/api/conversations/'.length));
 				activeRunners.get(id)?.cancel();
 				activeRunners.delete(id);
+				// 会话没了，它的后台进程也不能留
+				background.forgetConversation(id);
 				delete conversations[id];
 				sendJson(res, 200, { ok: true });
 				return;
@@ -925,6 +971,12 @@ export function gracefulShutdown(reason: string) {
 		mcpManager.stopAll();
 	} catch (e) {
 		logMsg.error(`[HttpServer] 停止 MCP 托管进程失败: ${(e as Error).message}`);
+	}
+	// ⑤ 后台任务同样是子进程：留着就变孤儿（dev server 还会占着端口）
+	try {
+		background.stopAll();
+	} catch (e) {
+		logMsg.error(`[HttpServer] 停止后台任务失败: ${(e as Error).message}`);
 	}
 	// 给 close 回调（日志）一点时间，之后无论如何强制退
 	setTimeout(() => process.exit(0), 150).unref();

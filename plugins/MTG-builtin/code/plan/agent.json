@@ -9,8 +9,8 @@
 		"tools": {
 			"allow": [
 				"file_read", "file_list", "file_search", "file_write",
-				"web_search", "web_fetch", "shell",
-				"task_list_read", "task_list_write",
+				"web_search", "web_fetch", "shell", "background_start", "background_output", "background_wait", "background_stop",
+				"todo_list_read", "todo_list_write",
 				"ask_user", "delegate", "finish"
 			]
 		}

@@ -27,7 +27,7 @@ import {
 	overlayActions,
 	runErrorActions,
 	streamTickActions,
-	taskListActions,
+	todoListActions,
 	markConversationUnread,
 } from '@mainview/stores';
 import type { OverlayCtx } from '@mainview/logic/projection';
@@ -315,14 +315,14 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 // #region 事件分发
 
 /** 刷新任务清单面板（按会话隔离：跑完的会话不会把清单写进当前视图） */
-const refreshTaskList = async (conversationId: string) => {
-	const list = await agentBridge.getTaskList(conversationId);
-	taskListActions.set(conversationId, list);
+const refreshTodoList = async (conversationId: string) => {
+	const list = await agentBridge.getTodoList(conversationId);
+	todoListActions.set(conversationId, list);
 };
 
 const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 	if (event.type === 'done') {
-		void refreshTaskList(conversationId);
+		void refreshTodoList(conversationId);
 		void endRun(conversationId);
 		return;
 	}

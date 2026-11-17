@@ -745,7 +745,7 @@ export function mergeOverlayCtx(ctx: AgentCtx | null | undefined, overlay: Overl
 		rootAgentInstanceId: overlay.rootAgentInstanceId ?? '',
 		agentInstances: {},
 		events: [],
-		taskList: '',
+		todoList: '',
 		budget: { total: 0, spent: 0 },
 		createdAt: 0,
 		updatedAt: 0,

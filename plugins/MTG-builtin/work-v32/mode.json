@@ -4,7 +4,7 @@
 	"description": "处理资料、表格与文档：把散乱材料变成能直接用的成果。强度只改预算、深度与尾部指令。work-v23 + 尾部 <format_holes>：同一列的多状态（计入/剔除/缺失）都要填成该列要求的形状",
 	"rootAgent": "clerk",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

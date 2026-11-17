@@ -4,7 +4,7 @@
 	"description": "对照 code-v24 的交付契约实验：交付证据契约写在尾部 effort.md（system 与 v24 逐字节相同）",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

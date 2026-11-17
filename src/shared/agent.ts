@@ -163,8 +163,8 @@ export interface ModeDefinition {
 	agents: Record<string, AgentDefinition>;
 	/** 最大嵌套深度（根实例 depth = 0）。达到后 delegate 工具不再展示给模型 */
 	maxDepth: number;
-	/** 任务清单：功能开关 + 是否可写（工具层面）。提示词里要不要内嵌，由该 Agent 的 prompt.md 自己决定 */
-	taskList?: { enabled: boolean; writable: boolean };
+	/** 待办清单：功能开关 + 是否可写（工具层面）。提示词里要不要内嵌，由该 Agent 的 prompt.md 自己决定 */
+	todoList?: { enabled: boolean; writable: boolean };
 	/** 该模式是否关闭 MCP 工具（默认 false = 开放） */
 	mcpDisabled?: boolean;
 	/**
@@ -418,11 +418,32 @@ export interface RunBudget {
 	spent: number;
 }
 
-/** 后台任务占位（本版不实现，仅保留字段与提示词段落） */
+/**
+ * 后台任务状态。
+ * - `running`：进程还活着
+ * - `completed`：正常退出（exit 0）
+ * - `failed`：异常退出（非 0 / 被信号杀死 / 起不来）
+ * - `stopped`：用户手动停止（工具 stop 或侧栏按钮）
+ */
+export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped';
+
+/**
+ * 后台任务（`background_start` 拉起的常驻 shell）。
+ *
+ * ⚠️ 进程本体活在 Service 内存里（`service/background.ts`），这里只存**元信息**，
+ * 随 ctx 落盘 —— 服务重启后进程已经没了，靠这份记录把「曾经有过什么任务」讲清楚。
+ */
 export interface BackgroundTask {
 	id: string;
-	description: string;
-	createdAt: number;
+	command: string;	// 实际执行的命令
+	description: string;	// 启动时说明的用途（模型给的 reason / description）
+	status: BackgroundTaskStatus;
+	pid?: number;
+	startedAt: number;
+	endedAt?: number;
+	exitCode?: number | null;
+	pendingNotify?: boolean;	// 进程已结束、但还没在「下一轮 system message」里告知模型（告知后清掉）
+	agentInstanceId?: string;	// 发起它的 Agent 实例
 }
 
 export interface AgentCtx {
@@ -432,11 +453,11 @@ export interface AgentCtx {
 	agentInstances: Record<string, AgentInstance>;
 	/** 扁平事件流（UI 渲染 / 审计用，体量小，不含完整消息体） */
 	events: AgentEvent[];
-	/** 任务清单（纯文本） */
-	taskList: string;
+	/** 待办清单（纯文本，checkbox 行） */
+	todoList: string;
 	/** 本轮 run 的循环预算。每次 POST /api/agent/run 重置 */
 	budget: RunBudget;
-	/** 后台任务占位（本版不实现，仅保留字段与提示词段落） */
+	/** 后台任务（本会话的所有常驻进程，含已结束的；进程本体在 Service 内存里） */
 	backgroundTasks?: BackgroundTask[];
 	createdAt: number;
 	updatedAt: number;

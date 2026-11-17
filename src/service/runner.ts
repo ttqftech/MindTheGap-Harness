@@ -19,7 +19,7 @@
  */
 
 import { join } from 'node:path';
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, ConversationRunStatus, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, BackgroundTask, ConversationRunStatus, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
 import { callLlm, LlmEmptyResponseError } from './llm/model';
 import { mcpManager } from './mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
@@ -29,7 +29,8 @@ import { logMsg } from '../shared/utils';
 import { renderSystemPrompt, renderStatePrompt, renderEffortPrompt } from './prompt';
 import { applyModeVars, resolveModeVars, type ModeParamSelections } from '../shared/modeParams';
 import { normalizeSafety } from './safety';
-import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TaskListWriteArgs } from './tools';
+import { executeTool, getBuiltinToolNames, getToolsForAgentInstance, toLlmTools, type AgentTool, type ToolContext, type ToolLlmRequest, type ToolLlmResult, type TodoListWriteArgs } from './tools';
+import * as background from './background';
 
 const uid = () => Math.random().toString(36).slice(2, 12);
 const now = () => Date.now();
@@ -218,7 +219,7 @@ function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?
 	return base.map((msg) => {
 		if (!msg.images?.length) return msg;
 		const images = msg.images.flatMap((img) => {
-			const base64 = readAttachmentBase64(opts.conversationId, img.file);
+			const base64 = img.file ? readAttachmentBase64(opts.conversationId!, img.file) : null;
 			return base64 ? [{ ...img, base64 }] : [];
 		});
 		return { ...msg, images };
@@ -293,8 +294,8 @@ function buildUsageEntry(result: { usage: TokenUsage; logId: string; seq: number
 	};
 }
 
-/** 任务清单：文本 ↔ 结构化条目 */
-function parseTaskList(text: string): { done: boolean; item: string }[] {
+/** 待办清单：文本 ↔ 结构化条目 */
+function parseTodoList(text: string): { done: boolean; item: string }[] {
 	return (text ?? '')
 		.split('\n')
 		.map((line) => line.trim())
@@ -305,9 +306,9 @@ function parseTaskList(text: string): { done: boolean; item: string }[] {
 		}));
 }
 
-function renderTaskList(items: { done: boolean; item: string }[]): string {
+function renderTodoList(items: { done: boolean; item: string }[]): string {
 	if (items.length === 0) return '';
-	return `# 任务清单\n${items.map((i) => `- [${i.done ? 'x' : ' '}] ${i.item}`).join('\n')}`;
+	return `# 待办清单\n${items.map((i) => `- [${i.done ? 'x' : ' '}] ${i.item}`).join('\n')}`;
 }
 
 /**
@@ -722,6 +723,13 @@ export class AgentRunner {
 			if (stateContent.trim()) {
 				llmMessages.push({ role: 'system', content: stateContent });
 			}
+			// ⭐ 后台任务：结束通知 + 仍在跑的清单，一律走**尾部 system 消息**（不进首条 system，
+			//    否则每结束一个任务就炸掉整段提示词缓存）。发出去之后才清「待通知」标记。
+			const backgroundNotice = this.renderBackgroundTaskNotice();
+			if (backgroundNotice) {
+				llmMessages.push({ role: 'system', content: backgroundNotice });
+				this.clearBackgroundNotices();
+			}
 			instance.stateSnapshot = snapshot;
 
 			// ⭐ 本次调用的 assistant 条目：**先建 id 再发请求**。
@@ -905,8 +913,8 @@ export class AgentRunner {
 					content: '已向客户端发出提问，等待用户回应',
 					control: { kind: 'ask_user', args } satisfies ToolControl,
 				}),
-				readTaskList: () => this.ctx.taskList || '',
-				writeTaskList: (op) => this.applyTaskListOp(op),
+				readTodoList: () => this.ctx.todoList || '',
+				writeTodoList: (op) => this.applyTodoListOp(op),
 				runLlm: (req) => this.toolSubLlm(instance, req),
 			} satisfies ToolContext;
 			const result = await executeTool(call.name, call.arguments, toolCtx);
@@ -1240,10 +1248,10 @@ export class AgentRunner {
 
 	// #endregion
 
-	// #region 任务清单
+	// #region 待办清单
 
-	private applyTaskListOp(op: TaskListWriteArgs): string {
-		const items = parseTaskList(this.ctx.taskList);
+	private applyTodoListOp(op: TodoListWriteArgs): string {
+		const items = parseTodoList(this.ctx.todoList);
 		switch (op.op) {
 			case 'add':
 				if (op.item?.trim()) items.push({ done: false, item: op.item.trim() });
@@ -1258,13 +1266,112 @@ export class AgentRunner {
 				if (op.index !== undefined) items.splice(op.index, 1);
 				break;
 			case 'replace':
-				this.ctx.taskList = op.list ?? '';
+				this.ctx.todoList = op.list ?? '';
 				this.ctx.updatedAt = now();
-				return this.ctx.taskList;
+				return this.ctx.todoList;
 		}
-		this.ctx.taskList = renderTaskList(items);
+		this.ctx.todoList = renderTodoList(items);
 		this.ctx.updatedAt = now();
-		return this.ctx.taskList;
+		return this.ctx.todoList;
+	}
+
+	// #endregion
+
+	// #region 后台任务
+
+	/**
+	 * 把 Service 内存里的后台任务状态同步进 ctx（ctx 是落盘的那份，界面和提示词都读它）。
+	 *
+	 * ⚠️ 进程结束时**不能只看 close 回调**：工具可能在别的 Runner 实例里启动进程（同一个会话复用根实例，
+	 *    但 runner 每轮新建），所以状态同步做成「每次要用之前从内存捞一遍」，而不是事件推送。
+	 *    这样即使发起任务的 runner 早已结束，新 runner 也能看到最新状态。
+	 */
+	private syncBackgroundTasks(): void {
+		const live = background.listTasks(this.conversationId);
+		const liveById = new Map(live.map((t) => [t.id, t]));
+		const prev = this.ctx.backgroundTasks ?? [];
+		const prevById = new Map(prev.map((t) => [t.id, t]));
+
+		const next: BackgroundTask[] = live.map((task) => {
+			const old = prevById.get(task.id);
+			// 刚刚结束、还没告知过模型 → 打上待通知标记
+			// （模型自己用 background_wait 等到的结束不再通知：它的工具结果里已经有状态和输出了）
+			const justEnded =
+				task.status !== 'running' &&
+				old?.status === 'running' &&
+				!background.wasAcknowledged(this.conversationId, task.id);
+			return { ...task, pendingNotify: old?.pendingNotify || justEnded };
+		});
+
+		// ctx 里有、内存里没有的：服务重启 / 会话重新加载过 —— 进程早没了，按「异常结束」记一笔
+		for (const old of prev) {
+			if (liveById.has(old.id)) continue;
+			if (old.status !== 'running') {
+				next.push(old);
+				continue;
+			}
+			next.push({
+				...old,
+				status: 'failed',
+				endedAt: old.endedAt ?? now(),
+				pendingNotify: true,
+			});
+		}
+
+		next.sort((a, b) => a.startedAt - b.startedAt);
+		this.ctx.backgroundTasks = next;
+	}
+
+	/**
+	 * 渲染「后台任务已结束」的尾部提示（下一轮 system message）。
+	 * 只取 `pendingNotify` 的那几条 —— 同一件事只说一次。
+	 */
+	private renderBackgroundTaskNotice(): string {
+		const tasks = this.ctx.backgroundTasks ?? [];
+		const ended = tasks.filter((t) => t.pendingNotify);
+		const running = tasks.filter((t) => t.status === 'running');
+		if (ended.length === 0 && running.length === 0) return '';
+
+		const elapsed = (t: BackgroundTask) => {
+			const ms = (t.endedAt ?? now()) - t.startedAt;
+			const sec = Math.max(0, Math.round(ms / 1000));
+			if (sec < 60) return `${sec} 秒`;
+			if (sec < 3600) return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+			return `${Math.floor(sec / 3600)} 小时 ${Math.floor((sec % 3600) / 60)} 分`;
+		};
+		const statusLabel = (t: BackgroundTask) => {
+			switch (t.status) {
+				case 'completed': return `正常退出（exit ${t.exitCode ?? 0}）`;
+				case 'failed': return `异常退出（exit ${t.exitCode ?? '?'}）`;
+				case 'stopped': return '已被停止';
+				default: return '仍在运行';
+			}
+		};
+
+		const lines: string[] = ['<background_tasks>'];
+		if (ended.length > 0) {
+			lines.push('以下后台任务**已经结束**（不会再有新输出）：');
+			for (const t of ended) {
+				lines.push(`- \`${t.id}\`（\`${t.command}\`）状态=${statusLabel(t)}｜运行 ${elapsed(t)}${t.description ? `｜用途：${t.description}` : ''}`);
+			}
+			lines.push('需要看它最后的输出就调用 `background_output`（taskId 传上面那个 id，full=true 拿全文）；已经处理完的不必再管。');
+		}
+		if (running.length > 0) {
+			lines.push('仍在运行的后台任务：');
+			for (const t of running) {
+				lines.push(`- \`${t.id}\`（\`${t.command}\`）已运行 ${elapsed(t)}${t.description ? `｜用途：${t.description}` : ''}`);
+			}
+			lines.push('用 `background_output` 读它们的输出、`background_wait` 等它跑完、`background_stop` 停掉不再需要的。');
+		}
+		lines.push('</background_tasks>');
+		return lines.join('\n');
+	}
+
+	/** 把「已结束」标记抹掉：这条提示已经随本次请求发出去了 */
+	private clearBackgroundNotices(): void {
+		for (const task of this.ctx.backgroundTasks ?? []) {
+			if (task.pendingNotify) task.pendingNotify = false;
+		}
 	}
 
 	// #endregion
@@ -1530,6 +1637,7 @@ export class AgentRunner {
 
 	private buildPromptContext(instance: AgentInstance, tools: AgentTool[]): import('./prompt').PromptContext {
 		const def = this.getAgentDefinitionByInstance(instance);
+		this.syncBackgroundTasks();
 		const children = instance.childAgentInstanceIds
 			.map((id) => this.findInstance(id))
 			.filter((c): c is AgentInstance => !!c);
@@ -1556,7 +1664,8 @@ export class AgentRunner {
 			unfinishedAgentInstances: unfinished,
 			budget: { totalLeft, agentInstanceLeft, warn, exhausted, total: limits.totalRounds, spent: this.ctx.budget.spent },
 			depthExhausted: instance.depth >= this.mode.maxDepth,
-			taskList: this.ctx.taskList,
+			todoList: this.ctx.todoList,
+			backgroundTasks: this.ctx.backgroundTasks ?? [],
 			mcpSection: this.mcpSectionFor(tools),
 		};
 	}
@@ -1654,8 +1763,9 @@ function emptyCtx(conversationId: string, modeId: string): AgentCtx {
 		rootAgentInstanceId: '',
 		agentInstances: {},
 		events: [],
-		taskList: '',
+		todoList: '',
 		budget: { total: 200, spent: 0 },
+		backgroundTasks: [],
 		createdAt: timestamp,
 		updatedAt: timestamp,
 	};
@@ -1703,6 +1813,7 @@ export function createRunner(request: AgentRunRequest, options: RunnerOptions = 
 	const ctx = conversation.agentCtx as AgentCtx;
 	ctx.conversationId = request.conversationId;
 	ctx.modeId = mode.id;
+	if (!Array.isArray(ctx.backgroundTasks)) ctx.backgroundTasks = [];
 
 	return {
 		runner: new AgentRunner({ request, mode, vars, ctx, options }),

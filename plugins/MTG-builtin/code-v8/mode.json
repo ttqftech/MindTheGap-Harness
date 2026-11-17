@@ -4,9 +4,9 @@
 	"description": "低强度一个人做完做验；中强度还是一个人，但收尾前多一轮自查；高强度才分层。工具安全性控制写入类工具",
 	"rootAgent": "[rootAgentId]",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
-		"enabled": "[taskList]",
-		"writable": "[taskList]"
+	"todoList": {
+		"enabled": "[todoList]",
+		"writable": "[todoList]"
 	},
 	"mcpDisabled": false,
 	"limits": {
@@ -24,7 +24,7 @@
 		"rEngineer": 1,
 		"rPlan": 0,
 		"rReview": 0,
-		"taskList": true,
+		"todoList": true,
 		"rootAgents": [
 			"engineer",
 			"verify"
@@ -56,7 +56,7 @@
 						"rEngineer": 0,
 						"rPlan": 0,
 						"rReview": 0,
-						"taskList": false,
+						"todoList": false,
 						"rootAgents": [],
 						"engineerAgents": [],
 						"hasPlan": false,
@@ -79,7 +79,7 @@
 						"rEngineer": 1,
 						"rPlan": 0,
 						"rReview": 0,
-						"taskList": false,
+						"todoList": false,
 						"rootAgents": [],
 						"engineerAgents": [],
 						"hasPlan": false,
@@ -102,7 +102,7 @@
 						"rEngineer": 2,
 						"rPlan": 1,
 						"rReview": 1,
-						"taskList": true,
+						"todoList": true,
 						"rootAgents": [
 							"explore",
 							"plan",
@@ -133,7 +133,7 @@
 						"rEngineer": 3,
 						"rPlan": 1,
 						"rReview": 1,
-						"taskList": true,
+						"todoList": true,
 						"rootAgents": [
 							"explore",
 							"plan",

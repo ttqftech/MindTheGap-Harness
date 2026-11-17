@@ -4,9 +4,9 @@
 	"description": "处理资料、表格与文档：把散乱材料变成能直接用的成果。工具安全性控制写入类工具",
 	"rootAgent": "[rootAgentId]",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
-		"enabled": "[taskList]",
-		"writable": "[taskList]"
+	"todoList": {
+		"enabled": "[todoList]",
+		"writable": "[todoList]"
 	},
 	"mcpDisabled": false,
 	"limits": {
@@ -22,7 +22,7 @@
 		"agentInstanceRounds": 14,
 		"rLead": 1,
 		"rClerk": 1,
-		"taskList": true,
+		"todoList": true,
 		"rootAgents": [
 			"clerk",
 			"checker"
@@ -48,7 +48,7 @@
 						"agentInstanceRounds": 12,
 						"rLead": 0,
 						"rClerk": 0,
-						"taskList": false,
+						"todoList": false,
 						"rootAgents": [],
 						"hasReader": false,
 						"staged": false
@@ -65,7 +65,7 @@
 						"agentInstanceRounds": 14,
 						"rLead": 1,
 						"rClerk": 1,
-						"taskList": true,
+						"todoList": true,
 						"rootAgents": [
 							"clerk",
 							"checker"
@@ -85,7 +85,7 @@
 						"agentInstanceRounds": 18,
 						"rLead": 1,
 						"rClerk": 2,
-						"taskList": true,
+						"todoList": true,
 						"rootAgents": [
 							"reader",
 							"clerk",
@@ -106,7 +106,7 @@
 						"agentInstanceRounds": 22,
 						"rLead": 2,
 						"rClerk": 2,
-						"taskList": true,
+						"todoList": true,
 						"rootAgents": [
 							"reader",
 							"clerk",

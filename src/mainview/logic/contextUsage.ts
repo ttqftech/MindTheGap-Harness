@@ -1,14 +1,13 @@
 /* ==========================================================================
    上下文用量（输入框发送按钮左边的那个小面板）
 
-   **优先用真值**：实例最近一次 LLM 请求的 usage 里有 prompt_tokens（`UsageEntry.input`，
-   两种协议在 llm 层都已归一成「总输入」：OpenAI 的 prompt_tokens 本身含缓存命中，
-   Anthropic 已在解析时把 input + cache_read + cache_creation 相加）。
-   这条消息之后追加的内容（上次输出 / 工具结果）还没有进过请求，所以它会比「下一次真实输入」略小 ——
-   这里接受这个偏差，比字符估算准得多。
+   **优先用真值**：实例最近一次 LLM 请求的 usage 里有 prompt_tokens 与 completion_tokens
+   （`UsageEntry.input` / `UsageEntry.output`，两种协议在 llm 层都已归一：
+   OpenAI 的 prompt_tokens 含缓存命中，Anthropic 已在解析时把 input + cache_read + cache_creation 相加）。
 
-   只有**从没跑过请求**的实例（刚建、还没调 LLM）才退回字符估算，
-   界面用 `estimated` 区分（估算值前面带 ≈）。
+   **量的是「下一次请求会装进上下文的东西」**，所以 = 上次 prompt_tokens + 上次 completion_tokens（模型自己的输出会作为历史消息进下一轮）+ 那次调用之后新追加的消息（工具结果 / 反思等，这次还没进过请求）。
+
+   只有**从没跑过请求**的实例（刚建、还没调 LLM）才退回字符估算，界面用 `estimated` 区分（估算值前面带 ≈）。
    ========================================================================== */
 
 import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, UsageEntry } from '@shared/agent';
@@ -72,7 +71,7 @@ export function estimateTextTokens(text: string | undefined | null): number {
         if (code <= 0x007f) {
             return 0.25;
         }
-        // 高危字符，按 UTF8 字节保守估算
+        // 高消耗字符，按 UTF8 字节保守估算
         if (isHighCostWideChar(code)) {
             return new Blob([char]).size;
         }
@@ -104,15 +103,16 @@ function messageTokens(msg: AgentInstanceMessage): number {
 }
 
 /**
- * 实例最近一次请求的账本（带 `input` 的那条）。
+ * 实例最近一次请求的账本（带 `input` 的那条）**及其所在消息下标**。
  * 从后往前扫：消息是按时间追加的，最后一个带 usage 的消息就是「最后一次调用」。
+ * 返回下标是为了把「那次调用之后新追加的消息」也算进用量。
  */
-function lastUsage(instance: AgentInstance): UsageEntry | undefined {
+function lastUsageEntry(instance: AgentInstance): { usage: UsageEntry; index: number } | undefined {
 	for (let i = instance.messages.length - 1; i >= 0; i--) {
 		const usages = instance.messages[i].usages;
 		if (!usages?.length) continue;
 		const usage = usages[usages.length - 1];
-		if (typeof usage.input === 'number') return usage;
+		if (typeof usage.input === 'number') return { usage, index: i };
 	}
 	return undefined;
 }
@@ -120,16 +120,12 @@ function lastUsage(instance: AgentInstance): UsageEntry | undefined {
 export interface ContextUsageRow {
 	agentInstanceId: string;
 	agentName: string;
-	/** 0 = 根 */
-	depth: number;
+	depth: number;	// 0 = 根
 	status: AgentInstanceStatus;
 	tokens: number;
-	/** true = 该实例还没跑过请求，token 是字符估算，不是 prompt_tokens */
-	estimated: boolean;
-	/** 模型配置的上下文窗口（input），没配就没有百分比 */
-	limit?: number;
-	/** 0-100+；limit 缺失时 undefined */
-	percent?: number;
+	estimated: boolean;	// true = 该实例还没跑过请求，token 是字符估算，不是 prompt_tokens
+	limit?: number;	// 模型配置的上下文窗口（input），没配就没有百分比
+	percent?: number;	// 0-100+；limit 缺失时 undefined
 }
 
 /**
@@ -142,17 +138,27 @@ export function collectContextUsage(ctx: AgentCtx | null | undefined, limitOf: (
 	const visit = (id: string) => {
 		const instance = ctx.agentInstances[id];
 		if (!instance) return;
-		const usage = lastUsage(instance);
-		const tokens = usage?.input ?? instance.messages.reduce((sum, msg) => sum + messageTokens(msg), 0);
+		const last = lastUsageEntry(instance);
+		// 上次请求的真实输入 + 真实输出 + 那次调用之后新追加的消息（工具结果 / 反思等）
+		let tokens: number;
+		if (last) {
+			tokens = (last.usage.input ?? 0) + (last.usage.output ?? 0);
+			for (let i = last.index + 1; i < instance.messages.length; i++) {
+				tokens += messageTokens(instance.messages[i]);
+			}
+		} else {
+			tokens = instance.messages.reduce((sum, msg) => sum + messageTokens(msg), 0);
+		}
+		tokens = Math.round(tokens);
 		// 上限按「产生这条 usage 的模型」查：历史会话可能换过模型
-		const limit = limitOf(usage?.model);
+		const limit = limitOf(last?.usage.model);
 		rows.push({
 			agentInstanceId: instance.agentInstanceId,
 			agentName: instance.agentName,
 			depth: instance.depth,
 			status: instance.status,
 			tokens,
-			estimated: !usage,
+			estimated: !last,
 			limit,
 			percent: limit && limit > 0 ? (tokens / limit) * 100 : undefined,
 		});

@@ -10,10 +10,10 @@
 {{/if}}
 </budget_warning>
 {{/if}}
-{{#if stateChanged.taskList}}
-{{#if hasTaskList}}
-<task_list>
-{{taskList}}
-</task_list>
+{{#if stateChanged.todoList}}
+{{#if hasTodoList}}
+<todo_list>
+{{todoList}}
+</todo_list>
 {{/if}}
 {{/if}}

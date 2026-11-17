@@ -4,7 +4,7 @@
 	"description": "强度只改预算、深度与尾部指令，不换系统提示词（保住 KV Cache）",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

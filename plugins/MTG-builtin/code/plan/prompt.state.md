@@ -1,8 +1,8 @@
-{{#if stateChanged.taskList}}
-{{#if hasTaskList}}
-<current_task_list>
-{{ taskList }}
-</current_task_list>
+{{#if stateChanged.todoList}}
+{{#if hasTodoList}}
+<current_todo_list>
+{{ todoList }}
+</current_todo_list>
 {{/if}}
 {{/if}}
 

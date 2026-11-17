@@ -6,7 +6,7 @@
 	"reflectionCount": 0,
 	"ability": {
 		"tools": {
-			"allow": ["file_read", "file_list", "file_search", "shell", "finish"]
+			"allow": ["file_read", "file_list", "file_search", "shell", "background_start", "background_output", "background_wait", "background_stop", "finish"]
 		}
 	}
 }

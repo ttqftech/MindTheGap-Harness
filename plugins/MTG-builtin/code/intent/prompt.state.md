@@ -1,10 +1,10 @@
 {{!-- 动态状态注入模板：各块自己判断要不要出现，全都不出现时渲染结果为空串，runner 就不会拼这条消息。不写入 instance.messages。 --}}
 
-{{#if stateChanged.taskList}}
-{{#if hasTaskList}}
-<current_task_list>
-{{ taskList }}
-</current_task_list>
+{{#if stateChanged.todoList}}
+{{#if hasTodoList}}
+<current_todo_list>
+{{ todoList }}
+</current_todo_list>
 {{/if}}
 {{/if}}
 

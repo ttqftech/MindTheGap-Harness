@@ -4,7 +4,7 @@
 	"description": "在 v24 之上只改一处：medium 档把「派 check 复核」从开放邀请改成条件闸门（实测委托的运行成本是不委托的 3~4 倍，判分却相同）",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

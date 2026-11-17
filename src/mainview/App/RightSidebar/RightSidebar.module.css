@@ -1,5 +1,5 @@
 /**
- * 右侧栏（任务清单）样式
+ * 右侧栏（待办清单 + 后台任务）样式
  *
  * 与左侧边栏同一套语义：收起时整条归零（连 border 一起消失），展开时由 App 的
  * rightSidebarWidth 控制宽度。内容走主题令牌，换密度 / 强调色整条一起变。
@@ -16,6 +16,21 @@
 	/* 收起时整条栏归零：连分隔线也不留 */
 	&.collapsed {
 		border-left: none;
+	}
+
+	/* 两个区块共处一栏：待办清单按内容自适应（最多 45%），后台任务吃掉剩下的高度 */
+	.section {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		flex: 0 1 auto;
+		max-height: 45%;
+
+		&.section-tasks {
+			flex: 1 1 auto;
+			max-height: none;
+			border-top: 1px solid var(--border);
+		}
 	}
 
 	.rightSidebar-header {
@@ -119,4 +134,217 @@
 		font-size: var(--fs-xxxs);
 		color: var(--text-disabled);
 	}
+
+	/* ---- 后台任务条目 ---- */
+
+	.taskItem {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 6px 8px;
+		border-radius: var(--r-md);
+		cursor: pointer;
+		transition: background-color var(--dur-fast);
+		&:hover {
+			background-color: var(--bg-hover);
+		}
+
+		&.taskItem-ended .taskTitle {
+			color: var(--text-secondary);
+		}
+	}
+
+	.taskDot {
+		flex-shrink: 0;
+		width: 6px;
+		height: 6px;
+		margin-top: 6px;
+		border-radius: var(--r-full);
+		background-color: var(--text-disabled);
+
+		&[data-status='running'] {
+			background-color: var(--accent);
+			box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+			animation: taskPulse 1.6s ease-in-out infinite;
+		}
+		&[data-status='completed'] {
+			background-color: var(--success);
+		}
+		&[data-status='failed'] {
+			background-color: var(--danger);
+		}
+	}
+
+	.taskMain {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.taskTitle {
+		font-size: var(--fs-s);
+		color: var(--text-tertiary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.taskMeta {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.taskCommand {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xxxs);
+		color: var(--text-disabled);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.taskElapsed {
+		flex-shrink: 0;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xxxs);
+		color: var(--text-disabled);
+	}
+
+	.taskStop {
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		padding: 0;
+		border-radius: var(--r-sm);
+		color: var(--text-disabled);
+		opacity: 0;
+		transition: opacity var(--dur-fast), background-color var(--dur-fast), color var(--dur-fast);
+
+		.taskItem:hover & {
+			opacity: 1;
+		}
+		&:hover {
+			background-color: var(--bg-chip);
+			color: var(--danger);
+		}
+	}
+
+	/* ---- 终端详情弹窗 ---- */
+
+	.detailMask {
+		position: fixed;
+		inset: 0;
+		z-index: 60;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background-color: color-mix(in srgb, #000 55%, transparent);
+		backdrop-filter: blur(2px);
+	}
+
+	.detailPanel {
+		width: min(760px, 82vw);
+		height: min(560px, 74vh);
+		display: flex;
+		flex-direction: column;
+		border-radius: var(--r-lg);
+		border: 1px solid var(--border);
+		background-color: var(--bg-sub1);
+		box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+		overflow: hidden;
+	}
+
+	.detailHeader {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px 12px;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.detailDot {
+		width: 7px;
+		height: 7px;
+		border-radius: var(--r-full);
+		background-color: var(--text-disabled);
+		&[data-status='running'] { background-color: var(--accent); }
+		&[data-status='completed'] { background-color: var(--success); }
+		&[data-status='failed'] { background-color: var(--danger); }
+	}
+
+	.detailTitle {
+		font-size: var(--fs-s);
+		color: var(--text-primary);
+		max-width: 46%;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.detailId {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xxxs);
+		color: var(--text-disabled);
+	}
+
+	.detailButton {
+		font-size: var(--fs-xs);
+		padding: 3px 10px;
+		border-radius: var(--r-sm);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		&:hover {
+			background-color: var(--bg-hover);
+			color: var(--danger);
+		}
+	}
+
+	.detailClose {
+		width: 22px;
+		height: 22px;
+		border-radius: var(--r-sm);
+		font-size: var(--fs-xs);
+		color: var(--text-secondary);
+		&:hover {
+			background-color: var(--bg-hover);
+			color: var(--text-primary);
+		}
+	}
+
+	.detailSub {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 6px 12px;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.detailOutput {
+		flex: 1;
+		min-height: 0;
+		margin: 0;
+		padding: 10px 12px;
+		overflow: auto;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		line-height: 1.55;
+		color: var(--text-secondary);
+		white-space: pre-wrap;
+		word-break: break-word;
+		background-color: var(--bg-app);
+	}
+}
+
+@keyframes taskPulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
 }

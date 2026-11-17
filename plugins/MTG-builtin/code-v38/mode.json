@@ -4,7 +4,7 @@
 	"description": "code-v24 + v34 的尾部 <stop_rules> 止损条款 + v35 的反思 gap 约束（只指向代码位置或缺哪种行为）—— 两个护栏叠起来验「便宜 + 不漏最后一项」能不能同时拿到",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

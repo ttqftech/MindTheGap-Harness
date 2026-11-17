@@ -232,7 +232,7 @@ function normalizeForm(raw: unknown, errors: PluginLoadError[], ctx: { pluginId:
 function warnUnknownParamRefs(mode: ModeDefinition, errors: PluginLoadError[], ctx: { pluginId: string; modeId: string }): void {
 	const known = new Set(knownParamNames(mode));
 	if (known.size === 0) return;
-	const refs = collectParamRefs({ limits: mode.limits, maxDepth: mode.maxDepth, taskList: mode.taskList, agents: mode.agents });
+	const refs = collectParamRefs({ limits: mode.limits, maxDepth: mode.maxDepth, todoList: mode.todoList, agents: mode.agents });
 	for (const ref of refs) {
 		if (!known.has(ref)) {
 			errors.push({ level: 'warn', ...ctx, message: `参数引用 [${ref}] 未在 params / form 里声明` });
@@ -350,7 +350,7 @@ function loadModeDefinition(pluginDir: string, plugin: PluginManifest, modeId: s
 		rootAgent,
 		agents,
 		maxDepth: raw.maxDepth ?? 0,
-		taskList: raw.taskList ?? { enabled: false, writable: false },
+		todoList: raw.todoList ?? { enabled: false, writable: false },
 		mcpDisabled: raw.mcpDisabled ?? false,
 		params,
 		form,
@@ -564,8 +564,8 @@ export function saveModeJson(modeId: string, jsonText: string): { ok: boolean; e
 	if (raw.limits !== undefined && (!raw.limits || typeof raw.limits !== 'object' || Array.isArray(raw.limits))) {
 		return { ok: false, error: 'limits 必须是对象，形如 {"totalRounds":45,"agentInstanceRounds":15,"warnAtRemaining":3}' };
 	}
-	if (raw.taskList !== undefined && (!raw.taskList || typeof raw.taskList !== 'object' || Array.isArray(raw.taskList))) {
-		return { ok: false, error: 'taskList 必须是对象，形如 {"enabled":true,"writable":true}' };
+	if (raw.todoList !== undefined && (!raw.todoList || typeof raw.todoList !== 'object' || Array.isArray(raw.todoList))) {
+		return { ok: false, error: 'todoList 必须是对象，形如 {"enabled":true,"writable":true}' };
 	}
 	// 模式参数（动态表单）：结构写坏会让 Composer 渲染不出来，直接在落盘前拦住
 	if (raw.params !== undefined && (!raw.params || typeof raw.params !== 'object' || Array.isArray(raw.params))) {

@@ -362,12 +362,60 @@ export async function updateConversation(id: string, patch: Partial<Conversation
 	}
 }
 
-export async function getTaskList(conversationId: string): Promise<string> {
+export async function getTodoList(conversationId: string): Promise<string> {
 	try {
-		const resp = await httpFetch<{ taskList: string }>(`/api/conversations/${encodeURIComponent(conversationId)}/tasklist`);
-		return resp.taskList ?? '';
+		const resp = await httpFetch<{ todoList: string }>(`/api/conversations/${encodeURIComponent(conversationId)}/todolist`);
+		return resp.todoList ?? '';
 	} catch {
 		return '';
+	}
+}
+
+// #endregion
+
+// #region 后台任务
+
+export interface BackgroundTaskView {
+	id: string;
+	command: string;
+	description: string;
+	status: 'running' | 'completed' | 'failed' | 'stopped';
+	pid?: number;
+	startedAt: number;
+	endedAt?: number;
+	exitCode?: number | null;
+}
+
+export async function listBackgroundTasks(conversationId: string): Promise<BackgroundTaskView[]> {
+	try {
+		const resp = await httpFetch<{ tasks: BackgroundTaskView[] }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/tasks`,
+		);
+		return resp.tasks ?? [];
+	} catch {
+		return [];
+	}
+}
+
+export async function getBackgroundOutput(conversationId: string, taskId: string, full = true): Promise<{ ok: boolean; output: string; status?: string; exitCode?: number | null; error?: string }> {
+	try {
+		const resp = await httpFetch<{ ok: boolean; output: string; status: string; exitCode: number | null }>(
+			`/api/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/output?full=${full ? '1' : '0'}`,
+		);
+		return { ok: true, output: resp.output ?? '', status: resp.status, exitCode: resp.exitCode };
+	} catch (e) {
+		return { ok: false, output: '', error: (e as Error).message };
+	}
+}
+
+export async function stopBackgroundTask(conversationId: string, taskId: string): Promise<boolean> {
+	try {
+		await httpFetch(`/api/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/stop`, {
+			method: 'POST',
+		});
+		return true;
+	} catch {
+		return false;
 	}
 }
 

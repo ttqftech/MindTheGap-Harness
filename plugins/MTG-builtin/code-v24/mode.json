@@ -4,7 +4,7 @@
 	"description": "预算按真实 Agent 的量级给（百轮级），强度与安全性只改尾部指令；弱模型单独一档收紧",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

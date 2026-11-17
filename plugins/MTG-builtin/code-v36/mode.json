@@ -4,7 +4,7 @@
 	"description": "与 v24 逐字节相同，只把 medium 的软收尾点从 85 收到 26：让长尾运行真的被催收一次",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

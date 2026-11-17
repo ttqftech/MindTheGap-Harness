@@ -4,7 +4,7 @@
 	"description": "处理资料、表格与文档：把散乱材料变成能直接用的成果。强度只改预算、深度与尾部指令",
 	"rootAgent": "clerk",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

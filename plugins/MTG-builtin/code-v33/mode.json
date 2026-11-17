@@ -4,7 +4,7 @@
 	"description": "对照 code-v24 的交付契约实验：尾部契约 + 独立复核闸门（中/高档交付必须有 check 结论）",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

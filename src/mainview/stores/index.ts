@@ -245,7 +245,7 @@ const [runErrorState, setRunErrorState] = createStore<Record<string, string | nu
  */
 const [streamTickState, setStreamTickState] = createStore<Record<string, number>>({});
 /** 任务清单面板的内容，同样按会话隔离（跑完的会话不该把清单写进当前视图） */
-const [taskListState, setTaskListState] = createStore<Record<string, string>>({});
+const [todoListState, setTodoListState] = createStore<Record<string, string>>({});
 
 export function getOverlay(conversationId: string): OverlayCtx | undefined {
 	return overlayState[conversationId];
@@ -259,8 +259,8 @@ export function getStreamTick(conversationId: string): number {
 	return streamTickState[conversationId] ?? 0;
 }
 
-export function getTaskList(conversationId: string): string {
-	return taskListState[conversationId] ?? '';
+export function getTodoList(conversationId: string): string {
+	return todoListState[conversationId] ?? '';
 }
 
 export const overlayActions = {
@@ -298,12 +298,12 @@ export const streamTickActions = {
 	},
 };
 
-export const taskListActions = {
+export const todoListActions = {
 	set(conversationId: string, text: string) {
-		setTaskListState(conversationId, text);
+		setTodoListState(conversationId, text);
 	},
 	clear(conversationId: string) {
-		setTaskListState(conversationId, '');
+		setTodoListState(conversationId, '');
 	},
 };
 
@@ -472,11 +472,11 @@ export async function loadConversationCtx(conversationId: string, force = false)
 	const ctx = await agentBridge.getCtx(conversationId);
 	if (!ctx) return;
 	actions.setConversationCtx(conversationId, ctx);
-	// ⚠️ 任务清单面板必须在这里一起回填。taskListState 是进程内 store（清空后不会自动从 ctx 恢复），
+	// ⚠️ 任务清单面板必须在这里一起回填。todoListState 是进程内 store（清空后不会自动从 ctx 恢复），
 	//   而「打开一个已存在的会话」时 loadConversationCtx 是**唯一**入口 —— `done` 事件的
-	//   refreshTaskList 只在「本轮刚跑完」那一瞬间发生。不在这里回填，结果就是：
+	//   refreshTodoList 只在「本轮刚跑完」那一瞬间发生。不在这里回填，结果就是：
 	//   后端 ctx 里明明有任务清单，刷新页面 / 切会话回来之后面板永远不显示（2026-09-17 实测）。
-	taskListActions.set(conversationId, ctx.taskList ?? '');
+	todoListActions.set(conversationId, ctx.todoList ?? '');
 	// force = 一轮 run 刚结束：顺带从后端刷新一次 meta，让刚更新的会话在列表里上浮。
 	// ⚠️ 这里必须走后端 —— 前端自己 `Date.now()` 会把「只是点开看看」也算成一次更新。
 	if (force) void refreshConversationMeta(conversationId);

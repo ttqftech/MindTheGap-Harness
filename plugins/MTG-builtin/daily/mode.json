@@ -4,7 +4,7 @@
 	"description": "轻量助手：总台分诊 + 环境查询（公网 IP / IP 归属地）+ 天气查询，无文件与 MCP 能力，预算收紧",
 	"rootAgent": "router",
 	"maxDepth": 1,
-	"taskList": { "enabled": false, "writable": false },
+	"todoList": { "enabled": false, "writable": false },
 	"mcpDisabled": false,
 	"limits": { "totalRounds": 14, "agentInstanceRounds": 6, "warnAtRemaining": 2 },
 	"ui": { "icon": "🌤️", "accent": "green" }

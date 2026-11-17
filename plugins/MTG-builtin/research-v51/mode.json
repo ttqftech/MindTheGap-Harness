@@ -4,7 +4,7 @@
 	"description": "知识综合与验证：跨领域信息收集、证据链构建、多源交叉验证、结论输出",
 	"rootAgent": "researcher",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

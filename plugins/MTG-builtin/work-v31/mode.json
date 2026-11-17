@@ -4,7 +4,7 @@
 	"description": "对照 work-v23：只在尾部加一份「核对 / 剔除 / 问题」交付证据契约（system 与 v23 逐字节相同）",
 	"rootAgent": "clerk",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

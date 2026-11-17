@@ -246,29 +246,29 @@ async function handleRequest(req: import('node:http').IncomingMessage, res: Mock
 
 		// 1.6) 任务清单读写：add → add → read → update(done) → read → finish
 		// 同样按 toolResults 计数，且必须排在「有工具结果 → 给结论」之前，否则第二轮起就被它拦掉。
-		// ⚠️ task_list_write 只在 `mode.taskList.writable` 为 true 时才会进工具表（code 模式是 true，
+		// ⚠️ todo_list_write 只在 `mode.todoList.writable` 为 true 时才会进工具表（code 模式是 true，
 		// daily / empty 是 false），所以这个剧本要在 **code 模式**下跑，
 		// 否则模型侧根本看不到这两个工具，表现为「剧本没生效」而不是报错。
 		if (currentScenario === 'task') {
 			const toolResults = msgs.filter((m) => m.role === 'tool').length;
 			if (toolResults === 0) {
-				await streamToolCall(res, 'task_list_write', { op: 'add', item: '第一步：写一条任务，验证清单可写' }, '先加一条，确认清单能写。');
+				await streamToolCall(res, 'todo_list_write', { op: 'add', item: '第一步：写一条任务，验证清单可写' }, '先加一条，确认清单能写。');
 				return;
 			}
 			if (toolResults === 1) {
-				await streamToolCall(res, 'task_list_write', { op: 'add', item: '第二步：再写一条，验证是追加而不是覆盖' }, '再加一条，看是不是追加。');
+				await streamToolCall(res, 'todo_list_write', { op: 'add', item: '第二步：再写一条，验证是追加而不是覆盖' }, '再加一条，看是不是追加。');
 				return;
 			}
 			if (toolResults === 2) {
-				await streamToolCall(res, 'task_list_read', {}, '读回全文，确认前两次写入都落盘了。');
+				await streamToolCall(res, 'todo_list_read', {}, '读回全文，确认前两次写入都落盘了。');
 				return;
 			}
 			if (toolResults === 3) {
-				await streamToolCall(res, 'task_list_write', { op: 'update', index: 0, done: true, item: '第一步：写一条任务，验证清单可写' }, '把第一条标记完成，验 update + index。');
+				await streamToolCall(res, 'todo_list_write', { op: 'update', index: 0, done: true, item: '第一步：写一条任务，验证清单可写' }, '把第一条标记完成，验 update + index。');
 				return;
 			}
 			if (toolResults === 4) {
-				await streamToolCall(res, 'task_list_read', {}, '再读一次，确认 done 标记写进去了。');
+				await streamToolCall(res, 'todo_list_read', {}, '再读一次，确认 done 标记写进去了。');
 				return;
 			}
 			await streamToolCall(res, 'finish', { reason: '清单的写入、读取、更新都验过了', summary: '任务清单读写通过：add ×2 → read 全文 → update 标记 done → read 复核。' }, '收尾。');

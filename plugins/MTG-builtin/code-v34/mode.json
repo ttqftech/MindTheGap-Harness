@@ -4,7 +4,7 @@
 	"description": "code-v24 + 根 Agent 尾部 <stop_rules> 止损条款（环境跑不通的验证命令最多换一次写法；self_check 只做那一条）",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

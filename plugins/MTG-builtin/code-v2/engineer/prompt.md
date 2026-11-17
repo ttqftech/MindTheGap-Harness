@@ -79,7 +79,7 @@
     模板变量（`{{ 变量 }}`）：agentId / agentName / depth / maxDepth / platform / shell
     runningDir / docsDir / workspaceDir / basePrompt / parentPrompt / hasParentPrompt
     tools / hasTool.xxx / delegatableAgents / canDelegate / depthExhausted
-    taskList / hasTaskList / budget* / mcpSection / hasMcp
+    todoList / hasTodoList / budget* / mcpSection / hasMcp
     模式参数（mode.json 的 params，经 Composer 表单覆盖后可见）：
     intensity / tierName / safety / isLite / isStandard / isDeep / isMax / isStaged / readOnly
     ------------------------------------------------------------------ --}}

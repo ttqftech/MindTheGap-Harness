@@ -4,7 +4,7 @@
 	"description": "演示 mode.json 的 params + form：输入框下方的下拉选项通过变量覆盖 Agent 配置、预算与提示词（本模式只为验证功能）",
 	"rootAgent": "tuner",
 	"maxDepth": 0,
-	"taskList": { "enabled": false, "writable": false },
+	"todoList": { "enabled": false, "writable": false },
 	"mcpDisabled": true,
 	"limits": { "totalRounds": "[totalRounds]", "agentInstanceRounds": 8, "warnAtRemaining": 2 },
 	"params": {

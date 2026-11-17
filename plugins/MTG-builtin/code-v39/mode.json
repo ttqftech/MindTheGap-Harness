@@ -4,7 +4,7 @@
 	"description": "code-v34 + 尾部 <delivery_checklist> 交付前清点（每条要求指出代码落点；多入口要求单独确认不经主入口那条）—— 验能不能便宜拿到 taskD 第 22 项",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},

@@ -4,7 +4,7 @@
 	"description": "对照 code-v24 的交付契约实验：交付证据契约写在 dev 的 system（prompt.md 交付段）",
 	"rootAgent": "dev",
 	"maxDepth": "[maxDepth]",
-	"taskList": {
+	"todoList": {
 		"enabled": false,
 		"writable": false
 	},
