@@ -17,7 +17,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { resolveRepoFile } from '../plugins/loader';
+import { resolveRepoFile } from '../../plugins/loader';
 
 // #region 位置解析
 

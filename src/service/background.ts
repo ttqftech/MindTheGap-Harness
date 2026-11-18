@@ -15,7 +15,8 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import type { BackgroundTask, BackgroundTaskStatus } from '@shared/agent';
-import { logMsg } from '../shared/utils';
+import { logMsg } from '@shared/utils';
+import { createShellStreamDecoder, type ShellStreamDecoder } from './textEncoding';
 
 /** 每个任务最多保留多少输出字符（超出只留尾部） */
 const MAX_OUTPUT = 200_000;
@@ -36,6 +37,8 @@ interface InnerBackgroundTask extends BackgroundTask {
 	acknowledged: boolean;	// 模型用 background_wait 亲自等过它的结束 → 不再重复发「已结束」通知
 	/** 上一段输出走的是哪个通道（用来在混排日志里插 `[stderr]` / `[stdout]` 分界） */
 	lastChannel?: 'stdout' | 'stderr';
+	/** 逐流解码器：Windows cmd 的输出可能是 GBK，按行判编码（多字节字符被 chunk 切断也不会误判） */
+	decoders?: { stdout: ShellStreamDecoder; stderr: ShellStreamDecoder };
 	child?: ChildProcess;
 }
 
@@ -151,6 +154,7 @@ export async function startTask(opts: StartOptions): Promise<StartResult> {
 		done,
 		resolveDone,
 		acknowledged: false,
+		decoders: { stdout: createShellStreamDecoder(), stderr: createShellStreamDecoder() },
 	};
 
 	let child: ChildProcess;
@@ -171,8 +175,17 @@ export async function startTask(opts: StartOptions): Promise<StartResult> {
 	task.pid = child.pid;
 	bucket(opts.conversationId).set(id, task);
 
-	child.stdout?.on('data', (chunk: Buffer | string) => appendStream(task, chunk.toString(), 'stdout'));
-	child.stderr?.on('data', (chunk: Buffer | string) => appendStream(task, chunk.toString(), 'stderr'));
+	/** data 事件默认给 Buffer；万一运行时给了字符串（已解码），转回字节统一走同一条解码路径 */
+	function toBytes(chunk: Buffer | string): Uint8Array {
+		return typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+	}
+
+	child.stdout?.on('data', (chunk: Buffer | string) => {
+		appendStream(task, task.decoders!.stdout.push(toBytes(chunk)), 'stdout');
+	});
+	child.stderr?.on('data', (chunk: Buffer | string) => {
+		appendStream(task, task.decoders!.stderr.push(toBytes(chunk)), 'stderr');
+	});
 
 	child.once('error', (err) => {
 		task.status = 'failed';
@@ -183,6 +196,9 @@ export async function startTask(opts: StartOptions): Promise<StartResult> {
 		task.resolveDone();
 	});
 	child.once('close', (code, signal) => {
+		// 进程结束时两个流里可能还剩没换行的残行，得一起吐出来（否则最后一截输出会丢）
+		appendStream(task, task.decoders!.stdout.flush(), 'stdout');
+		appendStream(task, task.decoders!.stderr.flush(), 'stderr');
 		task.endedAt = Date.now();
 		task.exitCode = code;
 		if (task.status !== 'failed') {
