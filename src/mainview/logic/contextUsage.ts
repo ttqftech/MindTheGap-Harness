@@ -7,7 +7,12 @@
 
    **量的是「下一次请求会装进上下文的东西」**，所以 = 上次 prompt_tokens + 上次 completion_tokens（模型自己的输出会作为历史消息进下一轮）+ 那次调用之后新追加的消息（工具结果 / 反思等，这次还没进过请求）。
 
-   只有**从没跑过请求**的实例（刚建、还没调 LLM）才退回字符估算，界面用 `estimated` 区分（估算值前面带 ≈）。
+   `≈` 只跟「这一轮是不是还在生成」走：
+   - 生成中：数字里掺着在飞内容的字符估算，一律带 ≈；
+   - 跑完：数字取自最近一次请求的 prompt_tokens + completion_tokens（真值），不带 ≈；
+   - 从没跑过请求的实例只能整份字符估算，也带 ≈。
+   ⚠️ 别再从「messages 末尾还有没有非 uiOnly 消息」去推断：一轮以工具结果 / 被打断结尾时，
+      末尾天然留着非 uiOnly 条目，跑完很久的历史会话也会被一直标成 ≈。
    ========================================================================== */
 
 import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, UsageEntry } from '@shared/agent';
@@ -123,7 +128,7 @@ export interface ContextUsageRow {
 	depth: number;	// 0 = 根
 	status: AgentInstanceStatus;
 	tokens: number;
-	estimated: boolean;	// true = 该实例还没跑过请求，token 是字符估算，不是 prompt_tokens
+	estimated: boolean;	// true = 正在生成（含在飞内容的字符估算）或从没跑过请求，界面带 ≈
 	limit?: number;	// 模型配置的上下文窗口（input），没配就没有百分比
 	percent?: number;	// 0-100+；limit 缺失时 undefined
 }
@@ -132,7 +137,7 @@ export interface ContextUsageRow {
  * 依次列出根 Agent 与所有子 Agent 的上下文用量。
  * 顺序按父子关系 DFS，和聊天记录里 Agent 的嵌套顺序一致。
  */
-export function collectContextUsage(ctx: AgentCtx | null | undefined, limitOf: (modelId: string | undefined) => number | undefined): ContextUsageRow[] {
+export function collectContextUsage(ctx: AgentCtx | null | undefined, limitOf: (modelId: string | undefined) => number | undefined, isGenerating: boolean): ContextUsageRow[] {
 	if (!ctx) return [];
 	const rows: ContextUsageRow[] = [];
 	const visit = (id: string) => {
@@ -150,6 +155,8 @@ export function collectContextUsage(ctx: AgentCtx | null | undefined, limitOf: (
 			tokens = instance.messages.reduce((sum, msg) => sum + messageTokens(msg), 0);
 		}
 		tokens = Math.round(tokens);
+		// 只认「这一轮还在不在生成」：跑完后不管末尾还留着什么（工具结果 / 反思 / 被打断的痕迹），数字都取自最近一次请求的真值，不该再挂 ≈。
+		const estimated = isGenerating || !last;
 		// 上限按「产生这条 usage 的模型」查：历史会话可能换过模型
 		const limit = limitOf(last?.usage.model);
 		rows.push({
@@ -158,7 +165,7 @@ export function collectContextUsage(ctx: AgentCtx | null | undefined, limitOf: (
 			depth: instance.depth,
 			status: instance.status,
 			tokens,
-			estimated: !last,
+			estimated,
 			limit,
 			percent: limit && limit > 0 ? (tokens / limit) * 100 : undefined,
 		});

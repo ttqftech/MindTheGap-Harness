@@ -471,6 +471,8 @@ export async function loadConversationCtx(conversationId: string, force = false)
 
 	const ctx = await agentBridge.getCtx(conversationId);
 	if (!ctx) return;
+	// ⚠️ 写回前再查一次：生成中「补拉早期快照」与 endRun 的 force 重拉可能并发，早发但晚到的那份不能把已经提交的最终 ctx 倒灌回去（force 那次不受此限）。
+	if (!force && state.conversations.find((c) => c.id === conversationId)?.agentCtx) return;
 	actions.setConversationCtx(conversationId, ctx);
 	// ⚠️ 任务清单面板必须在这里一起回填。todoListState 是进程内 store（清空后不会自动从 ctx 恢复），
 	//   而「打开一个已存在的会话」时 loadConversationCtx 是**唯一**入口 —— `done` 事件的

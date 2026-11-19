@@ -14,6 +14,7 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
 import type { Folder, LlmImageRef, ModelConfig, ModeParamControl, ParamValue } from '@shared/agent';
+import { DEFAULT_THINKING_PARAM } from '@shared/agent';
 import { findOption, resolveModeParams, sameParamValue } from '@shared/modeParams';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/logic/projection';
@@ -117,10 +118,10 @@ export default function ChatView() {
 	 * 根 Agent + 各子 Agent 的上下文用量。
 	 *
 	 * 优先取该实例**最近一次请求的 prompt_tokens + completion_tokens**（`UsageEntry.input` / `output`），
-	 * 再加上那次调用之后新追加的消息；从没跑过请求的实例才退回字符估算（见 `logic/contextUsage.ts`，界面用 ≈ 区分）。
+	 * 再加上那次调用之后新追加的消息；`≈` 只看本轮是否还在生成（见 `logic/contextUsage.ts`）。
 	 */
 	const contextUsage = createMemo(() =>
-		collectContextUsage(mergedCtx(), (modelId) => contextLimitOfModel(modelId)),
+		collectContextUsage(mergedCtx(), (modelId) => contextLimitOfModel(modelId), isGenerating()),
 	);
 	/** 发送按钮左侧那颗小 chip 只显示根 Agent 的占比，明细放在悬停面板里 */
 	const rootContextUsage = createMemo(() => contextUsage()[0]);
@@ -214,12 +215,27 @@ export default function ChatView() {
 	 * 自己的 text 设成菜单项的 `value`（我们又是受控写法），导致「选完显示成 __new__」
 	 * 这类问题必须靠 `resyncDropdownText()` 手工兜。改成 chip 之后显示值只由 state 决定。
 	 */
+	/** 菜单里当前勾选项的 value：FFBox 打开时靠它展开父级子菜单、滚到并聚焦选中项 */
+	const checkedValueOf = (menu: MenuItem[]): unknown => {
+		for (const item of menu) {
+			if (item.type === 'radio' && item.checked) return item.value;
+			if (item.type === 'submenu') {
+				const found = checkedValueOf(item.subMenu);
+				if (found !== undefined) return found;
+			}
+		}
+		return undefined;
+	};
+
 	const openChipMenu = (menu: MenuItem[], onPick: (value: string) => void, el: HTMLElement) => {
 		const rect = el.getBoundingClientRect();
 		showMenu({
 			menu,
 			type: 'action',
 			triggerRect: { xMin: rect.left, yMin: rect.bottom, xMax: rect.right, yMax: rect.bottom },
+			// 当前值和菜单同源：菜单里已经用 checked 标了选中项，直接从它推 selectedValue，
+			// 调用方不必再传一份，也不会出现菜单 value 改了、定位值没跟着改
+			selectedValue: checkedValueOf(menu),
 			onSelect: (_event, value) => {
 				onPick(String(value));
 			},
@@ -329,13 +345,13 @@ export default function ChatView() {
 			type: 'submenu' as const,
 			label: provider.name,
 			subMenu: provider.models.map((model) => {
-				const key = `${provider.id}/${model.id}`;
+				const providerModel = `${provider.id}/${model.id}`;
 				const isCurrent = current?.providerId === provider.id && current?.modelId === model.id;
-				const values = model.thinking?.param ? (model.thinking.values ?? []) : [];
-				if (!values.length) {
+				const thinkingValues = model.thinking?.param ? (model.thinking.values ?? []) : [];
+				if (!thinkingValues.length) {
 					return {
 						type: 'radio' as const,
-						value: key,
+						value: providerModel,
 						label: model.displayName,
 						tooltip: model.id,
 						checked: isCurrent,
@@ -344,17 +360,18 @@ export default function ChatView() {
 				const level = thinkingLevelOf(provider.id, model.id);
 				return {
 					type: 'submenu' as const,
-					label: `${model.displayName}${level ? ` · ${level}` : ''}`,
+					// 层级是 供应商 / 模型名 / 强度：当前强度由三级里的单选项表示，别串到二级标题上
+					label: model.displayName,
 					subMenu: [
 						{
 							type: 'radio' as const,
-							value: `${key}|`,
-							label: '默认（不传强度）',
+							value: `${providerModel}|`,
+							label: '默认',
 							checked: isCurrent && !level,
 						},
-						...values.map((v) => ({
+						...thinkingValues.map((v) => ({
 							type: 'radio' as const,
-							value: `${key}|${v}`,
+							value: `${providerModel}|${v}`,
 							label: v,
 							checked: isCurrent && level === v,
 						})),
@@ -618,11 +635,12 @@ export default function ChatView() {
 				modelId: model.id,
 				apiFormat: provider.apiFormat,
 				baseUrl: provider.baseUrl,
+				fullUrl: provider.fullUrl,
 				apiKey: provider.apiKey,
 				customParams: { ...provider.customParams, ...model.customParams },
 				supportsVision: !!model.supportsVision,
-				// 只有用户显式选过档位才写参数；「默认」= 不传
-				thinking: level && model.thinking?.param ? { param: model.thinking.param, value: level } : undefined,
+				// 只有用户显式选过档位才写参数；「默认」= 不传。参数名没填时用 reasoning_effort
+				thinking: level ? { param: model.thinking?.param || DEFAULT_THINKING_PARAM, value: level } : undefined,
 			};
 		}
 

@@ -320,6 +320,15 @@ const refreshTodoList = async (conversationId: string) => {
 	todoListActions.set(conversationId, list);
 };
 
+/**
+ * 本轮已经补拉过一次 ctx 的会话。
+ *
+ * 为什么要记录这个：
+ * 新会话发第一句时，前端本地还没有 agentCtx —— 首条 system prompt 是后端起跑后才写进 messages[0] 的，SSE 不下发它。于是生成中的上下文用量只估到用户消息 + 在飞正文，漏掉 system prompt。
+ * 因此需借「第一个流式 chunk」这个请求已发出的时点补拉一次 ctx；这里记录哪些会话已经补拉过一次。
+ */
+const ctxPrimed = new Set<string>();
+
 const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 	if (event.type === 'done') {
 		void refreshTodoList(conversationId);
@@ -346,6 +355,10 @@ const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 		actions.setConversationRunStatus(conversationId, 'running');
 	}
 	overlayActions.produce(conversationId, (draft) => applyEvent(draft, event));
+	if ((event.type === 'text' || event.type === 'reasoning') && !ctxPrimed.has(conversationId)) {
+		ctxPrimed.add(conversationId);
+		void loadConversationCtx(conversationId);
+	}
 	// 给这个会话的在飞内容打拍子（渲染侧只读「当前查看的那份」的 tick，别的会话在飞不会牵动它）
 	streamTickActions.bump(conversationId);
 };
@@ -364,6 +377,7 @@ const beginRun = async (conversationId: string, userMessage: string) => {
 	//   不清掉其它会话的订阅 —— 否则切到 B 时会把 A 的 SSE 也关掉，A 的在飞内容就彻底丢了。
 	runErrorActions.clear(conversationId);
 	overlayActions.clear(conversationId);
+	ctxPrimed.delete(conversationId);
 	// 清空之后立刻把用户这条消息摆上去：自己刚发的话不该等后端回话才出现
 	seedUserMessage(conversationId, userMessage);
 	streamTickActions.bump(conversationId);

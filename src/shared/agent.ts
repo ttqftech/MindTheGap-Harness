@@ -576,6 +576,7 @@ export interface ModelConfig {
 	apiKey: string;
 	customParams?: Record<string, unknown>;
 	supportsVision?: boolean;
+	fullUrl?: boolean;	// 勾选「完整 URL」：baseUrl 即完整端点，请求时不再补 /v1 与接口路径
 	/**
 	 * 本次请求要写的思考强度：`param` 是模型设置里的参数名（支持 `a.b` 嵌套路径），
 	 * `value` 是用户在下拉框三级菜单里选的档位。不选 = undefined（不传，走模型默认）。
@@ -868,6 +869,9 @@ export interface McpServerStatus {
 
 // #region 10. 设置
 
+/** 思考强度参数名的默认值（OpenAI 兼容接口普遍用 reasoning_effort） */
+export const DEFAULT_THINKING_PARAM = 'reasoning_effort';
+
 /** 模型提供商（完整配置） */
 export interface ModelProvider {
 	id: string;
@@ -875,6 +879,7 @@ export interface ModelProvider {
 	apiFormat: 'openai-chat' | 'openai-responses' | 'anthropic';
 	baseUrl: string;
 	apiKey: string;
+	fullUrl?: boolean;	// 勾选「完整 URL」：baseUrl 即完整端点，请求时不再补 /v1 与接口路径
 	models: ModelProviderModel[];
 	customParams: Record<string, unknown>;
 }

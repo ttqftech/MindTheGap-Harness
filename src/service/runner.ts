@@ -388,6 +388,12 @@ export class AgentRunner {
 	private streamBuffer = new Map<string, DeltaStreamEvent>();
 	private streamTimer: ReturnType<typeof setTimeout> | null = null;
 
+	/**
+	 * 正在流式输出、但还没落成消息的半截回复（按实例，同一实例同时只有一个在飞调用）。
+	 * 正常路径在请求结束后由完整的 assistant 消息取代；被 endRun 取消时请求不会返回，就得靠这份缓冲把用户已经看到的内容落盘
+	 */
+	private liveOutput = new Map<string, { entryId: string; text: string; reasoning: string }>();
+
 	private doneResolve: (() => void) | null = null;
 	private donePromise: Promise<void>;
 
@@ -444,6 +450,7 @@ export class AgentRunner {
 				this.emitStream({ type: 'agent_end', agentInstanceId: instance.agentInstanceId, status: 'interrupted' });
 			}
 		}
+		this.flushInterruptedOutput();	// 用户已经看到的那半截回复必须赶在落盘之前补上
 		this.persist();
 		this.finishDone();
 	}
@@ -731,6 +738,9 @@ export class AgentRunner {
 				this.clearBackgroundNotices();
 			}
 			instance.stateSnapshot = snapshot;
+			// 首条 system prompt 是上面才写进 messages[0] 的（模板 + 变量 + 工具描述，往往几千 token）。
+			// 立刻同步回会话：前端在首轮生成中补拉 ctx 时才能拿到它，上下文用量才不会漏算这一大块。
+			if (instance.llmCalls === 0) this.persist();
 
 			// ⭐ 本次调用的 assistant 条目：**先建 id 再发请求**。
 			//    流式 chunk 只能靠这个 id 归属到同一条消息（条目本身要等调用结束才有完整内容），
@@ -742,14 +752,18 @@ export class AgentRunner {
 					messages: llmMessages,
 					tools: llmTools,
 					onChunk: (chunk) => {
+						const live = this.liveOutput.get(agentInstanceId) ?? { entryId: assistantEntryId, text: '', reasoning: '' };
 						// 思考增量先发：思考模型的推理阶段通常远长于正文，
 						// 只推 text 的话「模型正在思考」这段时间界面上是全黑的。
 						if (chunk.reasoningDelta) {
+							live.reasoning += chunk.reasoningDelta;
 							this.emitStream({ type: 'reasoning', agentInstanceId, messageId: assistantEntryId, chunk: chunk.reasoningDelta });
 						}
 						if (chunk.textDelta) {
+							live.text += chunk.textDelta;
 							this.emitStream({ type: 'text', agentInstanceId, messageId: assistantEntryId, chunk: chunk.textDelta });
 						}
+						this.liveOutput.set(agentInstanceId, live);
 					},
 					signal: this.abortController.signal,
 				},
@@ -784,6 +798,7 @@ export class AgentRunner {
 				}));
 			}
 			instance.messages.push({ ...message(assistantMessage, assistantEntryId), usages: [usageEntry] });
+			this.liveOutput.delete(agentInstanceId);	// 完整消息已落地，半截缓冲功成身退
 			instance.lastUpdatedAt = now();
 			// 给在飞中的前端 ctx 发送 usage 事件（因不可能从 chunk 中携带 usage，所以要另发）
 			this.emitStream({
@@ -821,8 +836,11 @@ export class AgentRunner {
 			const err = e as Error;
 			if (this.aborted || err?.name === 'AbortError') {
 				exitReason = 'interrupted';
+				// 非 cancel 触发的 AbortError 也得保住半截回复；cancel 路径同步阶段已落过，这里按 id 判重
+				this.flushInterruptedOutput();
 				this.markInterrupted(instance, '用户取消');
 			} else {
+				this.liveOutput.delete(agentInstanceId);	// 请求没成功但也没被取消，别留着半截缓冲等下次误落盘
 				logMsg.error(`[Runner] 实例 ${agentInstanceId} 出错:`, err.message);
 				instance.status = 'failed';
 				instance.interruptReason = err.message;
@@ -1585,8 +1603,36 @@ export class AgentRunner {
 		this.persist();
 	}
 
+	/**
+	 * 把被中断时已经吐出的半截回复落成一条 assistant 消息。
+	 *
+	 * ⚠️ 必须能在 cancel() 里**同步**调用：前端 stopRun 收到 cancel 响应后立刻 endRun，
+	 *    那一瞬间就清掉 overlay 并重拉 ctx；等 agentLoop 的 catch 再落盘已经来不及了。
+	 *    按 entryId 判重，所以随后 catch 里的兜底调用是安全的。
+	 */
+	private flushInterruptedOutput(): void {
+		for (const [agentInstanceId, live] of this.liveOutput) {
+			const instance = this.ctx.agentInstances[agentInstanceId];
+			if (!instance || (!live.text && !live.reasoning)) continue;
+			if (instance.messages.some((m) => m.id === live.entryId)) continue;
+			const partial: AgentInstanceMessage = {
+				...message({ role: 'assistant', content: live.text }, live.entryId),
+			};
+			if (live.reasoning) partial.reasoningContent = live.reasoning;
+			// cancel() 已经把「用户取消」系统事件压在末尾了，半截回复要排在它前面才符合时间线
+			let insertAt = instance.messages.length;
+			while (insertAt > 0 && instance.messages[insertAt - 1].kind === 'notice') insertAt--;
+			instance.messages.splice(insertAt, 0, partial);
+			instance.lastUpdatedAt = now();
+		}
+		this.liveOutput.clear();
+	}
+
 	/** 标记实例为已中断，更新状态、触发事件、（如果自己是子实例）处理结束事件 */
 	private markInterrupted(instance: AgentInstance, reason: string): void {
+		// cancel() 已同步把实例标成 interrupted 并落了「用户取消」系统事件；
+		// 紧接着 agentLoop 捕获 AbortError 会再走到这里，必须跳过，否则界面出现两条「用户取消」。
+		if (instance.status === 'interrupted' && instance.interruptReason === reason) return;
 		instance.status = 'interrupted';
 		instance.interruptReason = reason;
 		instance.messages.push(noticeEntry(reason));

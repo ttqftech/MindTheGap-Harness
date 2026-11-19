@@ -1107,6 +1107,39 @@ select.field-input {
 	gap: 8px;
 }
 
+/* 请求地址 + 「完整 URL」复选框并排 */
+.url-line {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+
+	.field-input {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.check-line {
+		flex: 0 0 auto;
+		white-space: nowrap;
+	}
+}
+
+/* 思考模式：参数名与强度列表左右并排 */
+.think-line {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+
+	.ctx-line {
+		flex: 0 1 240px;
+	}
+
+	.tags-box {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+}
+
 .tag-lab {
 	flex: 0 0 34px;
 	font-family: var(--font-mono);

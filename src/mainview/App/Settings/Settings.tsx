@@ -13,7 +13,7 @@ import { getCurrentThemeMode } from '@mainview/theme/theme';
 import { setAppTheme } from '@mainview/logic/appCommands';
 import type { ModelProvider } from '@mainview/stores';
 import type { ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition, UserConfig } from '@shared/agent';
-import { PERMISSION_LABELS } from '@shared/agent';
+import { PERMISSION_LABELS, DEFAULT_THINKING_PARAM } from '@shared/agent';
 import { sha256Hex } from '@shared/sha256';
 import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
 import { testMcpServer, testProviderModel, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers, getRequestLogLevel, setRequestLogLevel } from '@mainview/bridges/agentBridge';
@@ -386,7 +386,7 @@ function ModelRow(props: {
 	};
 
 	const thinkValues = () => props.model.thinking?.values ?? [];
-	const setThinkValues = (values: string[], param = props.model.thinking?.param ?? '') => patch({ thinking: { param, values } });
+	const setThinkValues = (values: string[], param = props.model.thinking?.param || DEFAULT_THINKING_PARAM) => patch({ thinking: { param, values } });
 
 	const addTag = () => {
 		const v = tagDraft().trim();
@@ -409,6 +409,7 @@ function ModelRow(props: {
 			modelId: id,
 			apiFormat: p.apiFormat,
 			baseUrl: p.baseUrl,
+			fullUrl: p.fullUrl,
 			apiKey: p.apiKey,
 			customParams: { ...p.customParams, ...(props.model.customParams ?? {}) },
 		});
@@ -508,41 +509,43 @@ function ModelRow(props: {
 				</Field>
 
 				<Field label="思考模式" hint="填模型 API 文档里的强度参数路径（嵌套用点号）；可选值回车添加，点 × 删除" wide>
-					<div class={styles['ctx-line']}>
-						<span class={styles['tag-lab']}>参数名</span>
-						<input
-							class={`${styles['field-input']} ${styles.mono}`}
-							value={props.model.thinking?.param ?? ''}
-							placeholder="reasoning_effort 或 reasoning.effort"
-							oninput={(e) => patch({ thinking: { param: e.currentTarget.value, values: thinkValues() } })}
-						/>
-					</div>
-					{/* 可选值直接长在输入框里：标签是框内的 chip，回车添加、点 × 删除 */}
-					<div class={styles['tags-box']}>
-						<For each={thinkValues()}>
-							{(v) => (
-								<span class={styles['tag']}>
-									{v}
-									<button type="button" class={styles['tag-x']} title="移除" onclick={() => setThinkValues(thinkValues().filter((x) => x !== v))}>
-										×
-									</button>
-								</span>
-							)}
-						</For>
-						<input
-							class={styles['tags-input']}
-							value={tagDraft()}
-							placeholder="输入思考强度，如 low / high，回车添加"
-							oninput={(e) => setTagDraft(e.currentTarget.value)}
-							onkeydown={(e) => {
-								if (e.key === 'Enter') {
-									e.preventDefault();
-									addTag();
-								} else if (e.key === 'Backspace' && !tagDraft() && thinkValues().length > 0) {
-									setThinkValues(thinkValues().slice(0, -1));
-								}
-							}}
-						/>
+					<div class={styles['think-line']}>
+						<div class={styles['ctx-line']}>
+							<span class={styles['tag-lab']}>参数名</span>
+							<input
+								class={`${styles['field-input']} ${styles.mono}`}
+								value={props.model.thinking?.param || DEFAULT_THINKING_PARAM}
+								placeholder="reasoning_effort 或 reasoning.effort"
+								oninput={(e) => patch({ thinking: { param: e.currentTarget.value, values: thinkValues() } })}
+							/>
+						</div>
+						{/* 可选值直接长在输入框里：标签是框内的 chip，回车添加、点 × 删除 */}
+						<div class={styles['tags-box']}>
+							<For each={thinkValues()}>
+								{(v) => (
+									<span class={styles['tag']}>
+										{v}
+										<button type="button" class={styles['tag-x']} title="移除" onclick={() => setThinkValues(thinkValues().filter((x) => x !== v))}>
+											×
+										</button>
+									</span>
+								)}
+							</For>
+							<input
+								class={styles['tags-input']}
+								value={tagDraft()}
+								placeholder="输入思考强度，如 low / high，回车添加"
+								oninput={(e) => setTagDraft(e.currentTarget.value)}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') {
+										e.preventDefault();
+										addTag();
+									} else if (e.key === 'Backspace' && !tagDraft() && thinkValues().length > 0) {
+										setThinkValues(thinkValues().slice(0, -1));
+									}
+								}}
+							/>
+						</div>
 					</div>
 				</Field>
 
@@ -641,13 +644,22 @@ function ProviderEditor(props: {
 						<For each={API_FORMAT_OPTIONS}>{(o) => <option value={o.value}>{o.label}</option>}</For>
 					</select>
 				</Field>
-				<Field label="请求地址">
-					<input
-						class={`${styles['field-input']} ${styles.mono}`}
-						value={props.provider.baseUrl}
-						placeholder="https://api.openai.com/v1"
-						oninput={(e) => patch({ baseUrl: e.currentTarget.value })}
-					/>
+				<Field label="请求地址" hint="勾选「完整 URL」后，这里填的就是完整端点，不再补 /v1 与接口路径（如智谱 /api/paas/v4/chat/completions）" wide>
+					<div class={styles['url-line']}>
+						<input
+							class={`${styles['field-input']} ${styles.mono}`}
+							value={props.provider.baseUrl}
+							placeholder="https://api.openai.com/v1"
+							oninput={(e) => patch({ baseUrl: e.currentTarget.value })}
+						/>
+						<label class={styles['check-line']} title="勾选后按原样请求这个地址，不拼接 /v1/chat/completions 等后缀">
+							<ffbox-checkbox
+								prop:checked={!!props.provider.fullUrl}
+								onchange={(e) => patch({ fullUrl: e.detail === true })}
+							/>
+							<span>完整 URL</span>
+						</label>
+					</div>
 				</Field>
 				<Field label="API Key" hint="仅保存在本机 settings.json，请求时放进鉴权头">
 					<input

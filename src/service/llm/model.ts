@@ -233,12 +233,15 @@ function buildHeaders(apiKey: string, extra: Record<string, string> = {}): Recor
  * 拼接流式请求的完整 URL。
  *
  * 1. 去掉 baseUrl 尾部多余斜杠，避免出现 `https://host//v1/...`
- * 2. 若 baseUrl 中尚未包含 `/v1` 路径段，则自动补上
+ * 2. 勾选「完整 URL」时，baseUrl 本身就是完整端点（智谱 /api/paas/v4/chat/completions
+ *    这种路径里没有 /v1），原样返回，既不补 /v1 也不追加 endpoint
+ * 3. 若 baseUrl 中尚未包含 `/v1` 路径段，则自动补上
  *    （DeepSeek 等兼容 OpenAI 的端点要求 `/v1` 前缀）
- * 3. 去掉 endpoint 开头多余斜杠，保证最终拼接结果唯一
+ * 4. 去掉 endpoint 开头多余斜杠，保证最终拼接结果唯一
  */
-function genStreamUrl(baseUrl: string, endpoint: string): string {
-	let u = baseUrl.replace(/\/+$/, '');
+function genStreamUrl(config: ModelConfig, endpoint: string): string {
+	let u = config.baseUrl.replace(/\/+$/, '');
+	if (config.fullUrl) return u;
 	if (!u.includes('/v1') && !u.includes('/v1/')) {
 		u = u + '/v1';
 	}
@@ -355,7 +358,7 @@ async function streamOpenAiChat(
 		});
 	}
 
-	const url = genStreamUrl(config.baseUrl, 'chat/completions');
+	const url = genStreamUrl(config, 'chat/completions');
 	const body: Record<string, unknown> = {
 		model: config.modelId,
 		messages: toOpenAiWireMessages(messages),	// 必须转 wire 格式（tool_call_id 等）
@@ -507,7 +510,7 @@ async function streamOpenAiResponses(
 	onChunk: (chunk: LlmResponseChunk) => void,
 	signal?: AbortSignal,
 ): Promise<ParsedLlmResult> {
-	const url = genStreamUrl(config.baseUrl, 'responses');
+	const url = genStreamUrl(config, 'responses');
 	// Responses API 需要把 system message 抽出来。
 	let leadSystem: LlmMessage | undefined;
 	const inputMsgs: Record<string, unknown>[] = [];
@@ -608,7 +611,7 @@ async function streamAnthropic(
 ): Promise<ParsedLlmResult> {
 	// ⚠️ endpoint 只能是 `messages`：genStreamUrl 已经负责补 `/v1`，写成 `v1/messages` 会拼出
 	// `.../v1/v1/messages`（原来的写法就是这样，anthropic 分支其实一直没跑通过）
-	const url = genStreamUrl(config.baseUrl, 'messages');
+	const url = genStreamUrl(config, 'messages');
 	// ⭐ 只有**第一条** system 走顶层 `system` 参数：它是缓存前缀的第二层，必须逐字节稳定。
 	//   其余 system（尾部强度指令 / 动态状态，以及历史中途的 `<self_check>` / 预算收尾通知）保持 `role:'system'` 原样就地发出
 	let leadSystem: LlmMessage | undefined;
@@ -866,6 +869,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 			...rawConfig,
 			apiFormat: 'openai-chat',
 			baseUrl: mock!.baseUrl,
+			fullUrl: false,	// mock 地址是 base URL，仍要按接口格式拼 /v1/chat/completions
 			apiKey: rawConfig.apiKey || 'mock',
 			modelId: `mock:${mock!.scenario}`,
 		}
@@ -1098,7 +1102,7 @@ export async function testModelConnectivity(config: ModelConfig): Promise<ModelT
 	const endpoint = config.apiFormat === 'openai-chat'
 		? 'chat/completions'
 		: config.apiFormat === 'openai-responses' ? 'responses' : 'messages';
-	const url = genStreamUrl(config.baseUrl, endpoint);
+	const url = genStreamUrl(config, endpoint);
 
 	const ping = [{ role: 'user', content: 'ping' }];
 	const body: Record<string, unknown> = config.apiFormat === 'openai-responses'
