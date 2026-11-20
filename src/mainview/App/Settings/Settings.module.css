@@ -1228,3 +1228,32 @@ select.field-input {
 		color: var(--text-placeholder);
 	}
 }
+
+/* ---------- 媒体 Tab / 模型页的视频编码单选 ---------- */
+.media-radio,
+.codec-radio {
+	width: 210px;
+	height: 128px;
+	flex: 0 0 auto;
+	overflow: hidden;
+	border-radius: var(--r-sm);
+	border: 1px solid var(--border);
+}
+
+.codec-radio {
+	width: 240px;
+	height: 148px;
+}
+
+.media-option-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-top: 8px;
+}
+
+.media-option-desc {
+	font-size: var(--fs-xs);
+	color: var(--text-placeholder);
+	line-height: 1.6;
+}

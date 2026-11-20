@@ -33,7 +33,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, McpServerConfig } from '../shared/agent';
-import { defaultUsers } from '../shared/agent';
+import { defaultUsers, DEFAULT_MEDIA_SETTINGS } from '../shared/agent';
 
 // #region 路径 & 文件读写
 
@@ -43,6 +43,11 @@ const CONVERSATIONS_DIR = join(DATA_DIR, 'conversations');
 
 /** 落盘防抖时长（ms） */
 const SAVE_DEBOUNCE_MS = 700;
+
+/** 全局媒体缓存：空白会话的预览产物 + 首句发出后回填真会话的素材 */
+export function mediaCacheDir(): string {
+	return join(DATA_DIR, 'media-cache');
+}
 
 /** 会话目录（workspace / backups / requestLog 的根） */
 export function conversationDir(conversationId: string): string {
@@ -237,6 +242,8 @@ const defaultSettings: ServiceSettings = {
 	basePrompt: '',
 	// 工具安全性：全局开关，所有模式共用。缺字段的老 settings.json 走这里（normal = 全开 + 删除进回收站）
 	safety: 'normal',
+	// 图片 / 视频输入默认档位：缺字段的老 settings.json 由 loadSettings 整键补上
+	media: { ...DEFAULT_MEDIA_SETTINGS },
 	folders: [{ id: 'local', isLocal: true }],
 	mcpServers: defaultMcpServers(),
 	// 默认只有一个「空用户名 = 管理员、无密码、全权限」的账号（见 auth.ts）。

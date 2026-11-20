@@ -19,7 +19,7 @@
  */
 
 import { join } from 'node:path';
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, BackgroundTask, ConversationRunStatus, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, BackgroundTask, ConversationRunStatus, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, LlmVideoRef, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
 import { callLlm, LlmEmptyResponseError } from './llm/model';
 import { mcpManager } from './mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
@@ -206,23 +206,32 @@ function noticeEntry(content: string): AgentInstanceMessage {
  *
  * ⚠️ 所有 callLlm 调用点都必须经过本函数 —— 直接 map instance.messages 会把 UI 专用内容塞给模型。
  */
-function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?: string; supportsVision?: boolean }): LlmMessage[] {
+function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?: string; supportsVision?: boolean; supportsVideo?: boolean }): LlmMessage[] {
 	const base = entries
 		.filter((m) => !m.uiOnly)
 		.map(({ id: _id, updatedAt: _updatedAt, uiOnly: _uiOnly, kind: _kind, data: _data, usages: _usages, ...rest }) => rest);
 	// ⚠️ 压缩必须在这里做（而不是写回 messages）：界面、落盘、sub-agent 回填都读同一份 messages，
 	// 只有「发给模型」这一份可以被裁剪。详见 compactContext 的注释。
 	// return compactContext(base);
-	// 把图片引用读成 base64：只有 supportsVision 的模型才做这一步，不然图片在 wire 层会被丢弃，
-	// 提前读盘只会白烧 IO / 内存。
-	if (!opts?.supportsVision || !opts.conversationId) return base;
+	// 附件引用现读成 base64：只有对应能力开启的模型才做，不然 wire 层会丢掉，提前读盘只是白烧 IO。
+	// ⭐ 视频走**原生通道**（转码后的 mp4 本体），不抽帧、不降级成图片。
 	return base.map((msg) => {
-		if (!msg.images?.length) return msg;
-		const images = msg.images.flatMap((img) => {
-			const base64 = img.file ? readAttachmentBase64(opts.conversationId!, img.file) : null;
-			return base64 ? [{ ...img, base64 }] : [];
-		});
-		return { ...msg, images };
+		// 没读成 base64 的 videos 是内部引用，绝不能混进 wire 层
+		const { videos: _videos, ...rest } = msg;
+		if (!opts?.conversationId) return rest;
+		const images = opts.supportsVision && msg.images?.length
+			? msg.images.flatMap((img) => {
+				const base64 = img.file ? readAttachmentBase64(opts.conversationId!, img.file) : null;
+				return base64 ? [{ ...img, base64 }] : [];
+			})
+			: undefined;
+		const videos = opts.supportsVideo && msg.videos?.length
+			? msg.videos.flatMap((video) => {
+				const base64 = video.file ? readAttachmentBase64(opts.conversationId!, video.file) : null;
+				return base64 ? [{ ...video, base64 }] : [];
+			})
+			: undefined;
+		return { ...rest, ...(images ? { images } : {}), ...(videos?.length ? { videos } : {}) };
 	});
 }
 
@@ -478,9 +487,11 @@ export class AgentRunner {
 	 * - 会话还没有根实例 → 新建，实例树里只有它自己
 	 * - 根实例的 Agent 不再是当前模式的根 Agent（切换过模式）→ **就地转换**成新模式的根 Agent，消息记录原样保留
 	 */
-	async run(userMessage: string, imageRefs?: LlmImageRef[]): Promise<void> {
-		// 图片由前端先上传进会话附件目录（远程连接也一样），ctx 里只落引用；请求时再读成 base64
+	async run(userMessage: string, imageRefs?: LlmImageRef[], videoRefs?: LlmVideoRef[]): Promise<void> {
+		// 媒体由前端先上传进会话附件目录（远程连接也一样），ctx 里只落引用；请求时再读成 base64
 		const images = (imageRefs ?? []).filter((img) => !!img?.file && attachmentExists(this.conversationId, img.file));
+		// 视频只留下转码产物还在的引用，避免 ctx 里挂一串读不出来的空壳
+		const videos = (videoRefs ?? []).filter((video) => !!video?.file && attachmentExists(this.conversationId, video.file));
 		const limits = this.getModeLimits();
 		this.ctx.budget = { total: limits.totalRounds, spent: 0 };
 		// ⚠️ 循环预算（`ctx.budget` + 每个实例的 `rounds`）是**一次 run 的护栏**，不是会话 / 实例的终身上限：用户一开口就是新的预算周期。
@@ -500,6 +511,7 @@ export class AgentRunner {
 				depth: 0,
 				task: userMessage,
 				images,
+				videos,
 			});
 			this.ctx.agentInstances[instanceId] = root;
 			this.ctx.rootAgentInstanceId = instanceId;
@@ -542,9 +554,9 @@ export class AgentRunner {
 		root.lastUpdatedAt = now();
 		if (!isNewRoot) root.reflectionsRemaining = agentDef.reflectionCount ?? 0;	// 反思次数是实例级字段且只减不增；根实例永续之后必须按轮重置，否则反思用尽一次就再也不反思了
 		if (!isNewRoot) {
-			const userEntry = message({ role: 'user', content: userMessage, images });
+			const userEntry = message({ role: 'user', content: userMessage, images, videos });
 			root.messages.push(userEntry);	// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，非新建的时候才在这里再补一条
-			this.emitEvent(root, 'user_message', { content: userMessage, images });
+			this.emitEvent(root, 'user_message', { content: userMessage, images, videos });
 			this.emitStream({
 				type: 'agent_start',
 				agentInstanceId: root.agentInstanceId,
@@ -554,9 +566,10 @@ export class AgentRunner {
 				depth: root.depth,
 				task: userMessage,
 				images,
+				videos,
 			});
 		} else {
-			this.emitEvent(root, 'user_message', { content: userMessage, images });
+			this.emitEvent(root, 'user_message', { content: userMessage, images, videos });
 		}
 		this.enterLoop(root.agentInstanceId, 'user_message');
 	}
@@ -582,13 +595,14 @@ export class AgentRunner {
 	}
 
 	/** 创建一个 Agent 实例，放入 this.ctx 中，并补充父实例的 childAgentInstanceIds、发送事件 */
-	private createInstance(params: { agentInstanceId: string; agentId: string; def: AgentDefinition; depth: number; task: string; parentAgentInstanceId?: string; images?: LlmImageRef[] }): AgentInstance {
+	private createInstance(params: { agentInstanceId: string; agentId: string; def: AgentDefinition; depth: number; task: string; parentAgentInstanceId?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[] }): AgentInstance {
 		const firstUserEntry = message({
 			role: 'user',
 			content: params.parentAgentInstanceId
 				? `[来自父 Agent 的任务]\n${params.task}`	// TODO 提示词中同样可以嵌入 parentPrompt，考虑配置是否插入这句话
 				: params.task,
 			images: params.images,
+			videos: params.videos,
 		});
 		const instance: AgentInstance = {
 			agentInstanceId: params.agentInstanceId,
@@ -625,6 +639,7 @@ export class AgentRunner {
 			depth: instance.depth,
 			task: params.task,
 			images: params.images,
+			videos: params.videos,
 		});
 		this.emitStream({
 			type: 'agent_start',
@@ -636,6 +651,7 @@ export class AgentRunner {
 			depth: instance.depth,
 			task: params.task,
 			images: params.images,
+			videos: params.videos,
 		});
 		return instance;
 	}
@@ -719,7 +735,7 @@ export class AgentRunner {
 			// 动态状态：渲染 prompt.state.md，非空则拼入本次 LLM 请求尾部（不写入 instance.messages）
 			const promptCtx = this.buildPromptContext(instance, tools);
 			const { content: stateContent, snapshot } = renderStatePrompt(promptCtx);
-			const llmMessages = toLlmMessages(instance.messages, { conversationId: this.conversationId, supportsVision: this.model?.supportsVision });
+			const llmMessages = toLlmMessages(instance.messages, { conversationId: this.conversationId, supportsVision: this.model?.supportsVision, supportsVideo: this.model?.supportsVideo });
 			// ⭐ 强度指令（模式级 effort.md）同样走尾部，且排在动态状态之前：
 			//    这样「按 run 稳定的那一段」尽量靠前、每轮变化的只有最后一条。
 			//    它不进 system prompt —— 改强度不碰前缀 ⇒ 会话中途换档不会炸掉整段历史的缓存。
@@ -1229,7 +1245,7 @@ export class AgentRunner {
 		if (!target) return { success: false, content: `找不到子实例 ${targetId}` };
 
 		// 去掉首条 system，其余全带上（uiOnly 条目由 toLlmMessages 滤掉）
-		const history = toLlmMessages(target.messages.filter((_, index) => index !== 0), { conversationId: this.conversationId, supportsVision: this.model?.supportsVision });
+		const history = toLlmMessages(target.messages.filter((_, index) => index !== 0), { conversationId: this.conversationId, supportsVision: this.model?.supportsVision, supportsVideo: this.model?.supportsVideo });
 
 		const prompt = `${ASK_CHILD_FIXED_PROMPT}\n\n# 提问\n${question}`;
 		try {

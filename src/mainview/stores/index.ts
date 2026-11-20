@@ -12,7 +12,8 @@
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/bridges/localBridge';
 import * as agentBridge from '@mainview/bridges/agentBridge';
-import type { AgentCtx, ConversationMeta, ConversationRunStatus, ModelProvider, ModelProviderModel, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission } from '@shared/agent';
+import type { AgentCtx, ConversationMeta, ConversationRunStatus, ImageQuality, MediaSettings, ModelProvider, ModelProviderModel, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission, VideoQuality } from '@shared/agent';
+import { DEFAULT_MEDIA_SETTINGS } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
 import { createEmptyOverlay, type OverlayCtx } from '@mainview/logic/projection';
@@ -96,7 +97,7 @@ export type UIState = {
 	exitTheme: ExitThemeId;
 	conversationSort: ConversationSort;
 	settingsProgress: number;	// 设置面板的打开进度：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置。拖拽时逐帧写入（`setSettingsProgress`），松手 / 点击后由 store 用 rAF 缓动到 0 或 1。
-	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理';
+	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理' | '媒体';
 	viewMode: ViewMode;
 	/**
 	 * 「跑完了但你还没看」的会话 id（侧边栏绿点，相当于未读标记）。
@@ -146,6 +147,8 @@ export type AppState = {
 	mcpStatus: McpServerStatus[];	// MCP 运行态（后端内存维护，不持久化）
 	/** 工具安全性档位（后端 settings.safety）。**全局开关**，所有模式 / 插件共用一份，不是模式配置 */
 	safety: agentBridge.ToolSafety;
+	/** 图片 / 视频输入的默认清晰度（后端 settings.media 的镜像） */
+	media: MediaSettings;
 	/** 内置 mock 开关（后端 settings.debug.mock）。开发用：LLM 走假模型，**工具仍真实执行** */
 	mock: { enabled: boolean; scenario: string; scenarios: { id: string; label: string }[] };
 };
@@ -211,6 +214,7 @@ export const defaultState: AppState = {
 	mcpServers: [],
 	mcpStatus: [],
 	safety: 'normal',
+	media: { ...DEFAULT_MEDIA_SETTINGS },
 	mock: { enabled: false, scenario: 'web', scenarios: [] },
 };
 
@@ -414,6 +418,7 @@ async function saveBackendSettings() {
 	await agentBridge.setBasePrompt(state.basePrompt);
 	await agentBridge.setFolders(state.folders);
 	await agentBridge.setMcpServers(state.mcpServers);
+	await agentBridge.setMediaSettings(state.media);
 }
 
 /**
@@ -423,7 +428,7 @@ async function saveBackendSettings() {
 export async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, safety, mock] = await Promise.all([
+	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, safety, mock, media] = await Promise.all([
 		agentBridge.getProviders(),
 		agentBridge.getCurrentModel(),
 		agentBridge.getModes(),
@@ -434,6 +439,7 @@ export async function loadBackendState(): Promise<void> {
 		agentBridge.health(),
 		agentBridge.getSafety(),
 		agentBridge.getMock(),
+		agentBridge.getMediaSettings(),
 	]);
 
 	if (providers.length > 0) setState('providers', providers);
@@ -453,6 +459,7 @@ export async function loadBackendState(): Promise<void> {
 	setState('mcpServers', mcpServers);
 	setState('safety', safety);
 	setState('mock', mock);
+	setState('media', media);
 
 	if (conversations.length > 0) {
 		// UI 侧会话 = 元信息（ctx 按需拉，见 loadConversationCtx）
@@ -785,6 +792,15 @@ export const actions = {
 	},
 	setSettingsTab(tab: AppState['ui']['activeSettingsTab']) {
 		setState('ui', 'activeSettingsTab', tab);
+	},
+	/** 媒体默认清晰度：真相在后端 settings.media，走和 providers 一样的防抖写盘 */
+	setMediaImageQuality(quality: ImageQuality) {
+		setState('media', 'imageQuality', quality);
+		scheduleSaveBackend();
+	},
+	setMediaVideoQuality(quality: VideoQuality) {
+		setState('media', 'videoQuality', quality);
+		scheduleSaveBackend();
 	},
 	setViewMode(mode: ViewMode) {
 		setState('ui', 'viewMode', mode);

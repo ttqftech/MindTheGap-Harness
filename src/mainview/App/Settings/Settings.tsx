@@ -12,8 +12,8 @@ import { state, actions, hasPermission, serviceOriginLabel } from '@mainview/sto
 import { getCurrentThemeMode } from '@mainview/theme/theme';
 import { setAppTheme } from '@mainview/logic/appCommands';
 import type { ModelProvider } from '@mainview/stores';
-import type { ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition, UserConfig } from '@shared/agent';
-import { PERMISSION_LABELS, DEFAULT_THINKING_PARAM } from '@shared/agent';
+import type { ModelProviderModel, McpServerConfig, McpToolInfo, LlmRequestRecord, AgentDefinition, UserConfig, ImageQuality, VideoQuality, VideoCodec } from '@shared/agent';
+import { PERMISSION_LABELS, DEFAULT_THINKING_PARAM, IMAGE_QUALITY_OPTIONS, VIDEO_QUALITY_OPTIONS, VIDEO_CODEC_OPTIONS } from '@shared/agent';
 import { sha256Hex } from '@shared/sha256';
 import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
 import { testMcpServer, testProviderModel, getMode, getRequests, clearRequests, saveModeJson, getUsers, setUsers as saveUsers, getRequestLogLevel, setRequestLogLevel } from '@mainview/bridges/agentBridge';
@@ -251,6 +251,64 @@ function GeneralTab() {
 						刷新
 					</button>
 				</div>
+			</div>
+		</>
+	);
+}
+
+/* ---------- 媒体 Tab ----------
+   默认值真相在后端 settings.media；改动走 store 的防抖写盘（和 providers 同一条通道）。
+   -------------------------------------------------------------------------- */
+
+/** ffbox-radio-list 实际派发的 detail 是 `{ value, index }`（类型声明写的是 string），两种都认 */
+function radioValue(e: CustomEvent<unknown>): string {
+	const detail = e.detail as { value?: string } | string | undefined;
+	return typeof detail === 'string' ? detail : (detail?.value ?? '');
+}
+
+function MediaTab() {
+	return (
+		<>
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>图片输入</div>
+				<div class={styles['setting-group-desc']}>新放进输入框的图片默认按这一档压缩；每张图都能点缩略图在弹窗里单独改。</div>
+				<div class={styles['setting-row']}>
+					<div class={styles['setting-row-label']}>
+						<span class={styles['setting-row-title']}>默认清晰度</span>
+						<span class={styles['setting-row-desc']}>压缩由后端完成，发给模型与弹窗预览用的是同一份产物</span>
+					</div>
+					<div class={styles['media-radio']}>
+						<ffbox-radio-list
+							prop:list={IMAGE_QUALITY_OPTIONS.map((option) => ({ value: option.value, caption: option.label }))}
+							prop:value={state.media.imageQuality}
+							onchange={(e) => actions.setMediaImageQuality(radioValue(e) as ImageQuality)}
+						/>
+					</div>
+				</div>
+				<For each={IMAGE_QUALITY_OPTIONS}>{(option) => (
+					<div class={styles['media-option-desc']}>{option.label} · {option.desc}</div>
+				)}</For>
+			</div>
+
+			<div class={styles['setting-group']}>
+				<div class={styles['setting-group-label']}>视频输入</div>
+				<div class={styles['setting-group-desc']}>视频按 1fps 重编码后以 mp4 本体交给模型；是否允许输入、用哪种编码在「模型」页按模型单独设置。</div>
+				<div class={styles['setting-row']}>
+					<div class={styles['setting-row-label']}>
+						<span class={styles['setting-row-title']}>默认清晰度</span>
+						<span class={styles['setting-row-desc']}>三档统一按 1fps 重编码，转码后的 mp4 本体直接发给模型</span>
+					</div>
+					<div class={styles['media-radio']}>
+						<ffbox-radio-list
+							prop:list={VIDEO_QUALITY_OPTIONS.map((option) => ({ value: option.value, caption: option.label }))}
+							prop:value={state.media.videoQuality}
+							onchange={(e) => actions.setMediaVideoQuality(radioValue(e) as VideoQuality)}
+						/>
+					</div>
+				</div>
+				<For each={VIDEO_QUALITY_OPTIONS}>{(option) => (
+					<div class={styles['media-option-desc']}>{option.label} · {option.desc}</div>
+				)}</For>
 			</div>
 		</>
 	);
@@ -507,6 +565,39 @@ function ModelRow(props: {
 						<span>该模型可以接收图片</span>
 					</label>
 				</Field>
+
+				<Field label="支持视频输入">
+					<label class={styles['check-line']}>
+						<ffbox-checkbox prop:checked={!!props.model.supportsVideo} onchange={(e) => patch({ supportsVideo: e.detail === true })} />
+						<span>该模型可以接收视频（转码后的 mp4 本体）</span>
+					</label>
+				</Field>
+
+				<Show when={props.model.supportsVideo}>
+					<Field label="视频编码" hint="转码产物既用于前端预览，也用于抽取发给模型的帧；H.266 是彩蛋，不会真的启用" wide>
+						<div class={styles['codec-radio']}>
+							<ffbox-radio-list
+								prop:list={VIDEO_CODEC_OPTIONS.map((option) => ({ value: option.value, caption: option.label }))}
+								prop:value={props.model.videoCodec ?? 'h264'}
+								onchange={(e) => {
+									const value = radioValue(e) as VideoCodec;
+									if (value === 'h266') {
+										// 组件内部已经把 value 改成 h266，先弹回去再提示，别让它停在选中态
+										(e.currentTarget as unknown as { value: string }).value = props.model.videoCodec ?? 'h264';
+										void alertMsgbox('才不让你选呢', '相信我，选这项会浪费你的时间，不可以选～');
+										return;
+									}
+									if (value) patch({ videoCodec: value });
+								}}
+							/>
+						</div>
+						<div class={styles['media-option-list']}>
+							<For each={VIDEO_CODEC_OPTIONS}>{(option) => (
+								<div class={styles['media-option-desc']}>{option.label} · {option.desc}</div>
+							)}</For>
+						</div>
+					</Field>
+				</Show>
 
 				<Field label="思考模式" hint="填模型 API 文档里的强度参数路径（嵌套用点号）；可选值回车添加，点 × 删除" wide>
 					<div class={styles['think-line']}>
@@ -2005,12 +2096,13 @@ function UsersTab() {
 
 /* ---------- 设置面板主体 ---------- */
 
-type TabId = '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理';
+type TabId = '通用' | '模型' | '媒体' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理';
 
 // ⚠️ 「用户管理」只有拿到 `userManagement` 权限才出现（见 UsersTab / 侧边栏状态行菜单）
 const TABS: Array<{ id: TabId; label: string }> = [
 	{ id: '通用', label: '通用' },
 	{ id: '模型', label: '模型' },
+	{ id: '媒体', label: '媒体' },
 	{ id: '提示词', label: '提示词' },
 	{ id: '用量', label: '用量' },
 	{ id: '插件 / 模式', label: '插件 / 模式' },
@@ -2081,6 +2173,7 @@ export default function Settings() {
 					<div class={styles['settings-content']}>
 						{state.ui.activeSettingsTab === '通用' && <GeneralTab />}
 						{state.ui.activeSettingsTab === '模型' && <ModelsTab />}
+						{state.ui.activeSettingsTab === '媒体' && <MediaTab />}
 						{state.ui.activeSettingsTab === '提示词' && <PromptTab />}
 						{state.ui.activeSettingsTab === '用量' && <UsageTab />}
 						{state.ui.activeSettingsTab === '插件 / 模式' && <PluginModeTab />}

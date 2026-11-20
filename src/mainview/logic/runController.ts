@@ -31,7 +31,7 @@ import {
 	markConversationUnread,
 } from '@mainview/stores';
 import type { OverlayCtx } from '@mainview/logic/projection';
-import type { AgentInstanceMessage, AgentStreamEvent, LlmImageRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
+import type { AgentInstanceMessage, AgentStreamEvent, LlmImageRef, LlmVideoRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
 
 // #region 订阅集合
 
@@ -183,6 +183,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			if (existing) {
 				existing.content = content;
 				existing.images = event.images;
+				existing.videos = event.videos;
 				existing.updatedAt = event.timestamp;
 			} else {
 				// 发送时已经本地乐观种过一条（`seedUserMessage`），它还没有后端 id ——
@@ -192,9 +193,10 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 					seeded.id = event.messageId;
 					seeded.content = content;
 					seeded.images = event.images;
+					seeded.videos = event.videos;
 					seeded.updatedAt = event.timestamp;
 				} else {
-					messages.push({ id: event.messageId, role: 'user', content, images: event.images, updatedAt: event.timestamp });
+					messages.push({ id: event.messageId, role: 'user', content, images: event.images, videos: event.videos, updatedAt: event.timestamp });
 				}
 			}
 			break;
@@ -456,6 +458,7 @@ export interface StartRunParams {
 	runningDir?: string;
 	model: ModelConfig;
 	images?: LlmImageRef[];
+	videos?: LlmVideoRef[];
 	/** Composer 下方动态表单的选择（覆盖 mode.json 的 params 默认值），见 shared/modeParams.ts */
 	params?: Record<string, ParamValue>;
 }
@@ -479,6 +482,7 @@ export async function startRun(params: StartRunParams): Promise<void> {
 			runningDir: params.runningDir,
 			model: params.model,
 			images: params.images,
+			videos: params.videos,
 			params: params.params,
 		});
 		if (!result.ok) {

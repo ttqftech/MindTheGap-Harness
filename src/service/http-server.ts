@@ -10,7 +10,8 @@
 
 import { createReadStream, existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, ModeDefinition, ModeSummary, ModelConfig, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, MediaPrepareRequest, MediaSettings, ModeDefinition, ModeSummary, ModelConfig, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
+import { DEFAULT_MEDIA_SETTINGS, DRAFT_MEDIA_CONVERSATION_ID, IMAGE_QUALITY_VALUES, VIDEO_QUALITY_VALUES } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './runner';
 import * as auth from './auth';
@@ -23,7 +24,7 @@ import { getLoadErrors, listModes, listPlugins, loadAllPlugins, saveModeJson } f
 import { mcpManager } from './mcp/manager';
 import * as background from './background';
 import { settings, conversations, conversationMetas, getConversationCtxById, createConversation, getFolderExtraInfo, snapshot, defaultMcpServers, flushAll } from './storage';
-import { guessMimeByFileName, attachmentPath, MAX_IMAGE_BYTES, saveImageBuffer } from './attachments';
+import { guessMimeByFileName, attachmentPath, prepareMedia, uploadAndEncode } from './attachments';
 import { logMsg } from '../shared/utils';
 
 // 端口可用 MTG_HTTP_PORT 覆盖：调试时想起第二个实例（不杀正在跑的那个）就走它。
@@ -82,28 +83,6 @@ function readBody(req: IncomingMessage): Promise<string> {
 		let data = '';
 		req.on('data', (chunk) => (data += chunk));
 		req.on('end', () => resolve(data));
-		req.on('error', reject);
-	});
-}
-
-/**
- * 读二进制请求体（图片上传）。
- * 超过 `maxBytes` 直接返回 null —— 边读边判，避免先把整段字节留在内存里再检查。
- */
-function readBinaryBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | null> {
-	return new Promise((resolve, reject) => {
-		const chunks: Buffer[] = [];
-		let total = 0;
-		req.on('data', (chunk: Buffer) => {
-			total += chunk.length;
-			if (total > maxBytes) {
-				resolve(null);
-				req.destroy();
-				return;
-			}
-			chunks.push(chunk);
-		});
-		req.on('end', () => resolve(Buffer.concat(chunks)));
 		req.on('error', reject);
 	});
 }
@@ -194,7 +173,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 	activeRunners.set(conversationId, runner);
 
 	runner
-		.run(params.userMessage, params.images)
+		.run(params.userMessage, params.images, params.videos)
 		.then(() => runner.waitDone())
 		.then(() => {
 			if (activeRunners.get(conversationId) === runner) activeRunners.delete(conversationId);
@@ -489,30 +468,44 @@ export function startHttpServer(options: { channel?: string } = {}) {
 					}
 				}
 
-				// 上传附件（图片）：前端把字节直接 POST 上来。Content-Type 即图片 mime，文件名走 query（避免请求头编码问题）。
-				if (rest === 'attachments' && req.method === 'POST') {
-					if (!conversations[conversationId]) {
-						sendJson(res, 404, { ok: false, error: '会话不存在' });
-						return;
-					}
-					const name = url.searchParams.get('name') ?? '';
-					const mime = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-					const data = await readBinaryBody(req, MAX_IMAGE_BYTES);
-					if (!data) {
-						sendJson(res, 413, { ok: false, error: `图片超过 ${MAX_IMAGE_BYTES / 1000 / 1000} MB 上限` });
-						return;
-					}
-					const image = saveImageBuffer(conversationId, name, mime, data);
-					if (!image) {
-						sendJson(res, 400, { ok: false, error: '不支持的图片类型（仅 png / jpeg / webp / gif）或内容为空' });
-						return;
-					}
-					sendJson(res, 200, { ok: true, image });
+			// 媒体附件（图片 / 视频）：prepare 判重 → 缺原始字节才 upload → 转码完成才返回
+			if (rest === 'media/prepare' && req.method === 'POST') {
+				if (conversationId !== DRAFT_MEDIA_CONVERSATION_ID && !conversations[conversationId]) {
+					sendJson(res, 404, { ok: false, error: '会话不存在' });
 					return;
 				}
+				const body = await readBody(req);
+				let params: MediaPrepareRequest;
+				try { params = JSON.parse(body || '{}') as MediaPrepareRequest; } catch {
+					sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
+					return;
+				}
+				const result = await prepareMedia(conversationId, params);
+				sendJson(res, result.ok ? 200 : 400, result);
+				return;
+			}
 
-				// 会话附件（图片）：`<img src>` 直接读，鉴权走 query sessionId（见上面的闸门例外）
-				if (rest.startsWith('attachments/')) {
+			if (rest === 'media/upload' && req.method === 'POST') {
+				if (conversationId !== DRAFT_MEDIA_CONVERSATION_ID && !conversations[conversationId]) {
+					sendJson(res, 404, { ok: false, error: '会话不存在' });
+					return;
+				}
+				// 参数走 query：body 是原始字节，不能混 JSON（文件名 / MIME 都是 ASCII，编码无忧）
+				const params: MediaPrepareRequest = {
+					kind: url.searchParams.get('kind') === 'video' ? 'video' : 'image',
+					hash: url.searchParams.get('hash') ?? '',
+					name: url.searchParams.get('name') ?? '',
+					mime: url.searchParams.get('mime') ?? String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase(),
+					quality: (url.searchParams.get('quality') ?? 'normal') as MediaPrepareRequest['quality'],
+					codec: (url.searchParams.get('codec') ?? undefined) as MediaPrepareRequest['codec'],
+				};
+				const result = await uploadAndEncode(conversationId, params, req);
+				sendJson(res, result.ok ? 200 : 400, result);
+				return;
+			}
+
+			// 会话附件（图片 / 视频）：`<img>` `<video>` 直接读，鉴权走 query sessionId（见上面的闸门例外）
+			if (rest.startsWith('attachments/')) {
 					if (req.method === 'GET') {
 						const file = decodeURIComponent(rest.slice('attachments/'.length));
 						const filePath = attachmentPath(conversationId, file);
@@ -709,6 +702,36 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				settings.safety = safety as ToolSafety;
 				logMsg(`[HttpServer] 工具安全性：${settings.safety}`);
 				sendJson(res, 200, { ok: true, safety: settings.safety });
+				return;
+			}
+
+			// #endregion
+
+			// #region 设置 — 媒体输入（图片 / 视频的默认清晰度）
+
+			if (req.method === 'GET' && path === '/api/settings/media') {
+				const rawImage = settings.media?.imageQuality;
+				const rawVideo = settings.media?.videoQuality;
+				sendJson(res, 200, {
+					media: {
+						imageQuality: IMAGE_QUALITY_VALUES.includes(rawImage as MediaSettings['imageQuality']) ? rawImage : DEFAULT_MEDIA_SETTINGS.imageQuality,
+						videoQuality: VIDEO_QUALITY_VALUES.includes(rawVideo as MediaSettings['videoQuality']) ? rawVideo : DEFAULT_MEDIA_SETTINGS.videoQuality,
+					},
+				});
+				return;
+			}
+
+			if (req.method === 'PUT' && path === '/api/settings/media') {
+				const body = await readBody(req);
+				const { media } = JSON.parse(body || '{}') as { media?: Partial<MediaSettings> };
+				const imageQuality = media?.imageQuality ?? DEFAULT_MEDIA_SETTINGS.imageQuality;
+				const videoQuality = media?.videoQuality ?? DEFAULT_MEDIA_SETTINGS.videoQuality;
+				if (!IMAGE_QUALITY_VALUES.includes(imageQuality) || !VIDEO_QUALITY_VALUES.includes(videoQuality)) {
+					sendJson(res, 400, { ok: false, error: '媒体清晰度档位不合法' });
+					return;
+				}
+				settings.media = { imageQuality, videoQuality };
+				sendJson(res, 200, { ok: true, media: settings.media });
 				return;
 			}
 

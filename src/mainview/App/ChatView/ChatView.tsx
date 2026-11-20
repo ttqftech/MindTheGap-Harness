@@ -13,8 +13,8 @@
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import type { MenuItem } from 'ffbox-ui';
-import type { Folder, LlmImageRef, ModelConfig, ModeParamControl, ParamValue } from '@shared/agent';
-import { DEFAULT_THINKING_PARAM } from '@shared/agent';
+import type { Folder, ImageQuality, LlmImageRef, LlmVideoRef, MediaPrepareRequest, ModelConfig, ModeParamControl, ParamValue, VideoCodec, VideoQuality } from '@shared/agent';
+import { DEFAULT_THINKING_PARAM, DRAFT_MEDIA_CONVERSATION_ID } from '@shared/agent';
 import { findOption, resolveModeParams, sameParamValue } from '@shared/modeParams';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
 import { diffRenderTree, foldCtxToRenderTree, mergeOverlayCtx } from '@mainview/logic/projection';
@@ -31,7 +31,21 @@ import MTGlogo from './MTG-logo-transparent.svg';
 import { FolderChipIcon, ImageChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow, fmtTokens } from '@mainview/App/ChatView/RenderTree/shared';
 import RenderTreeView from './RenderTree/RenderTree';
 import { createOpenState } from './RenderTree/openState';
+import { hashMediaFile, mediaKindOf } from '@mainview/logic/mediaHash';
+import { showMediaPreviewMsgbox } from './MediaPreview';
 import styles from './ChatView.module.css';
+
+/** 输入框里一个待发送的媒体（图片或视频）；hash 在选入时后台算，发送前 await */
+interface PendingMedia {
+	id: string;
+	file: File;
+	name: string;
+	kind: 'image' | 'video';
+	previewUrl: string;
+	quality: ImageQuality | VideoQuality;
+	codec: VideoCodec;
+	hashPromise: Promise<string>;
+}
 
 // #region 主组件
 
@@ -39,15 +53,17 @@ export default function ChatView() {
 
 	const [inputText, setInputText] = createSignal('');
 	/**
-	 * 本轮待发送的图片（存 **File 本身 + 本地预览 URL**）。
-	 * 发送时先把字节 POST 到会话附件目录（连的可能是另一台机器上的 Service），
-	 * 再把后端返回的 `LlmImageRef` 交给 run —— 不把本地路径当附件用。
+	 * 本轮待发送的媒体（存 **File 本身 + 本地预览 URL + 当前档位**）。
+	 * 发送时先 prepare 判重，缺原始字节才 POST；后端转码完成才返回引用。
 	 */
-	const [pendingImages, setPendingImages] = createSignal<{ file: File; name: string; previewUrl: string }[]>([]);
-	/** 正在上传图片（这期间禁用发送，避免只发出半套附件） */
+	const [pendingMedia, setPendingMedia] = createSignal<PendingMedia[]>([]);
+	/** 内容 hash 单独存一份：算完不换 item 引用，`<For>` 就不会把 chip 重建掉 */
+	const [mediaHashes, setMediaHashes] = createSignal<Record<string, string>>({});
+	/** 正在上传 / 转码媒体（这期间禁用发送，避免只发出半套附件） */
 	const [uploading, setUploading] = createSignal(false);
 	/** 隐藏的文件选择框：走浏览器原生 `accept` 过滤，不依赖主进程对话框 */
 	let imageInputRef: HTMLInputElement | undefined;
+	let videoInputRef: HTMLInputElement | undefined;
 	/**
 	 * 「当前查看的会话是不是正在跑」—— 直接从后端下发的三态 runStatus 派生，不再有本地镜像。
 	 *
@@ -146,6 +162,10 @@ export default function ChatView() {
 
 	/** 当前模型能不能收图（设置页 model.supportsVision）；没选模型一律当不支持 */
 	const currentModelSupportsVision = () => !!currentModelEntry()?.model.supportsVision;
+	/** 当前模型能不能收视频（按模型配置的 supportsVideo） */
+	const currentModelSupportsVideo = () => !!currentModelEntry()?.model.supportsVideo;
+	/** 该模型接收视频时用的编码（缺省 H.264） */
+	const currentModelVideoCodec = (): VideoCodec => currentModelEntry()?.model.videoCodec ?? 'h264';
 
 	/** 百分比文案：没有上下文窗口配置就显示 — */
 	const percentText = (percent: number | undefined): string =>
@@ -552,77 +572,117 @@ export default function ChatView() {
 	// #region 发送 / 停止 / 回答提问
 
 	/**
-	 * 把图片文件收进待发送区（选图 / 粘贴共用）。
-	 * 预览用本地 object URL；真正发出去前才上传，不在选择时上传。
+	 * 把媒体文件收进待发送区（选文件 / 粘贴共用）。
+	 * 预览用本地 object URL；内容 hash 后台异步算，真正发出去前才判重 / 上传。
 	 */
-	const addImageFiles = (files: File[]) => {
-		const accepted = files.filter((f) => /^image\/(png|jpeg|webp|gif)$/.test(f.type));
+	const addMediaFiles = (files: File[]) => {
+		const accepted = files.filter((file) => !!mediaKindOf(file.type, file.name));
 		if (!accepted.length) return;
-		setPendingImages((prev) => [
-			...prev,
-			...accepted.map((file) => ({
+		const items: PendingMedia[] = accepted.map((file) => {
+			const kind = mediaKindOf(file.type, file.name)!;
+			return {
+				id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
 				file,
-				name: file.name || `image-${Date.now()}`,
+				name: file.name || `${kind}-${Date.now()}`,
+				kind,
 				previewUrl: URL.createObjectURL(file),
-			})),
-		]);
+				quality: kind === 'image' ? appState.media.imageQuality : appState.media.videoQuality,
+				codec: currentModelVideoCodec(),
+				hashPromise: hashMediaFile(file).catch(() => ''),
+			};
+		});
+		setPendingMedia((prev) => [...prev, ...items]);
+		for (const item of items) {
+			void item.hashPromise.then((hash) => setMediaHashes((prev) => ({ ...prev, [item.id]: hash })));
+		}
 	};
 
-	/** 点「图片」按钮：走隐藏的 `<input type=file accept=image/*>`（WebView2 / 远程浏览器都可用） */
-	const pickImages = () => {
-		if (isGenerating()) return;
-		if (!currentModelSupportsVision()) {
+	/** 点「图片」/「视频」按钮：走隐藏的 `<input type=file>`（WebView2 / 远程浏览器都可用） */
+	const pickMedia = (kind: 'image' | 'video') => {
+		if (isGenerating() || uploading()) return;
+		if (kind === 'image' && !currentModelSupportsVision()) {
 			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
 			return;
 		}
-		imageInputRef?.click();
+		if (kind === 'video' && !currentModelSupportsVideo()) {
+			void alertMsgbox('当前模型不支持视频输入', '请到「设置 → 模型」为该模型打开「支持视频输入」并选择编码。');
+			return;
+		}
+		(kind === 'image' ? imageInputRef : videoInputRef)?.click();
 	};
 
-	const onImageInputChange = (e: Event) => {
+	const onMediaInputChange = (e: Event) => {
 		const input = e.currentTarget as HTMLInputElement;
-		addImageFiles([...(input.files ?? [])]);
-		input.value = '';	// 清空才能再次选同一张
+		addMediaFiles([...(input.files ?? [])]);
+		input.value = '';	// 清空才能再次选同一份
 	};
 
-	/** Ctrl+V 粘贴截图：与选图走同一条待发送队列（纯文本粘贴仍交给 textarea 默认行为） */
+	/** Ctrl+V 粘贴截图 / 视频：与选文件走同一条待发送队列（纯文本粘贴仍交给 textarea 默认行为） */
 	const handlePaste = (e: ClipboardEvent) => {
 		const files = [...(e.clipboardData?.items ?? [])]
-			.filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+			.filter((item) => item.kind === 'file' && !!mediaKindOf(item.type, ''))
 			.map((item) => item.getAsFile())
 			.filter((f): f is File => !!f);
 		if (!files.length || isGenerating()) return;
 		e.preventDefault();
-		if (!currentModelSupportsVision()) {
+		if (files.some((f) => mediaKindOf(f.type, f.name) === 'image') && !currentModelSupportsVision()) {
 			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
 			return;
 		}
-		addImageFiles(files);
+		if (files.some((f) => mediaKindOf(f.type, f.name) === 'video') && !currentModelSupportsVideo()) {
+			void alertMsgbox('当前模型不支持视频输入', '请到「设置 → 模型」为该模型打开「支持视频输入」并选择编码。');
+			return;
+		}
+		addMediaFiles(files);
 	};
 
-	const removePendingImage = (index: number) => {
-		setPendingImages((prev) => {
+	/** 点缩略图 → 弹 Msgbox 看后端真实转码产物，并可改这一份附件的清晰度 */
+	const openMediaPreview = (index: number) => {
+		const item = pendingMedia()[index];
+		if (!item) return;
+		const hash = mediaHashes()[item.id];
+		if (!hash) {
+			void alertMsgbox('还在计算文件指纹', '文件比较大，稍等一下再点开预览。');
+			return;
+		}
+		showMediaPreviewMsgbox({
+			conversationId: appState.activeConversationId ?? DRAFT_MEDIA_CONVERSATION_ID,
+			file: item.file,
+			name: item.name,
+			kind: item.kind,
+			hash,
+			quality: item.quality,
+			codec: item.codec,
+			onApply: (quality) => setPendingMedia((prev) => prev.map((media, i) => (i === index ? { ...media, quality } : media))),
+		});
+	};
+
+	const removePendingMedia = (index: number) => {
+		setPendingMedia((prev) => {
 			const removed = prev[index];
 			if (removed) URL.revokeObjectURL(removed.previewUrl);
 			return prev.filter((_, i) => i !== index);
 		});
 	};
 
-	/** 清空待发送图片并回收本地预览 URL */
-	const clearPendingImages = () => {
-		setPendingImages((prev) => {
-			for (const img of prev) URL.revokeObjectURL(img.previewUrl);
+	/** 清空待发送媒体并回收本地预览 URL */
+	const clearPendingMedia = () => {
+		setPendingMedia((prev) => {
+			for (const media of prev) URL.revokeObjectURL(media.previewUrl);
 			return [];
 		});
 	};
 
 	onCleanup(() => {
-		for (const img of pendingImages()) URL.revokeObjectURL(img.previewUrl);
+		for (const media of pendingMedia()) URL.revokeObjectURL(media.previewUrl);
 	});
 
 	const handleSend = async () => {
 		const text = inputText().trim();
-		const images = pendingImages();
-		if ((!text && !images.length) || isGenerating() || uploading()) return;
+		const media = pendingMedia();
+		if ((!text && !media.length) || isGenerating() || uploading()) return;
+		const hasImages = media.some((item) => item.kind === 'image');
+		const hasVideos = media.some((item) => item.kind === 'video');
 
 		/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
 		function buildModelConfig(): ModelConfig | null {
@@ -639,6 +699,7 @@ export default function ChatView() {
 				apiKey: provider.apiKey,
 				customParams: { ...provider.customParams, ...model.customParams },
 				supportsVision: !!model.supportsVision,
+				supportsVideo: !!model.supportsVideo,
 				// 只有用户显式选过档位才写参数；「默认」= 不传。参数名没填时用 reasoning_effort
 				thinking: level ? { param: model.thinking?.param || DEFAULT_THINKING_PARAM, value: level } : undefined,
 			};
@@ -650,8 +711,12 @@ export default function ChatView() {
 			void alertMsgbox('未配置模型', '请先在「设置 → 模型」里配置模型提供商与模型，然后再发起任务。');
 			return;
 		}
-		if (images.length && !modelConfig.supportsVision) {
+		if (hasImages && !modelConfig.supportsVision) {
 			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
+			return;
+		}
+		if (hasVideos && !currentModelSupportsVideo()) {
+			void alertMsgbox('当前模型不支持视频输入', '视频以转码后的 mp4 本体发给模型，请到「设置 → 模型」为该模型打开「支持视频输入」并选择编码。');
 			return;
 		}
 		if (appState.modes.length === 0) {
@@ -669,11 +734,11 @@ export default function ChatView() {
 				const folder = appState.folders.find((f) => sameFolderPath(f.id, draft.id)) ?? actions.addFolder(draft.id);
 				folderId = folder?.id ?? draft.id;
 			}
-			conv = await actions.createConversation(folderId, text.slice(0, 20) || (images.length ? '图片任务' : '新会话'));
+			conv = await actions.createConversation(folderId, text.slice(0, 20) || (hasVideos ? '视频任务' : hasImages ? '图片任务' : '新会话'));
 			if (!conv) return;
 		} else if (!conv.agentCtx) {
 			// 会话还没有跑过 → 用首句当标题（旧逻辑用 messages 为空判断，现在等价于「没有 ctx」）
-			await actions.renameConversation(conv.id, text.slice(0, 30) || (images.length ? '图片任务' : '新会话'));
+			await actions.renameConversation(conv.id, text.slice(0, 30) || (hasVideos ? '视频任务' : hasImages ? '图片任务' : '新会话'));
 		}
 		const convId = conv.id;
 
@@ -682,20 +747,37 @@ export default function ChatView() {
 		const runningDir = appState.folders.find((f) => f.id === conv.folderId)?.path;
 
 		/**
-		 * 先把图片**上传**进会话附件目录，再带着 `LlmImageRef` 发起 run。
+		 * 先 prepare 判重：命中缓存、或后端拿已有 raw 自己转码时，前端一个字节都不用发。
+		 * 只有后端说 needUpload 才 POST 原始字节，且接口要等转码完成才返回。
 		 * ⚠️ 不能传本地路径：前端连的可能是另一台机器上的 Service（保留远程连接能力）。
 		 */
 		const imageRefs: LlmImageRef[] = [];
-		if (images.length) {
+		const videoRefs: LlmVideoRef[] = [];
+		if (media.length) {
 			setUploading(true);
 			try {
-				for (const img of images) {
-					const result = await agentBridge.uploadAttachment(convId, img.file);
-					if (!result.ok || !result.image) {
-						void alertMsgbox('图片上传失败', `${img.name}：${result.error ?? '未知错误'}`);
-						return;	// 输入文本与待发送图片都保留，让用户重试
+				const hashes = await Promise.all(media.map((item) => item.hashPromise));
+				for (let i = 0; i < media.length; i++) {
+					const item = media[i];
+					if (!hashes[i]) {
+						void alertMsgbox('文件指纹计算失败', `${item.name}：无法读取文件内容，请重新添加。`);
+						return;
 					}
-					imageRefs.push(result.image);
+					const params: MediaPrepareRequest = {
+						kind: item.kind,
+						hash: hashes[i],
+						name: item.name,
+						mime: item.file.type || 'application/octet-stream',
+						quality: item.quality,
+						codec: item.kind === 'video' ? item.codec : undefined,
+					};
+					const result = await agentBridge.ensureMedia(convId, params, item.file);
+					if (!result.ok) {
+						void alertMsgbox('媒体准备失败', `${item.name}：${result.error ?? '未知错误'}`);
+						return;	// 输入文本与待发送媒体都保留，让用户重试
+					}
+					if (item.kind === 'image' && result.image) imageRefs.push(result.image);
+					if (item.kind === 'video' && result.video) videoRefs.push(result.video);
 				}
 			} finally {
 				setUploading(false);
@@ -703,7 +785,7 @@ export default function ChatView() {
 		}
 
 		setInputText('');
-		clearPendingImages();
+		clearPendingMedia();
 		// 用户自己发的消息必须让他看见：哪怕刚才滚上去读历史，也重新贴住底部（之后靠跟随保持）
 		bottomFollow?.jump();
 		// 每轮开始清掉上一轮的折叠记录：根实例是永续的，不清会串到新轮次的同名块上（见块渲染区的说明）
@@ -717,6 +799,7 @@ export default function ChatView() {
 			runningDir,
 			model: modelConfig,
 			images: imageRefs,
+			videos: videoRefs,
 			params: runParams(),
 		});
 	};
@@ -876,27 +959,42 @@ export default function ChatView() {
 						rows={1}
 					/>
 
-					{/* 隐藏的文件选择框：`accept` 在系统文件对话框里就过滤成图片，不会退化成「选文件夹」 */}
+					{/* 隐藏的文件选择框：`accept` 在系统文件对话框里就过滤，不会退化成「选文件夹」 */}
 					<input
 						ref={imageInputRef}
 						type="file"
-						accept="image/png,image/jpeg,image/webp,image/gif"
+						accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
 						multiple
 						style={{ display: 'none' }}
-						onchange={onImageInputChange}
+						onchange={onMediaInputChange}
+					/>
+					<input
+						ref={videoInputRef}
+						type="file"
+						accept="video/mp4,video/webm,video/quicktime,video/x-matroska,video/x-msvideo,video/*"
+						multiple
+						style={{ display: 'none' }}
+						onchange={onMediaInputChange}
 					/>
 
-					{/* 待发送的图片：本地 object URL 直接出缩略图；发送时才上传 */}
-					<Show when={pendingImages().length > 0}>
+					{/* 待发送的媒体：本地 object URL 出缩略图；点缩略图弹 Msgbox 调清晰度 */}
+					<Show when={pendingMedia().length > 0}>
 						<div class={styles['input-attachments']}>
-							<For each={pendingImages()}>{(img, index) => (
-								<span class={styles['attachment-chip']} title={img.name}>
-									<img class={styles['attachment-thumb']} src={img.previewUrl} alt={img.name} />
-									<span class={styles['attachment-name']}>{img.name}</span>
+							<For each={pendingMedia()}>{(item, index) => (
+								<span class={styles['attachment-chip']} title={`${item.name} · 点击预览并调整清晰度`}>
+									<button class={styles['attachment-thumb-btn']} title="预览 / 调整清晰度" onclick={() => openMediaPreview(index())}>
+										<Show when={item.kind === 'image'}>
+											<img class={styles['attachment-thumb']} src={item.previewUrl} alt={item.name} />
+										</Show>
+										<Show when={item.kind === 'video'}>
+											<video class={styles['attachment-thumb']} src={item.previewUrl} muted preload="metadata" />
+										</Show>
+									</button>
+									<span class={styles['attachment-name']}>{item.name}</span>
 									<button
 										class={styles['attachment-remove']}
-										title="移除这张图片"
-										onclick={() => removePendingImage(index())}
+										title="移除这份媒体"
+										onclick={() => removePendingMedia(index())}
 									>
 										×
 									</button>
@@ -906,15 +1004,27 @@ export default function ChatView() {
 					</Show>
 
 					<div class={styles['input-toolbar']}>
-						{/* 图片附件：模型不支持视觉时禁用，点按给出明确提示 */}
+						{/* 图片 / 视频附件：模型没开对应能力时点按给出明确提示 */}
 						<button
 							class={styles['ctx-chip']}
-							title={currentModelSupportsVision() ? '添加图片（发送时随请求一起交给模型）' : '当前模型未开启「支持图片输入」，去「设置 → 模型」里打开'}
+							title={currentModelSupportsVision() ? '添加图片（发送时按所选清晰度压缩后交给模型）' : '当前模型未开启「支持图片输入」，去「设置 → 模型」里打开'}
 							disabled={isGenerating() || uploading()}
-							onclick={pickImages}
+							onclick={() => pickMedia('image')}
 						>
 							<ImageChipIcon />
 							<span class={styles['ctx-chip-text']}>图片</span>
+						</button>
+						<button
+							class={styles['ctx-chip']}
+							title={currentModelSupportsVideo() ? '添加视频（转码后以 mp4 本体交给模型）' : '当前模型未开启「支持视频输入」，去「设置 → 模型」里打开'}
+							disabled={isGenerating() || uploading()}
+							onclick={() => pickMedia('video')}
+						>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<rect x="3" y="5" width="13" height="14" rx="2" />
+								<path d="M16 10l5-3v10l-5-3z" />
+							</svg>
+							<span class={styles['ctx-chip-text']}>视频</span>
 						</button>
 
 						{/* 运行文件夹 */}
@@ -1015,7 +1125,7 @@ export default function ChatView() {
 								class={styles['input-send-btn']}
 								title="发送"
 								onclick={() => void handleSend()}
-								disabled={uploading() || (!inputText().trim() && !pendingImages().length)}
+								disabled={uploading() || (!inputText().trim() && !pendingMedia().length)}
 							>
 								<SendIcon />
 							</button>

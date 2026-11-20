@@ -6,7 +6,8 @@
  * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
  */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelConfig, ModelProvider, ModelTestResult, ModeSummary, Folder, LlmImageRef, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, UserConfig } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelConfig, ModelProvider, ModelTestResult, ModeSummary, Folder, ImageQuality, LlmImageRef, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, MediaPrepareRequest, MediaPrepareResult, MediaSettings, UserConfig, VideoCodec, VideoQuality } from '@shared/agent';
+import { DEFAULT_MEDIA_SETTINGS } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import { sha256Hex } from '@shared/sha256';
 
@@ -57,26 +58,80 @@ export function getAttachmentUrl(conversationId: string, file: string): string {
 	return `${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(file)}${query}`;
 }
 
-/**
- * 上传一张图片到会话附件目录（字节走 HTTP，**不依赖前端能访问服务器文件系统**）。
- * 文件名放 query、mime 放 Content-Type；返回后端落盘后的 `LlmImageRef`。
- */
-export async function uploadAttachment(conversationId: string, file: File): Promise<{ ok: boolean; image?: LlmImageRef; error?: string }> {
-	const query = new URLSearchParams({ name: file.name });
+// #region 媒体附件（图片 / 视频）
+
+/** prepare / upload 共用的一组参数：内容 hash + 当前档位 + 视频编码 */
+export type MediaParams = MediaPrepareRequest;
+
+/** 判重：命中就拿现成的 ref；后端已有 raw 时它自己重编码，前端连字节都不用发 */
+export async function prepareMedia(conversationId: string, params: MediaParams): Promise<MediaPrepareResult> {
 	try {
 		const resp = await fetch(
-			`${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/attachments?${query.toString()}`,
+			`${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/media/prepare`,
+			{
+				method: 'POST',
+				headers: authHeaders({ 'Content-Type': 'application/json' }),
+				body: JSON.stringify(params),
+			},
+		);
+		return (await resp.json().catch(() => ({}))) as MediaPrepareResult;
+	} catch (e) {
+		return { ok: false, error: (e as Error)?.message ?? String(e) };
+	}
+}
+
+/** 只有后端说 needUpload 才调它：裸字节 POST，返回时转码已经完成 */
+export async function uploadMedia(conversationId: string, params: MediaParams, file: File): Promise<MediaPrepareResult> {
+	const query = new URLSearchParams({
+		kind: params.kind,
+		hash: params.hash,
+		name: params.name,
+		mime: params.mime,
+		quality: params.quality,
+	});
+	if (params.codec) query.set('codec', params.codec);
+	try {
+		const resp = await fetch(
+			`${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/media/upload?${query.toString()}`,
 			{
 				method: 'POST',
 				headers: authHeaders({ 'Content-Type': file.type || 'application/octet-stream' }),
 				body: file,
 			},
 		);
-		const data = (await resp.json().catch(() => ({}))) as { ok?: boolean; image?: LlmImageRef; error?: string };
-		if (!resp.ok || !data.ok || !data.image) {
-			return { ok: false, error: data.error ?? `HTTP ${resp.status}` };
-		}
-		return { ok: true, image: data.image };
+		const data = (await resp.json().catch(() => ({}))) as MediaPrepareResult;
+		if (!resp.ok && !data.error) data.error = `HTTP ${resp.status}`;
+		return data;
+	} catch (e) {
+		return { ok: false, error: (e as Error)?.message ?? String(e) };
+	}
+}
+
+/** 一步到位：先判重，缺原始字节才上传。发送与 Msgbox 切档都走这里 */
+export async function ensureMedia(conversationId: string, params: MediaParams, file: File): Promise<MediaPrepareResult> {
+	const prepared = await prepareMedia(conversationId, params);
+	if (!prepared.ok) return prepared;
+	if (!prepared.needUpload) return prepared;
+	return uploadMedia(conversationId, params, file);
+}
+
+/** 媒体默认档位（后端 settings.media） */
+export async function getMediaSettings(): Promise<MediaSettings> {
+	try {
+		const r = await httpFetch<{ media: MediaSettings }>('/api/settings/media');
+		return r.media ?? DEFAULT_MEDIA_SETTINGS;
+	} catch {
+		return DEFAULT_MEDIA_SETTINGS;
+	}
+}
+
+export async function setMediaSettings(media: MediaSettings): Promise<{ ok: boolean; error?: string }> {
+	try {
+		return await httpFetch('/api/settings/media', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ media }),
+		});
 	} catch (e) {
 		return { ok: false, error: (e as Error)?.message ?? String(e) };
 	}

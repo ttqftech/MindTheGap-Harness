@@ -552,6 +552,23 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 									)}</For>
 								</div>
 							</Show>
+							{/* 视频按所选编码转好后存在会话附件目录里；<video> 直接读这份 mp4，不设 poster */}
+							<Show when={user().videos?.length}>
+								<div class={styles['user-videos']}>
+									<For each={user().videos}>{(video) => (
+										<div class={styles['user-video']} title={`${video.name} · ${video.codec}`}>
+											<video
+												src={getAttachmentUrl(props.convId, video.file)}
+												controls
+												preload="metadata"
+											/>
+											<span class={styles['user-video-name']}>
+												{video.name} · {video.quality} · {video.codec} · 1fps
+											</span>
+										</div>
+									)}</For>
+								</div>
+							</Show>
 						</div>
 					</div>
 				)}

@@ -263,6 +263,18 @@
 				border: 1px solid var(--border);
 				color: var(--text-secondary);
 			}
+			/* 缩略图是「点开预览 / 调清晰度」的按钮，本体仍是 img 或 video */
+			.attachment-thumb-btn {
+				display: inline-flex;
+				flex: 0 0 auto;
+				padding: 0;
+				border: none;
+				background: none;
+				cursor: pointer;
+				&:hover {
+					outline: 1px solid var(--accent);
+				}
+			}
 			.attachment-thumb {
 				width: 28px;
 				height: 28px;

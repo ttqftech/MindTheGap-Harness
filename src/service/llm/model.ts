@@ -11,7 +11,7 @@
    从 agent 目录迁入本目录（本次重构唯一的目录结构变化）。
    ========================================================================== */
 
-import type { LlmImageRef, LlmMessage, LlmTool, LlmToolCall, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
+import type { LlmImageRef, LlmMessage, LlmTool, LlmToolCall, LlmVideoRef, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
 import { logMsg, safeParseJson } from '../../shared/utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 
@@ -187,16 +187,29 @@ function visionImages(msg: LlmMessage, config: ModelConfig): LlmImageRef[] {
 	return (msg.images ?? []).filter((img) => !!img.base64);
 }
 
+/** 真正能发给模型的视频：模型勾选了 supportsVideo + runner 已经读出转码产物的 base64 */
+function visionVideos(msg: LlmMessage, config: ModelConfig): LlmVideoRef[] {
+	if (!config?.supportsVideo) return [];
+	return (msg.videos ?? []).filter((video) => !!video.base64);
+}
+
 /** OpenAI 系的图片是 data URL 内联，**不需要 CDN / 公网 URL** */
 function toImageDataUrl(img: LlmImageRef): string {
 	return `data:${img.mime};base64,${img.base64}`;
 }
 
-/** 日志 / dump 里剥掉 base64：一张图就是几 MB，留着会把 requestLog 撑爆 */
+/** 视频同理：本机的附件目录外部访问不到，一律 data URL 内联（data:video/mp4;base64,…） */
+function toVideoDataUrl(video: LlmVideoRef): string {
+	return `data:${video.mime};base64,${video.base64}`;
+}
+
+/** 日志 / dump 里剥掉 base64：一张图 / 一段视频就是几 MB，留着会把 requestLog 撑爆 */
 function messagesWithoutImageBase64(list: LlmMessage[]): LlmMessage[] {
 	return list.map((msg) => {
-		if (!msg.images?.length) return msg;
-		return { ...msg, images: msg.images.map(({ base64: _base64, ...rest }) => rest) };
+		const images = msg.images?.length ? msg.images.map(({ base64: _base64, ...rest }) => rest) : undefined;
+		const videos = msg.videos?.length ? msg.videos.map(({ base64: _base64, ...rest }) => rest) : undefined;
+		if (!images && !videos) return msg;
+		return { ...msg, ...(images ? { images } : {}), ...(videos ? { videos } : {}) };
 	});
 }
 
@@ -344,13 +357,18 @@ async function streamOpenAiChat(
 				}
 				return out;
 			}
-			// 用户消息带图 → content 变 parts 数组；纯文本仍保持字符串（兼容老网关）
+			// 用户消息带图 / 带视频 → content 变 parts 数组；纯文本仍保持字符串（兼容老网关）
 			const images = visionImages(msg, config);
-			if (msg.role === 'user' && images.length) {
+			const videos = visionVideos(msg, config);
+			if (msg.role === 'user' && (images.length || videos.length)) {
 				const parts: Array<Record<string, unknown>> = [];
 				if (msg.content) parts.push({ type: 'text', text: msg.content });
 				for (const img of images) {
 					parts.push({ type: 'image_url', image_url: { url: toImageDataUrl(img) } });
+				}
+				// ⭐ 视频发的是转码后的 mp4 本体（video_url + data URL），不做图片降级
+				for (const video of videos) {
+					parts.push({ type: 'video_url', video_url: { url: toVideoDataUrl(video) } });
 				}
 				return { role: 'user', content: parts };
 			}
@@ -524,14 +542,16 @@ async function streamOpenAiResponses(
 			inputMsgs.push({ role: 'function_call_output', call_id: m.toolCallId, output: m.content });
 			continue;
 		}
-		// 用户消息带图 → Responses 的 input_image 同样吃 data URL
+		// 用户消息带图 → Responses 的 input_image 同样吃 data URL；视频沿用 video_url part
 		const images = visionImages(m, config);
-		if (m.role === 'user' && images.length) {
+		const videos = visionVideos(m, config);
+		if (m.role === 'user' && (images.length || videos.length)) {
 			inputMsgs.push({
 				role: 'user',
 				content: [
 					...(m.content ? [{ type: 'input_text', text: m.content }] : []),
 					...images.map((img) => ({ type: 'input_image', image_url: toImageDataUrl(img) })),
+					...videos.map((video) => ({ type: 'video_url', video_url: { url: toVideoDataUrl(video) } })),
 				],
 			});
 			continue;
@@ -652,9 +672,10 @@ async function streamAnthropic(
 			});
 			continue;
 		}
-		// 用户消息带图 → Anthropic 的 base64 image block（media_type 必须写对）
+		// 用户消息带图 → Anthropic 的 base64 image block（media_type 必须写对）；视频用同形的 video block
 		const images = visionImages(m, config);
-		if (m.role === 'user' && images.length) {
+		const videos = visionVideos(m, config);
+		if (m.role === 'user' && (images.length || videos.length)) {
 			convMsgs.push({
 				role: 'user',
 				content: [
@@ -662,6 +683,10 @@ async function streamAnthropic(
 					...images.map((img) => ({
 						type: 'image',
 						source: { type: 'base64', media_type: img.mime, data: img.base64 },
+					})),
+					...videos.map((video) => ({
+						type: 'video',
+						source: { type: 'base64', media_type: video.mime, data: video.base64 },
 					})),
 				],
 			});

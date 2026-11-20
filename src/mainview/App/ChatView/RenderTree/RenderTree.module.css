@@ -114,6 +114,37 @@
 			text-overflow: ellipsis;
 			white-space: nowrap;
 		}
+		.user-videos {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 8px;
+			margin-top: 8px;
+			white-space: normal;
+		}
+		.user-video {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			max-width: 260px;
+			color: var(--text-placeholder);
+
+			video {
+				max-width: 260px;
+				max-height: 180px;
+				object-fit: contain;
+				border-radius: var(--r-md);
+				border: 1px solid var(--border);
+				background-color: var(--bg-sub1-header);
+			}
+		}
+		.user-video-name {
+			max-width: 260px;
+			overflow: hidden;
+			font-size: 11px;
+			font-family: var(--font-mono);
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
 	}
 }
 

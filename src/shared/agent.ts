@@ -231,6 +231,110 @@ export interface ModeSummary {
 
 // #endregion
 
+// #region 媒体输入（图片 / 视频）
+
+/**
+ * - OpenAI Chat：`image_url.url` 可以是 `data:image/png;base64,...`
+ * - OpenAI Responses：`input_image.image_url` 同上
+ * - Anthropic：`{ type:'image', source:{ type:'base64', media_type, data } }`
+ */
+export interface LlmImageRef {
+	name: string;	// 原始文件名（聊天框里用它指代这张图）
+	mime: string;	// image/png、image/jpeg、image/webp、image/gif
+	file: string;	// conversations/<id>/attachments/ 内的文件名，真正发给模型时由 runner 读成 `base64` 再交给 llm 层
+	size?: number;	// 产物字节数
+	base64?: string;
+	quality?: ImageQuality;	// 压缩档位（老附件没有这个字段 = 未经过重编码）
+	width?: number;
+	height?: number;
+}
+
+export type ImageQuality = 'low' | 'normal' | 'original';	// 图片压缩档位：低清 = 1/4 宽高 + 长边 512（≈300 token）；普通 = 1/2 宽高 + 长边 1536（≈2000 token）；原图 = 不重编码
+export type VideoQuality = 'low' | 'normal' | 'high';	// 视频压缩档位：低清 = 1/4 + 长边 480；普通 = 1/2 + 长边 1280；高清 = 长边 1920；统一按 1fps 重编码
+export type VideoCodec = 'h264' | 'h265' | 'av1' | 'h266';	// 视频编码：h266 只是设置页的彩蛋选项，后端一律拒收（见 service/media.ts）
+
+export const IMAGE_QUALITY_VALUES: ImageQuality[] = ['low', 'normal', 'original'];
+export const VIDEO_QUALITY_VALUES: VideoQuality[] = ['low', 'normal', 'high'];
+export const VIDEO_CODEC_VALUES: VideoCodec[] = ['h264', 'h265', 'av1', 'h266'];
+
+/**
+ * 空白会话（还没发第一句、后端没有这个会话）预览媒体时用的占位 conversationId。
+ * 它映射到全局 `media-cache/` 目录，**不创建会话记录**；首句发出转成真会话后，
+ * 后端把缓存里的 raw / 产物复制进会话附件目录，前端一次都不用重传。
+ */
+export const DRAFT_MEDIA_CONVERSATION_ID = '__media-draft__';
+
+/** 后端设置里的媒体默认值（全局；每个文件还能在输入框的 Msgbox 里单独改档） */
+export interface MediaSettings {
+	imageQuality: ImageQuality;
+	videoQuality: VideoQuality;
+}
+
+export const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
+	imageQuality: 'normal',
+	videoQuality: 'normal',
+};
+
+/** 设置页 / Msgbox 共用的档位文案（数值与 service/media.ts 的档位表一一对应） */
+export const IMAGE_QUALITY_OPTIONS: { value: ImageQuality; label: string; desc: string }[] = [
+	{ value: 'low', label: '低清', desc: '四分之一宽高 · 长边 ≤ 512 · 预估 300 token' },
+	{ value: 'normal', label: '普通', desc: '二分之一宽高 · 长边 ≤ 1536 · 预估 2000 token' },
+	{ value: 'original', label: '原图', desc: '不进行重编码，按原始字节发送' },
+];
+
+export const VIDEO_QUALITY_OPTIONS: { value: VideoQuality; label: string; desc: string }[] = [
+	{ value: 'low', label: '低清', desc: '四分之一宽高 · 长边 ≤ 480 · 1fps' },
+	{ value: 'normal', label: '普通', desc: '二分之一宽高 · 长边 ≤ 1280 · 1fps' },
+	{ value: 'high', label: '高清', desc: '长边 ≤ 1920 · 1fps' },
+];
+
+export const VIDEO_CODEC_OPTIONS: { value: VideoCodec; label: string; desc: string }[] = [
+	{ value: 'h264', label: 'H.264 / AVC', desc: 'preset medium · crf 24' },
+	{ value: 'h265', label: 'H.265 / HEVC', desc: 'preset faster · crf 24' },
+	{ value: 'av1', label: 'AV1', desc: 'libsvtav1 preset 10 · crf 36' },
+	{ value: 'h266', label: 'H.266 / VVC', desc: '（选了会弹窗，不会真的启用）' },
+];
+
+/**
+ * 一段视频在会话附件目录里的引用。
+ * `file` 是按当前档位 + 编码转码后的 mp4 产物：前端 `<video>` 直接读它，
+ * 模型也直接收它本体（`video_url` + base64），**不抽帧、不降级成图片**。
+ */
+export interface LlmVideoRef {
+	name: string;
+	mime: string;	// video/mp4（转码产物统一 mp4）
+	file: string;
+	size?: number;
+	quality: VideoQuality;
+	codec: VideoCodec;
+	width?: number;
+	height?: number;
+	duration?: number;	// 秒
+	base64?: string;	// 请求时由 runner 现读，不进 ctx.json
+}
+
+/** 前端 prepare 时告诉后端「我要哪个产物」——后端据此拼文件名判重 */
+export interface MediaPrepareRequest {
+	kind: 'image' | 'video';
+	hash: string;	// 前端算的内容 hash，后端用它当文件名
+	name: string;
+	mime: string;	// 原始文件 mime
+	quality: ImageQuality | VideoQuality;
+	codec?: VideoCodec;	// 视频才有
+}
+
+/** prepare 的结果：命中缓存 / 后端拿已有 raw 直接转码 / 需要前端上传原始字节 */
+export interface MediaPrepareResult {
+	ok: boolean;
+	error?: string;
+	needUpload?: boolean;
+	cached?: boolean;
+	image?: LlmImageRef;
+	video?: LlmVideoRef;
+}
+
+// #endregion
+
 // #region 2. LLM 消息（前后端 / llm 层共用，AgentInstanceMessage 基于它扩展）
 
 export type LlmRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -242,19 +346,6 @@ export interface LlmToolCall {
 	function: { name: string; arguments: string };
 }
 
-/**
- * - OpenAI Chat：`image_url.url` 可以是 `data:image/png;base64,...`
- * - OpenAI Responses：`input_image.image_url` 同上
- * - Anthropic：`{ type:'image', source:{ type:'base64', media_type, data } }`
- */
-export interface LlmImageRef {
-	name: string;	// 原始文件名（聊天框里用它指代这张图）
-	mime: string;	// image/png、image/jpeg、image/webp、image/gif
-	file: string;	// conversations/<id>/attachments/ 内的文件名，真正发给模型时由 runner 读成 `base64` 再交给 llm 层
-	size?: number;	// 原始字节数
-	base64?: string;
-}
-
 export interface LlmMessage {
 	role: LlmRole;
 	content: string;
@@ -262,6 +353,7 @@ export interface LlmMessage {
 	toolCallId?: string;
 	reasoningContent?: string;	// 思考模型的推理内容，多轮工具调用时必须回传
 	images?: LlmImageRef[];	// 用户消息附带的图片（仅 `supportsVision` 的模型会真正发出去）
+	videos?: LlmVideoRef[];	// 用户消息附带的视频（已经转码完成）；只有 supportsVideo 的模型才会带 base64 发给上游
 }
 
 export interface LlmTool {
@@ -533,7 +625,7 @@ export type AgentStreamEvent = StreamEventBase & (
 	| { type: 'reasoning'; agentInstanceId: string; messageId: string; chunk: string }
 	| { type: 'tool_start'; agentInstanceId: string; messageId: string; callId: string; toolName: string; args: unknown; reason: string }
 	| { type: 'tool_end'; agentInstanceId: string; messageId: string; callId: string; toolName: string; result: ToolResult }
-	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; images?: LlmImageRef[] }
+	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[] }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
 	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
 	| { type: 'reflection_start'; agentInstanceId: string; messageId: string; remaining: number }
@@ -576,6 +668,7 @@ export interface ModelConfig {
 	apiKey: string;
 	customParams?: Record<string, unknown>;
 	supportsVision?: boolean;
+	supportsVideo?: boolean;
 	fullUrl?: boolean;	// 勾选「完整 URL」：baseUrl 即完整端点，请求时不再补 /v1 与接口路径
 	/**
 	 * 本次请求要写的思考强度：`param` 是模型设置里的参数名（支持 `a.b` 嵌套路径），
@@ -601,6 +694,7 @@ export interface AgentRunRequest {
 	 * 这里只带 `{ name, mime, file, size }`；ctx 里只存引用，请求时才读成 base64。
 	 */
 	images?: LlmImageRef[];
+	videos?: LlmVideoRef[];
 	/**
 	 * Composer 下方动态表单的选择（`{ [controlKey]: 选项 value }`）。
 	 * 后端用它覆盖 `mode.json` 的 `params` 默认值；不传 = 全用默认。
@@ -891,6 +985,8 @@ export interface ModelProviderModel {
 	customParams?: Record<string, unknown>;
 	contextWindow?: { input?: number; output?: number };
 	supportsVision?: boolean;
+	supportsVideo?: boolean;
+	videoCodec?: VideoCodec;	// supportsVideo 时生效，缺省按 h264
 	thinking?: { param: string; values: string[] };
 }
 
@@ -987,6 +1083,8 @@ export interface ServiceSettings {
 	 * 缺字段（老 settings.json）按 `normal` 处理，见 `service/safety.ts` 的 `normalizeSafety`。
 	 */
 	safety: ToolSafety;
+	/** 图片 / 视频输入的默认压缩档位（设置页「媒体」Tab） */
+	media: MediaSettings;
 	folders: Folder[];
 	mcpServers: McpServerConfig[];
 	/** 用户列表（见 §11）。缺字段时按「空用户名的管理员、无密码、全权限」处理 */
