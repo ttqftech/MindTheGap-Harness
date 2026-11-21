@@ -1,54 +1,30 @@
 /* ==========================================================================
-   设置面板样式
-   ========================================================================== */
-
-/* ---------- FFBox-UI 组件在设置面板里的布局适配 ----------
-   ffbox-dropdown-input / ffbox-normal-input 默认 display:inline-block，
-   这里统一撑满设置项的宽度。
-   ffbox-normal-input 内部 .inputbox-selector 自带 margin: 15px 0，
-   用负 margin 抵消，否则每个输入框上下会多出 15px 空白。 */
-.ffbox-dropdown,
-.ffbox-input {
-	display: block;
-	width: 100%;
-}
-.ffbox-input {
-	margin: -15px 0;
-}
-
-/* 模型角色下拉：与输入框同排，宽度自适应内容 */
-.ffbox-dropdown-auto {
-	display: inline-block;
-	width: 110px;
-	flex-shrink: 0;
-}
-
-/* ==========================================================================
-   设置面板 — 从屏幕上方拉下来的全屏面板（铺满除了标题栏以外的主界面）
+   设置面板外壳 — 从屏幕上方拉下来的全屏面板（铺满除了标题栏以外的主界面）
 
    只有一个真相：根节点的 `--settings-progress`（0 = 完全收起，1 = 完全展开）。
    面板位移、遮罩浓度、占位方块全部由它派生，**没有 transition** ——
    进度本身就是逐帧在变的值（拖拽时跟手、松手后由 store 用 rAF 缓动），
    再叠一层 CSS 过渡只会把它变成「松手才动」。
    进度 0 时整棵树根本不挂载（可见性派生自进度），所以这里不需要 display 开关。
-   ========================================================================== */
 
-.settings-root {
+   整个面板的界面结构就是这里的大括号层级：root → overlay / panel → header / tabs / content，
+   所以子元素一律用短名（如 .dot / .box），不再带父级前缀。
+   各 Tab 的内容样式在各自的 *.module.css；共用样式在 SettingsCommon.module.css。
+   ========================================================================== */
+.settingsRoot {
 	position: absolute;
 	inset: 0;
 	z-index: 2;
 	/* 只有面板吃鼠标：遮罩与占位方块都是纯装饰 */
 	pointer-events: none;
-
 	/* 遮罩：什么都不干、也不响应鼠标点击（面板铺满整个区域，本来也没有「点外面」这回事） */
-	.settings-overlay {
+	.settingsOverlay {
 		position: absolute;
 		inset: 0;
 		background-color: var(--bg-shadow);
 		opacity: var(--settings-progress, 0);
 	}
-
-	.settings-panel {
+	.settingsPanel {
 		position: absolute;
 		inset: 0;
 		display: flex;
@@ -61,19 +37,16 @@
 		pointer-events: auto;
 		/* 位移 = 进度：0 → -100%（完全滑出上方），1 → 0（铺满） */
 		transform: translateY(calc((var(--settings-progress, 0) - 1) * 100%));
-
 		/* ---------- 头部 ---------- */
-
-		.settings-header {
+		.settingsHeader {
 			display: flex;
 			align-items: center;
 			gap: 12px;
 			height: 58px;
 			flex-shrink: 0;
 			padding: 0 var(--section-pad-lr);
-
 			/* 拖拽手柄：标题栏左侧的 grip 图标，按住它可以上下滑动面板拉出 / 关闭 */
-			.settings-drag-handle {
+			.settingsDragHandle {
 				display: inline-flex;
 				align-items: center;
 				justify-content: center;
@@ -92,22 +65,19 @@
 					cursor: grabbing;
 				}
 			}
-
-			.settings-title-block {
+			.settingsTitleBlock {
 				flex: 1;
 				min-width: 0;
 				display: flex;
 				flex-direction: column;
 				gap: 3px;
-
-				.settings-title {
+				.settingsTitle {
 					font-size: var(--fs-l);
 					font-weight: 600;
 					color: var(--text-primary);
 				}
 			}
-
-			.settings-close-btn {
+			.settingsCloseBtn {
 				display: inline-flex;
 				align-items: center;
 				justify-content: center;
@@ -125,21 +95,39 @@
 				}
 			}
 		}
-
 		/* ---------- 分页栏 ---------- */
-
-		.settings-tabs {
+		.settingsTabs {
 			display: flex;
 			align-items: center;
+			flex-wrap: wrap;
 			gap: 6px;
 			flex-shrink: 0;
 			padding: 0 var(--section-pad-lr) 12px;
-
-			.settings-tabs-spacer {
+			/* 本机 / 服务两组 Tab 的分界：小字组标签 + 一条竖线 */
+			.settingsTabGroup {
+				flex-shrink: 0;
+				padding-right: 2px;
+				font-size: 11px;
+				letter-spacing: 0.06em;
+				color: var(--text-tertiary);
+				white-space: nowrap;
+				user-select: none;
+				&[data-scope='service'] {
+					color: var(--accent);
+					font-weight: 600;
+				}
+			}
+			.settingsTabSplit {
+				width: 1px;
+				height: 18px;
+				margin: 0 4px;
+				flex-shrink: 0;
+				background-color: var(--border-strong);
+			}
+			.settingsTabsSpacer {
 				flex: 1;
 			}
-
-			.settings-tab {
+			.settingsTab {
 				height: 30px;
 				padding: 0 13px;
 				border-radius: var(--r-md);
@@ -159,8 +147,7 @@
 					font-weight: 500;
 				}
 			}
-
-			.settings-done-btn {
+			.settingsDoneBtn {
 				height: 30px;
 				padding: 0 13px;
 				flex-shrink: 0;
@@ -175,14 +162,12 @@
 				}
 			}
 		}
-
-		.settings-divider {
+		.settingsDivider {
 			height: 1px;
 			flex-shrink: 0;
 			background-color: var(--border);
 		}
-
-		.settings-content {
+		.settingsContent {
 			flex: 1;
 			min-height: 0;
 			overflow-y: auto;
@@ -190,313 +175,45 @@
 			flex-direction: column;
 			gap: 20px;
 			padding: 20px var(--section-pad-lr) 28px;
-
-			/* ---------- 设置组 / 设置项 ---------- */
-
-			.setting-group {
-				display: flex;
-				flex-direction: column;
-				gap: 2px;
-			}
-
-			.setting-group-label {
-				font-size: 13.5px;
-				font-weight: 600;
-				color: var(--text-primary);
-				margin-bottom: 8px;
-			}
-
-			.setting-group-desc {
-				font-size: var(--fs-s);
-				color: var(--text-placeholder);
-				margin-bottom: 8px;
-			}
-
-			/* 一行设置：标签（可带说明）在左，控件在右 */
-			.setting-row {
+			/* 作用域提示条：这一页的设置会写去哪 */
+			.settingsScope {
 				display: flex;
 				align-items: center;
-				gap: 12px;
-				min-height: 40px;
-
-				.setting-row-label {
-					flex: 1;
-					min-width: 0;
-					display: flex;
-					flex-direction: column;
-					gap: 2px;
-
-					.setting-row-title {
-						font-size: var(--fs-s);
-						color: var(--text-secondary);
-					}
-
-					.setting-row-desc {
-						font-size: var(--fs-xs);
-						color: var(--text-placeholder);
-					}
-				}
-
-				.setting-row-title {
-					font-size: var(--fs-s);
-					color: var(--text-secondary);
-				}
-
-				.setting-row-desc {
-					font-size: var(--fs-xs);
-					color: var(--text-placeholder);
-				}
-			}
-
-			/* 没有控件、只显示一个值的行 */
-			.setting-row-value {
-				flex-shrink: 0;
-				font-size: var(--fs-s);
-				color: var(--text-placeholder);
-			}
-
-			/* ---------- 分段控件 ---------- */
-
-			.segmented {
-				display: inline-flex;
-				align-items: center;
-				gap: 2px;
-				flex-shrink: 0;
-				padding: 3px;
-				border-radius: var(--r-lg);
-				border: 1px solid var(--border-input);
-				background-color: var(--segmented-track);
-
-				.segmented-item {
-					height: 24px;
-					padding: 0 12px;
-					border-radius: 5px;
-					font-size: var(--fs-xs);
-					font-weight: 500;
-					color: var(--text-tertiary);
-					white-space: nowrap;
-					transition: background-color var(--dur-fast), color var(--dur-fast);
-					&:hover {
-						color: var(--text-primary);
-					}
-					&.active {
-						background-color: var(--segmented-active);
-						color: var(--text-primary);
-					}
-				}
-			}
-
-			.json-textarea {
-				width: 100%;
-				min-height: 120px;
-				padding: 10px 12px;
-				border: 1px solid var(--border);
-				border-radius: 8px;
-				background-color: var(--codeBg);
-				color: var(--fontColor);
-				font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
-				font-size: 12px;
-				line-height: 1.6;
-				outline: none;
-				resize: vertical;
-				transition: border-color 0.15s;
-				&:focus {
-					border-color: var(--primary);
-				}
-				&.error {
-					border-color: var(--error);
-				}
-			}
-
-			.form-row {
-				display: flex;
-				gap: 12px;
-				align-items: flex-start;
-				& > * {
-					flex: 1;
-				}
-			}
-
-			.provider-list {
-				display: flex;
-				flex-direction: column;
 				gap: 8px;
-
-				.provider-item {
-					display: flex;
-					align-items: center;
-					gap: 12px;
-					padding: 12px 14px;
-					background-color: hwb(var(--bg95) / 1);
-					border-radius: 10px;
-					border: 1px solid var(--borderLight);
-
-					.provider-item-name {
-						flex: 1;
-						font-size: 14px;
-						font-weight: 500;
-					}
-
-					.provider-item-type {
-						font-size: 11px;
-						padding: 2px 8px;
-						border-radius: 10px;
-						background-color: hwb(var(--bg90) / 1);
-						color: var(--fontColorDim);
-					}
-
-					.provider-item-actions {
-						display: flex;
-						gap: 6px;
-					}
-
-					/* ---------- MCP 服务器 ---------- */
-
-					/* 连接状态小圆点。绿/灰两色在深浅主题下都够清晰，只有错误色跟随主题 */
-					.mcp-status-dot {
-						width: 8px;
-						height: 8px;
-						border-radius: 50%;
-						flex-shrink: 0;
-						&.connected {
-							background-color: #22c55e;
-						}
-						&.disabled {
-							background-color: var(--fontColorMuted);
-						}
-						&.error {
-							background-color: var(--error);
-						}
-					}
-
-					.mcp-item-desc {
-						font-size: 12px;
-						color: var(--fontColorMuted);
-						margin-top: 2px;
-						word-break: break-all;
-					}
-
-					.mcp-error {
-						font-size: 12px;
-						color: var(--error);
-						margin-top: 6px;
-						word-break: break-all;
-					}
-
-					.tool-list {
-						display: flex;
-						flex-direction: column;
-						gap: 6px;
-						margin-top: 8px;
-
-						.tool-item {
-							padding: 8px 12px;
-							background-color: hwb(var(--bg90) / 1);
-							border-radius: 8px;
-							border: 1px solid var(--borderLight);
-
-							.tool-item-name {
-								font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
-								font-size: 12px;
-								font-weight: 600;
-								color: var(--primary);
-							}
-
-							.tool-item-desc {
-								font-size: 12px;
-								color: var(--fontColorMuted);
-								margin-top: 2px;
-							}
-						}
-					}
+				flex-shrink: 0;
+				margin-bottom: -8px;
+				padding: 8px 12px;
+				border: 1px solid var(--border);
+				border-radius: var(--r-md);
+				background-color: var(--bg-sub1-header);
+				font-size: var(--fs-s);
+				color: var(--text-tertiary);
+				.dot {
+					width: 6px;
+					height: 6px;
+					flex-shrink: 0;
+					border-radius: 50%;
+					background-color: var(--text-tertiary);
 				}
-			}
-
-			.btn-secondary {
-				padding: 6px 12px;
-				border-radius: 6px;
-				background-color: hwb(var(--bg90) / 1);
-				color: var(--fontColor);
-				font-size: 12px;
-				transition: all 0.15s;
-				&:hover {
-					background-color: hwb(var(--bg88) / 1);
-				}
-			}
-
-			/* 退场动画：分段控件 + 预览按钮并排（主题较多时分段控件自己换行） */
-			.exit-theme {
-				display: flex;
-				align-items: center;
-				justify-content: flex-end;
-				flex-wrap: wrap;
-				gap: 10px;
-				max-width: 62%;
-
-				.segmented {
-					flex-wrap: wrap;
-					row-gap: 3px;
-					justify-content: flex-end;
-				}
-			}
-
-			.btn-danger {
-				padding: 6px 12px;
-				border-radius: 6px;
-				background-color: transparent;
-				color: var(--error);
-				font-size: 12px;
-				transition: all 0.15s;
-				&:hover {
-					background-color: hwb(0 50% 95%);
-				}
-			}
-
-			.mcp-hint {
-				font-size: 12px;
-				color: var(--fontColorMuted);
-				margin-top: 6px;
-			}
-
-			.mono {
-				font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
-			}
-
-			/* 构建 / 运行信息（通用 Tab）：键值对列表 */
-			.info-list {
-				font-size: 12px;
-				line-height: 1.9;
-
-				.info-row {
-					display: flex;
-					gap: 8px;
-					align-items: baseline;
-
-					.info-key {
-						flex: 0 0 84px;
-						color: var(--fontColorMuted);
-					}
-
-					.info-value {
-						flex: 1;
-						min-width: 0;
-						word-break: break-all;
+				&[data-scope='service'] {
+					border-color: var(--accent);
+					color: var(--text-primary);
+					.dot {
+						background-color: var(--accent);
 					}
 				}
 			}
 		}
 	}
-
 	/* 全屏浮动占位小方块：跟着下拉量（--settings-progress）移动。
 	   预置的演示元素，证明下拉可以同时控制多个元素（后期可换成进度页等）。
 	   不拦截鼠标：pointer-events: none，避免抢设置面板的交互。 */
-	.settings-placeholder {
+	.settingsPlaceholder {
 		position: absolute;
 		inset: 0;
 		z-index: 6;
 		pointer-events: none;
-
-		.settings-placeholder-box {
+		.box {
 			position: absolute;
 			width: 44px;
 			height: 44px;
@@ -511,9 +228,8 @@
 		}
 	}
 }
-
 @media (max-width: 768px) {
-	.settings-root .settings-panel {
+	.settingsRoot .settingsPanel {
 		flex-direction: column;
 		width: 100%;
 		height: 100%;
@@ -521,739 +237,4 @@
 		max-height: 100%;
 		border-radius: 0;
 	}
-	.settings-root .settings-panel .settings-sidebar {
-		width: 100%;
-		border-right: none;
-		border-bottom: 1px solid var(--borderLight);
-		display: flex;
-		overflow-x: auto;
-		h3 {
-			display: none;
-		}
-	}
-}
-
-/* ---------- 用户管理（权限项只有「用户管理」，见 UsersTab） ----------
-   刻意不挂在 .settings-root 下面：这几条是独立的表格样式，
-   平铺定义，用在哪一层都不会因为父选择器不匹配而失效。 */
-
-.user-table {
-	display: flex;
-	flex-direction: column;
-	border: 1px solid var(--border);
-	border-radius: var(--r-lg);
-	overflow: hidden;
-	background-color: var(--bg-sub1);
-}
-
-.user-row {
-	display: grid;
-	grid-template-columns: 1.4fr 1.4fr 1fr 68px;
-	align-items: center;
-	gap: 10px;
-	padding: 7px 12px;
-	font-size: var(--fs-xs);
-	color: var(--text-secondary);
-
-	& + & {
-		border-top: 1px solid var(--border);
-	}
-}
-
-.user-row-head {
-	padding-top: 9px;
-	padding-bottom: 9px;
-	background-color: var(--bg-sub1-header);
-	font-size: var(--fs-xxs);
-	color: var(--text-tertiary);
-}
-
-.user-input {
-	width: 100%;
-	height: 26px;
-	padding: 0 8px;
-	border-radius: var(--r-sm);
-	border: 1px solid var(--border-input);
-	background-color: var(--bg-input);
-	color: var(--text-primary);
-	font-family: var(--font-ui);
-	font-size: var(--fs-xs);
-	outline: none;
-	transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
-
-	&::placeholder {
-		color: var(--text-placeholder);
-	}
-
-	&:focus {
-		border-color: var(--accent);
-		box-shadow: var(--ring);
-	}
-
-	&:disabled {
-		opacity: 0.6;
-		cursor: default;
-	}
-}
-
-.user-admin {
-	font-size: var(--fs-xs);
-	color: var(--text-tertiary);
-}
-
-.user-perm {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-
-	label {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		font-size: var(--fs-xs);
-		color: var(--text-secondary);
-		cursor: pointer;
-	}
-
-	input[type="checkbox"] {
-		accent-color: var(--accent);
-		cursor: pointer;
-	}
-}
-
-.user-link {
-	margin-left: 6px;
-	padding: 0;
-	border: none;
-	background: none;
-	color: var(--text-tertiary);
-	font-family: var(--font-ui);
-	font-size: var(--fs-xxs);
-	cursor: pointer;
-	transition: color var(--dur-fast);
-
-	&:hover {
-		color: var(--accent);
-	}
-}
-
-.user-notice {
-	margin-top: 10px;
-	font-size: var(--fs-xs);
-	line-height: 1.5;
-}
-
-.user-pass {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-
-	.user-input {
-		flex: 1;
-		min-width: 0;
-	}
-
-	.user-link {
-		margin-left: 0;
-		flex-shrink: 0;
-	}
-}
-
-/* ==========================================================================
-   模型页（表格化 + 行内展开）
-   设计稿：docs/设计-模型设置页重设计.html
-   刻意平铺在最外层：这一页的表格 / 编辑面板层级深，挂父选择器容易一改就失效。
-   ========================================================================== */
-
-/* ---------- 区块头 ---------- */
-
-.models-head {
-	display: flex;
-	align-items: flex-end;
-	justify-content: space-between;
-	gap: 16px;
-	margin-bottom: 14px;
-}
-
-.overline {
-	font-size: var(--fs-xxxs);
-	letter-spacing: 0.22em;
-	text-transform: uppercase;
-	color: var(--accent);
-}
-
-.models-title {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	margin-top: 4px;
-	font-size: var(--fs-l);
-	font-weight: 600;
-	color: var(--text-primary);
-}
-
-.count-pill {
-	font-size: var(--fs-xxs);
-	font-weight: 600;
-	color: var(--accent);
-	background-color: var(--accent-soft);
-	border: 1px solid var(--accent-soft-border);
-	border-radius: var(--r-full);
-	padding: 1px 9px;
-}
-
-.models-desc {
-	margin-top: 4px;
-	font-size: var(--fs-xs);
-	color: var(--text-tertiary);
-}
-
-.models-foot {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	margin-top: 14px;
-	font-size: var(--fs-xxs);
-	color: var(--text-placeholder);
-
-	.spark {
-		color: var(--accent);
-	}
-}
-
-/* ---------- 提供商表格 ---------- */
-
-.table-wrap {
-	border: 1px solid var(--border);
-	border-radius: var(--r-2xl);
-	overflow: hidden;
-	background-color: var(--bg-sub1);
-}
-
-.ptable {
-	width: 100%;
-	border-collapse: collapse;
-	table-layout: fixed;
-
-	thead th {
-		padding: 9px 14px;
-		background-color: var(--bg-sub1-header);
-		border-bottom: 1px solid var(--border);
-		font-size: var(--fs-xxs);
-		font-weight: 600;
-		letter-spacing: 0.12em;
-		text-transform: uppercase;
-		color: var(--text-tertiary);
-		text-align: left;
-		white-space: nowrap;
-	}
-}
-
-.col-p { width: 21%; }
-.col-f { width: 13%; }
-.col-u { width: 27%; }
-.col-m { width: 25%; }
-.col-a { width: 14%; text-align: right; }
-
-.row-main {
-	border-bottom: 1px solid var(--border);
-	transition: background-color var(--dur-fast);
-
-	td {
-		padding: 9px 14px;
-		vertical-align: middle;
-	}
-
-	&:hover {
-		background-color: var(--bg-hover);
-	}
-
-	&.open {
-		background-color: var(--accent-soft);
-	}
-}
-
-.p-name {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	font-size: var(--fs-s);
-	font-weight: 600;
-	color: var(--text-primary);
-}
-
-.p-dot {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	flex-shrink: 0;
-	background-color: var(--success);
-}
-
-.p-meta {
-	margin-top: 2px;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxxs);
-	color: var(--text-tertiary);
-}
-
-.badge {
-	display: inline-block;
-	padding: 2px 8px;
-	border-radius: var(--r-full);
-	background-color: var(--bg-chip);
-	border: 1px solid var(--border);
-	font-size: var(--fs-xxxs);
-	font-weight: 600;
-	color: var(--text-secondary);
-	white-space: nowrap;
-
-	&[data-format="anthropic"] {
-		color: var(--info);
-	}
-}
-
-.p-url {
-	display: block;
-	font-size: var(--fs-xxs);
-	color: var(--text-secondary);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.m-chips {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 5px;
-}
-
-.m-chip {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	max-width: 100%;
-	padding: 2px 7px;
-	border-radius: var(--r-md);
-	border: 1px solid var(--border);
-	background-color: var(--bg-chip);
-	font-size: var(--fs-xxxs);
-	color: var(--text-secondary);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-
-	&.more {
-		background-color: transparent;
-		border-style: dashed;
-		color: var(--text-tertiary);
-	}
-}
-
-.m-chip-dot {
-	width: 5px;
-	height: 5px;
-	border-radius: 50%;
-	flex-shrink: 0;
-	background-color: var(--accent);
-
-	&.eco {
-		background-color: var(--info);
-	}
-}
-
-.row-actions {
-	display: flex;
-	gap: 6px;
-	justify-content: flex-end;
-}
-
-.row-edit > td {
-	padding: 0;
-	background-color: var(--bg-sub1-header);
-}
-
-/* ---------- 行内编辑面板 ---------- */
-
-.editor {
-	margin: 4px 10px 12px;
-	padding: 16px 18px 14px;
-	background-color: var(--bg-app);
-	border: 1px solid var(--border);
-	border-radius: var(--r-xl);
-	box-shadow: inset 3px 0 0 var(--accent), var(--shadow-sm);
-}
-
-.editor-head {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-	margin-bottom: 14px;
-}
-
-.editor-title {
-	margin-top: 2px;
-	font-size: var(--fs-m);
-	font-weight: 600;
-	color: var(--text-primary);
-}
-
-.editor-head-right {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-}
-
-/* 「✓ 已生效」：保存按钮的替代提示，1800ms 后自己淡出 */
-.live {
-	padding: 2px 9px;
-	border-radius: var(--r-full);
-	border: 1px solid var(--accent-soft-border);
-	background-color: var(--accent-soft);
-	color: var(--success);
-	font-size: var(--fs-xxs);
-	white-space: nowrap;
-	opacity: 0;
-	transform: translateY(2px);
-	transition: opacity var(--dur), transform var(--dur);
-
-	&.show {
-		opacity: 1;
-		transform: none;
-	}
-}
-
-.live-note {
-	color: var(--text-tertiary);
-}
-
-.egrid {
-	display: grid;
-	grid-template-columns: 1fr 1fr;
-	gap: 12px 16px;
-}
-
-/* ---------- 字段（竖排：小标签 + 控件） ---------- */
-
-.field {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-	min-width: 0;
-
-	&.span2 {
-		grid-column: 1 / -1;
-	}
-}
-
-.field-label {
-	font-size: var(--fs-xxs);
-	font-weight: 600;
-	letter-spacing: 0.04em;
-	color: var(--text-tertiary);
-}
-
-.field-hint {
-	font-size: var(--fs-xxxs);
-	color: var(--text-placeholder);
-	line-height: 1.5;
-}
-
-.field-err {
-	font-size: var(--fs-xxxs);
-	color: var(--danger);
-}
-
-.field-input {
-	width: 100%;
-	height: 30px;
-	padding: 0 9px;
-	border-radius: var(--r-md);
-	border: 1px solid var(--border-input);
-	background-color: var(--bg-input);
-	color: var(--text-primary);
-	font-family: var(--font-ui);
-	font-size: var(--fs-xs);
-	outline: none;
-	transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
-
-	&::placeholder {
-		color: var(--text-placeholder);
-	}
-
-	&:focus {
-		border-color: var(--accent);
-		box-shadow: var(--ring);
-	}
-}
-
-select.field-input {
-	cursor: pointer;
-}
-
-/* ---------- 区块分隔（模型目录 / 提供商级参数） ---------- */
-
-.esec {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	margin: 18px 0 10px;
-
-	h4 {
-		margin: 0;
-		font-size: var(--fs-xxs);
-		font-weight: 600;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--text-secondary);
-	}
-}
-
-.esec-n {
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxxs);
-	color: var(--text-tertiary);
-}
-
-.esec-line {
-	flex: 1;
-	height: 1px;
-	background-color: var(--border);
-}
-
-/* ---------- 模型行 ---------- */
-
-.models {
-	display: flex;
-	flex-direction: column;
-	gap: 10px;
-}
-
-.models-empty {
-	padding: 10px 2px;
-	font-size: var(--fs-xs);
-	color: var(--text-tertiary);
-}
-
-.mrow {
-	padding: 12px 14px;
-	border: 1px solid var(--border);
-	border-radius: var(--r-xl);
-	background-color: var(--bg-sub1);
-	transition: border-color var(--dur-fast);
-
-	&:hover {
-		border-color: var(--border-strong);
-	}
-}
-
-.mrow-top {
-	display: grid;
-	grid-template-columns: 1.25fr 1fr 108px 1.15fr auto;
-	gap: 10px;
-	align-items: end;
-}
-
-.mrow-del {
-	display: flex;
-	align-items: center;
-	height: 30px;
-}
-
-.conn-line {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	height: 30px;
-}
-
-.conn-status {
-	min-width: 0;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxxs);
-	color: var(--text-tertiary);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-
-	&[data-kind="ok"] { color: var(--success); }
-	&[data-kind="err"] { color: var(--danger); }
-	&[data-kind="busy"] { color: var(--accent); }
-}
-
-.check-line {
-	display: flex;
-	align-items: center;
-	gap: 7px;
-	height: 30px;
-	font-size: var(--fs-xs);
-	color: var(--text-secondary);
-	cursor: pointer;
-}
-
-.mparams {
-	display: grid;
-	grid-template-columns: 1.35fr 1fr;
-	gap: 12px 18px;
-	margin-top: 12px;
-	padding-top: 12px;
-	border-top: 1px dashed var(--border);
-}
-
-.ctx-line {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-/* 请求地址 + 「完整 URL」复选框并排 */
-.url-line {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-
-	.field-input {
-		flex: 1;
-		min-width: 0;
-	}
-
-	.check-line {
-		flex: 0 0 auto;
-		white-space: nowrap;
-	}
-}
-
-/* 思考模式：参数名与强度列表左右并排 */
-.think-line {
-	display: flex;
-	align-items: flex-start;
-	gap: 10px;
-
-	.ctx-line {
-		flex: 0 1 240px;
-	}
-
-	.tags-box {
-		flex: 1 1 auto;
-		min-width: 0;
-	}
-}
-
-.tag-lab {
-	flex: 0 0 34px;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxxs);
-	color: var(--text-tertiary);
-}
-
-.presets {
-	display: flex;
-	gap: 4px;
-	flex-shrink: 0;
-}
-
-.chip-btn {
-	padding: 3px 7px;
-	border: 1px solid transparent;
-	border-radius: var(--r-md);
-	background-color: var(--accent-soft);
-	color: var(--accent);
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxxs);
-	cursor: pointer;
-	transition: border-color var(--dur-fast);
-
-	&:hover {
-		border-color: var(--accent);
-	}
-}
-
-/* 可选值标签长在输入框里：框内换行、回车添加、点 × 删除 */
-.tags-box {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 5px;
-	min-height: 30px;
-	padding: 4px 8px;
-	border: 1px solid var(--border-input);
-	border-radius: var(--r-md);
-	background-color: var(--bg-input);
-
-	&:focus-within {
-		border-color: var(--accent);
-		box-shadow: var(--ring);
-	}
-}
-
-.tag {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding: 1px 6px;
-	border: 1px solid var(--border);
-	border-radius: var(--r-sm);
-	background-color: var(--bg-chip);
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxxs);
-	color: var(--text-secondary);
-}
-
-.tag-x {
-	padding: 0;
-	border: none;
-	background: none;
-	color: var(--text-tertiary);
-	font-size: var(--fs-xxs);
-	line-height: 1;
-	cursor: pointer;
-
-	&:hover {
-		color: var(--danger);
-	}
-}
-
-.tags-input {
-	flex: 1;
-	min-width: 140px;
-	border: none;
-	outline: none;
-	background: transparent;
-	color: var(--text-primary);
-	font-family: var(--font-mono);
-	font-size: var(--fs-xxs);
-
-	&::placeholder {
-		color: var(--text-placeholder);
-	}
-}
-
-/* ---------- 媒体 Tab / 模型页的视频编码单选 ---------- */
-.media-radio,
-.codec-radio {
-	width: 210px;
-	height: 128px;
-	flex: 0 0 auto;
-	overflow: hidden;
-	border-radius: var(--r-sm);
-	border: 1px solid var(--border);
-}
-
-.codec-radio {
-	width: 240px;
-	height: 148px;
-}
-
-.media-option-list {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	margin-top: 8px;
-}
-
-.media-option-desc {
-	font-size: var(--fs-xs);
-	color: var(--text-placeholder);
-	line-height: 1.6;
 }

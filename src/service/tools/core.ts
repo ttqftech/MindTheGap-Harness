@@ -5,7 +5,7 @@
  * - 编排类工具（delegate / finish / resume_* / ask_child / ask_user / todo_list_*）的实现就是调用 Runner 注入的编排原语，自己不碰 ctx 的状态机。
  * - `reason` 由工具层统一注入 JSON Schema 的 required，执行前再从 args 里剥离。
  *
- * 能力过滤：AgentDefinition.ability.tools 白名单（工作流）+ 全局安全档位（settings.safety，安全）+ mcpDisabled 策略（见 getToolsForAgentInstance）。
+ * 能力过滤：AgentDefinition.ability.tools 白名单（工作流）+ 会话安全档位（chatConfig.safety，安全）+ mcpDisabled 策略（见 getToolsForAgentInstance）。
  *
  * 注意：主进程运行时是 Cottontail（JSC），不是 Bun。所以必须用 node:* 系列 API，不能用 Bun.xxx。
  */
@@ -115,7 +115,7 @@ export interface AgentTool<TArgs extends Record<string, unknown> = Record<string
  * - 不写 allow = 全部内置（减去 deny）；写了 = 只保留 allow 内且不在 deny 内的
  * - 编排类工具（delegate）在达到 maxDepth 时被移除
  * - MCP 工具按 mcpDisabled 过滤（agent 级优先，否则回退 mode 级，默认开放）
- * - **安全档位再裁一层**（全局 `settings.safety`，由 Runner 传进来）：只读两档只留 `read`，strict 连 `exec` 也不给；
+ * - **安全档位再裁一层**（会话 `chatConfig.safety`，由 Runner 传进来）：只读两档只留 `read`，strict 连 `exec` 也不给；
  *   MCP 工具能力不可判定（`unknown`），只读两档一律不给
  *
  * ⚠️ allow / deny 是「这个角色该有哪些工具」（工作流），档位是「带副作用的那部分能不能真跑」，

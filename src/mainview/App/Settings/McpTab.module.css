@@ -1,0 +1,83 @@
+/* MCP Tab — 服务器列表、连接状态与工具清单 */
+.providerList {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	.item {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 12px 14px;
+		background-color: hwb(var(--bg95) / 1);
+		border-radius: 10px;
+		border: 1px solid var(--borderLight);
+		.title {
+			flex: 1;
+			font-size: 14px;
+			font-weight: 500;
+		}
+		.actions {
+			display: flex;
+			gap: 6px;
+		}
+		/* 连接状态小圆点。绿/灰两色在深浅主题下都够清晰，只有错误色跟随主题 */
+		.statusDot {
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+			flex-shrink: 0;
+			&.connected {
+				background-color: #22c55e;
+			}
+			&.disabled {
+				background-color: var(--fontColorMuted);
+			}
+			&.error {
+				background-color: var(--error);
+			}
+		}
+		.itemDesc {
+			font-size: 12px;
+			color: var(--fontColorMuted);
+			margin-top: 2px;
+			word-break: break-all;
+		}
+	}
+}
+/* 服务器列表和编辑器的测试结果里都会用到工具清单，所以 .toolList 平铺，
+   只把一定在它底下的 .tool 收进去。 */
+.toolList {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 8px;
+	.tool {
+		padding: 8px 12px;
+		background-color: hwb(var(--bg90) / 1);
+		border-radius: 8px;
+		border: 1px solid var(--borderLight);
+		.name {
+			font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
+			font-size: 12px;
+			font-weight: 600;
+			color: var(--primary);
+		}
+		.desc {
+			font-size: 12px;
+			color: var(--fontColorMuted);
+			margin-top: 2px;
+		}
+	}
+}
+/* 这两条既出现在 .item 里、也出现在编辑器的测试结果里，只能平铺 */
+.mcpError {
+	font-size: 12px;
+	color: var(--error);
+	margin-top: 6px;
+	word-break: break-all;
+}
+.mcpHint {
+	font-size: 12px;
+	color: var(--fontColorMuted);
+	margin-top: 6px;
+}

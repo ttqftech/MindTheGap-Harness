@@ -20,10 +20,11 @@
 
 import { join } from 'node:path';
 import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, BackgroundTask, ConversationRunStatus, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, LlmVideoRef, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
+import { DEFAULT_CHAT_CONFIG } from '@shared/agent';
 import { callLlm, LlmEmptyResponseError } from './llm/model';
 import { mcpManager } from './mcp/manager';
 import { getMode, isLoaded, listModes, loadAllPlugins, resolveReflectionPrompt } from './plugins/loader';
-import { conversations, ensureConversationDir, settings } from './storage';
+import { conversations, ensureConversationDir, settings, snapshot } from './storage';
 import { readAttachmentBase64, attachmentExists } from './attachments';
 import { logMsg } from '../shared/utils';
 import { renderSystemPrompt, renderStatePrompt, renderEffortPrompt } from './prompt';
@@ -374,7 +375,7 @@ export class AgentRunner {
 	private model: ModelConfig;
 	/** 工作目录：用户指定的那个；没指定时 = 本会话的临时工作空间 */
 	private runningDir: string;
-	/** 工具安全性档位：全局设置（settings.safety），开跑时固化，运行中改设置不影响本次 run */
+	/** 工具安全性档位：本会话 chatConfig 里那份（缺省用 chatDefaults），开跑时固化，运行中改不影响本次 run */
 	private safety: ToolSafety;
 	private ctx: AgentCtx;
 	private options: RunnerOptions;
@@ -412,7 +413,7 @@ export class AgentRunner {
 		this.vars = params.vars ?? {};
 		this.model = params.request.model;
 		this.runningDir = params.request.runningDir?.trim() || join(ensureConversationDir(this.conversationId), 'workspace');	// // 工作目录 = 用户指定的那个；没指定就用本会话的临时工作空间。
-		this.safety = normalizeSafety(settings.safety);
+		this.safety = normalizeSafety(params.request.chatConfig?.safety ?? settings.chatDefaults.safety);
 		this.ctx = params.ctx;
 		this.options = params.options ?? {};
 		this.donePromise = new Promise((resolve) => {
@@ -863,7 +864,10 @@ export class AgentRunner {
 				instance.messages.push(noticeEntry(err.message));
 				instance.lastUpdatedAt = now();
 				this.emitEvent(instance, 'system', { level: 'error', message: err.message });
-				this.emitStream({ type: 'error', agentInstanceId, message: err.message });
+				// this.emitStream({ type: 'error', agentInstanceId, message: err.message });
+				// 错误已由上面的 noticeEntry 落成 ctx 里的一条消息，投影会就地渲染成 error 块。
+				// 这里不再发 SSE error，否则前端会再摆一块即时错误（还一直挂到下一轮 beginRun）。
+				// SSE error 只留给「连 ctx 都没来得及记」的框架级失败（见 http-server）。
 				this.emitStream({ type: 'agent_end', agentInstanceId, status: 'failed', summary: err.message });
 				this.handleChildTerminal(instance);
 				// ⭐ 根实例自己出错时，这个 run 就没人推进了：`handleChildTerminal` 只对有 parent 的子实例生效，
@@ -1865,6 +1869,14 @@ export function createRunner(request: AgentRunRequest, options: RunnerOptions = 
 
 	const conversation = conversations[request.conversationId];
 	if (!conversation) return { error: `会话不存在: ${request.conversationId}` };
+	// 本轮生效的聊天配置固化进会话 ctx.json：下次切回这个会话，列表 meta 带回来的就是这一份
+	conversation.chatConfig = {
+		...DEFAULT_CHAT_CONFIG,
+		...snapshot(settings.chatDefaults),	// 老会话没存过配置时，至少拿全局模板当底
+		...(conversation.chatConfig ?? {}),
+		...(request.chatConfig ?? {}),
+		modeId: mode.id,
+	};
 	conversation.modeId = mode.id;
 
 	// 先把 ctx 挂到会话上（写裸对象），再读回来 —— 读回来的一定是深层代理，

@@ -1,0 +1,173 @@
+/* ==========================================================================
+   设置面板各 Tab 共用的样式。
+   和 SettingsCommon.tsx 一个规矩：被两个以上 Tab 用到的类放这里，
+   只服务某一个 Tab 的留在它自己的 .module.css 里。
+   嵌套按 DOM 写：只有「一定出现在父元素底下」的类才收进父规则的大括号。
+   ========================================================================== */
+/* FFBox-UI 组件在设置面板里的布局适配
+   ffbox-dropdown-input / ffbox-normal-input 默认 display:inline-block，
+   这里统一撑满设置项的宽度。
+   ffbox-normal-input 内部 .inputbox-selector 自带 margin: 15px 0，
+   用负 margin 抵消，否则每个输入框上下会多出 15px 空白。 */
+.ffboxDropdown,
+.ffboxInput {
+	display: block;
+	width: 100%;
+}
+.ffboxInput {
+	margin: -15px 0;
+}
+/* ---------- 设置组 ----------
+   ⚠️ label / desc 在用户管理、MCP 的表头里会脱离 .settingGroup 单独用，
+   所以只能平铺，不能收进组的大括号。 */
+.settingGroup {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.settingGroup-label {
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--text-primary);
+	margin-bottom: 8px;
+}
+.settingGroup-desc {
+	font-size: var(--fs-s);
+	color: var(--text-placeholder);
+	margin-bottom: 8px;
+}
+/* 一行设置：标签（可带说明）在左，控件在右。
+   title 既可能直接挂在行上、也可能在 label 里，所以收在 .settingRow 下用后代选择器。 */
+.settingRow {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-height: 40px;
+	.label {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		.desc {
+			font-size: var(--fs-xs);
+			color: var(--text-placeholder);
+		}
+	}
+	.title {
+		font-size: var(--fs-s);
+		color: var(--text-secondary);
+	}
+	/* 没有控件、只显示一个值的行 */
+	.value {
+		flex-shrink: 0;
+		font-size: var(--fs-s);
+		color: var(--text-placeholder);
+	}
+}
+/* ---------- 分段控件（主题 / 密度 / 强调色 / 日志等级都长这样） ---------- */
+.segmented {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+	padding: 3px;
+	border-radius: var(--r-lg);
+	border: 1px solid var(--border-input);
+	background-color: var(--segmented-track);
+	.item {
+		height: 24px;
+		padding: 0 12px;
+		border-radius: 5px;
+		font-size: var(--fs-xs);
+		font-weight: 500;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+		transition: background-color var(--dur-fast), color var(--dur-fast);
+		&:hover {
+			color: var(--text-primary);
+		}
+		&.active {
+			background-color: var(--segmented-active);
+			color: var(--text-primary);
+		}
+	}
+}
+/* ---------- 多行文本（JSON / 提示词） ---------- */
+.jsonTextarea {
+	width: 100%;
+	min-height: 120px;
+	padding: 10px 12px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background-color: var(--codeBg);
+	color: var(--fontColor);
+	font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
+	font-size: 12px;
+	line-height: 1.6;
+	outline: none;
+	resize: vertical;
+	transition: border-color 0.15s;
+	&:focus {
+		border-color: var(--primary);
+	}
+	&.error {
+		border-color: var(--error);
+	}
+}
+/* ---------- 通用小件 ---------- */
+.btnSecondary {
+	padding: 6px 12px;
+	border-radius: 6px;
+	background-color: hwb(var(--bg90) / 1);
+	color: var(--fontColor);
+	font-size: 12px;
+	transition: all 0.15s;
+	&:hover {
+		background-color: hwb(var(--bg88) / 1);
+	}
+}
+.mono {
+	font-family: "Cascadia Code", "Fira Code", "Monaco", "Menlo", monospace;
+}
+/* 退场动画：分段控件 + 预览按钮并排（主题较多时分段控件自己换行）。
+   ⚠️ 这条是 .segmented 的变体，必须和 .segmented 放在同一个 module：
+   CSS Module 的类名按文件哈希，跨文件写后代选择器会对不上。 */
+.exitTheme {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+	gap: 10px;
+	max-width: 62%;
+	.segmented {
+		flex-wrap: wrap;
+		row-gap: 3px;
+		justify-content: flex-end;
+	}
+}
+/* ---------- 媒体 Tab / 模型页的视频编码单选（两个 Tab 共用） ---------- */
+.mediaRadio,
+.codecRadio {
+	width: 210px;
+	height: 128px;
+	flex: 0 0 auto;
+	overflow: hidden;
+	border-radius: var(--r-sm);
+	border: 1px solid var(--border);
+}
+.codecRadio {
+	width: 240px;
+	height: 148px;
+}
+.mediaOptionList {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-top: 8px;
+}
+.mediaOptionDesc {
+	font-size: var(--fs-xs);
+	color: var(--text-placeholder);
+	line-height: 1.6;
+}

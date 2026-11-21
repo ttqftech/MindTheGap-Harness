@@ -126,7 +126,7 @@ export default function ChatView() {
 		};
 		const fromLastUsage = lookup(modelId);
 		if (fromLastUsage) return fromLastUsage;
-		const current = appState.currentStandardModel;
+		const current = appState.chatConfig.standardModel;
 		return lookup(current?.modelId);
 	};
 
@@ -146,7 +146,7 @@ export default function ChatView() {
 
 	/** 当前选中的 provider + model（找不到 = null） */
 	const currentModelEntry = () => {
-		const ref = appState.currentStandardModel;
+		const ref = appState.chatConfig.standardModel;
 		if (!ref) return null;
 		const provider = getProviderById(ref.providerId);
 		const model = provider?.models.find((m) => m.id === ref.modelId);
@@ -337,26 +337,25 @@ export default function ChatView() {
 			type: 'radio' as const,
 			value: m.id,
 			label: `${m.ui?.icon ?? ''} ${m.name}`.trim(),
-			checked: appState.currentModeId === m.id,
+			checked: appState.chatConfig.modeId === m.id,
 		})),
 	);
 	const currentModeLabel = () => {
-		const mode = appState.modes.find((m) => m.id === appState.currentModeId);
+		const mode = appState.modes.find((m) => m.id === appState.chatConfig.modeId);
 		return mode ? `${mode.ui?.icon ?? ''} ${mode.name}`.trim() : '🤖 默认';
 	};
 	const applyMode = (value: string) => {
 		if (isGenerating()) return;	// 运行期间禁止改模式
-		actions.setCurrentModeId(value);
-		const conv = getActiveConversation();
-		if (conv) void agentBridge.updateConversation(conv.id, { modeId: value });
+		// setChatMode 会把整份 chatConfig（含 modeId）写回当前会话，不用再单独 PUT meta
+		actions.setChatMode(value);
 	};
 
 	/** 当前模型配置的思考强度档位（缺省 = 默认 / 不传参数） */
 	const thinkingLevelOf = (providerId: string, modelId: string): string =>
-		appState.ui.thinkingLevels[`${providerId}/${modelId}`] ?? '';
+		appState.chatConfig.thinkingLevels[`${providerId}/${modelId}`] ?? '';
 
 	const modelMenu = createMemo<MenuItem[]>(() => {
-		const current = appState.currentStandardModel;
+		const current = appState.chatConfig.standardModel;
 		if (appState.providers.length === 0) {
 			return [{ type: 'normal', value: '__none__', label: '还没有配置模型，去设置里添加吧', disabled: true }];
 		}
@@ -411,7 +410,7 @@ export default function ChatView() {
 		if (sep <= 0) return;
 		const providerId = refPart.slice(0, sep);
 		const modelId = refPart.slice(sep + 1);
-		actions.setCurrentStandardModel({ providerId, modelId });
+		actions.setChatModel('standard', { providerId, modelId });
 		if (level !== undefined) actions.setThinkingLevel(providerId, modelId, level || null);
 	};
 
@@ -420,7 +419,7 @@ export default function ChatView() {
 	// #region 模式参数（mode.json 的 form → 输入框下方的动态控件）
 
 	/** 当前模式的表单定义（`form`）与默认变量表（`params`），都来自 mode.json */
-	const currentMode = () => appState.modes.find((m) => m.id === appState.currentModeId);
+	const currentMode = () => appState.modes.find((m) => m.id === appState.chatConfig.modeId);
 	/** 真要渲染的控件：`hidden` 的只当变量用，不出现在界面上 */
 	const paramControls = createMemo(() => (currentMode()?.form ?? []).filter((c) => !c.hidden && c.options.length > 0));
 	/**
@@ -430,7 +429,7 @@ export default function ChatView() {
 	 * `params` / 第一个选项），按 `form` 顺序写进变量表；存的值可以**不在选项里**（来自另一档的联动）。
 	 * 选中那档承诺的变量如果和最终表对不上，`overridden` 为真，界面上打 `*`（只影响显示）。
 	 */
-	const paramState = createMemo(() => resolveModeParams(currentMode() ?? {}, appState.ui.modeParams[appState.currentModeId] ?? {}));
+	const paramState = createMemo(() => resolveModeParams(currentMode() ?? {}, appState.chatConfig.modeParams[appState.chatConfig.modeId] ?? {}));
 	const paramVars = () => paramState().vars;
 
 	/** 控件当前值的显示文本：能对上选项就用它的 label（值可能来自别的参数，不一定是用户点过的那项） */
@@ -456,19 +455,19 @@ export default function ChatView() {
 		}));
 		openChipMenu(menu, (picked) => {
 			const opt = control.options[Number(picked)];
-			if (opt) actions.setModeParam(appState.currentModeId, control.key, opt.value);
+			if (opt) actions.setModeParam(appState.chatConfig.modeId, control.key, opt.value);
 		}, el);
 	};
 
 	/** 本轮 run 带给后端的参数：只发**用户显式选过**的，其余由后端按 mode.json 的默认值算 */
-	const runParams = (): Record<string, ParamValue> => appState.ui.modeParams[appState.currentModeId] ?? {};
+	const runParams = (): Record<string, ParamValue> => appState.chatConfig.modeParams[appState.chatConfig.modeId] ?? {};
 
 	// #endregion
 
 	// #region 工具安全性（全局开关，不属于任何模式）
 
 	/** 当前档位的显示名 */
-	const safetyLabel = () => agentBridge.SAFETY_OPTIONS.find((o) => o.value === appState.safety)?.label ?? appState.safety;
+	const safetyLabel = () => agentBridge.SAFETY_OPTIONS.find((o) => o.value === appState.chatConfig.safety)?.label ?? appState.chatConfig.safety;
 
 	/** 档位菜单：全局一份，与模式无关；改完对**之后**的 run 生效 */
 	const safetyMenu = createMemo<MenuItem[]>(() =>
@@ -477,14 +476,14 @@ export default function ChatView() {
 			value: o.value,
 			label: o.label,
 			tooltip: o.description,
-			checked: appState.safety === o.value,
+			checked: appState.chatConfig.safety === o.value,
 		})),
 	);
 
-	const applySafety = async (value: string) => {
-		if (value === appState.safety) return;
-		const result = await actions.setSafety(value as agentBridge.ToolSafety);
-		if (!result.ok) void alertMsgbox('切换工具安全性失败', result.error ?? '未知错误');
+	const applySafety = (value: string) => {
+		if (value === appState.chatConfig.safety) return;
+		// 会话级配置直接写回该会话的 ctx.json，不再走全局 settings 的 PUT（也就没有失败回滚）
+		void actions.setSafety(value as agentBridge.ToolSafety);
 	};
 
 	// #endregion
@@ -795,12 +794,13 @@ export default function ChatView() {
 		void startRun({
 			conversationId: convId,
 			userMessage: text,
-			modeId: appState.currentModeId,
+			modeId: appState.chatConfig.modeId,
 			runningDir,
 			model: modelConfig,
 			images: imageRefs,
 			videos: videoRefs,
 			params: runParams(),
+			chatConfig: appState.chatConfig,	// 本轮生效的聊天配置随 run 一起提交，后端固化进该会话的 ctx.json
 		});
 	};
 
@@ -920,7 +920,7 @@ export default function ChatView() {
 							convId={appState.activeConversationId ?? ''}
 						/>
 
-						{/* 本轮即时错误（重拉 ctx 后由失败的实例自己带错误块） */}
+						{/* 调用 / 传输层即时错误：这类错误没进 ctx，重拉也带不出来 */}
 						<Show when={runError()}>
 							<div class={styles['agent-block-error']}>
 								<span>✗</span>
@@ -1063,8 +1063,8 @@ export default function ChatView() {
 						<button
 							class={`${styles['ctx-chip']} ${styles['safety-chip']}`}
 							classList={{
-								[styles['is-on']]: appState.safety === 'off',
-								[styles['is-warn']]: appState.safety === 'readonly-strict' || appState.safety === 'readonly-smart',
+								[styles['is-on']]: appState.chatConfig.safety === 'off',
+								[styles['is-warn']]: appState.chatConfig.safety === 'readonly-strict' || appState.chatConfig.safety === 'readonly-smart',
 							}}
 							title="工具安全性：全局开关，换模式不影响它；改完对之后的运行生效"
 							onclick={(e) => openChipMenu(safetyMenu(), applySafety, e.currentTarget)}

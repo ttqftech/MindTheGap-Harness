@@ -1,0 +1,496 @@
+/* ==========================================================================
+   模型 Tab（表格化 + 行内展开）
+   设计稿：docs/设计-模型设置页重设计.html
+
+   嵌套按 DOM 写：一个组件的大括号里，只放一定出现在它底下的子元素，
+   看缩进就能看出「页头 / 表格 → 行 → 编辑面板 → 字段」这几层。
+   共用的 jsonTextarea / mono / codecRadio / mediaOption* 在 SettingsCommon.module.css。
+   ⚠️ 会脱离父级单独用的类（overline / modelsEmpty / hint / err / field / editor）保持平铺。
+   ========================================================================== */
+/* ---------- 区块头 ---------- */
+.modelsHead {
+	display: flex;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 16px;
+	margin-bottom: 14px;
+	.modelsTitle {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-top: 4px;
+		font-size: var(--fs-l);
+		font-weight: 600;
+		color: var(--text-primary);
+		.countPill {
+			font-size: var(--fs-xxs);
+			font-weight: 600;
+			color: var(--accent);
+			background-color: var(--accent-soft);
+			border: 1px solid var(--accent-soft-border);
+			border-radius: var(--r-full);
+			padding: 1px 9px;
+		}
+	}
+	.modelsDesc {
+		margin-top: 4px;
+		font-size: var(--fs-xs);
+		color: var(--text-tertiary);
+	}
+}
+/* 页头和编辑面板头都会用，平铺 */
+.overline {
+	font-size: var(--fs-xxxs);
+	letter-spacing: 0.22em;
+	text-transform: uppercase;
+	color: var(--accent);
+}
+.modelsFoot {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 14px;
+	font-size: var(--fs-xxs);
+	color: var(--text-placeholder);
+	.spark {
+		color: var(--accent);
+	}
+}
+/* ---------- 提供商表格 ---------- */
+.tableWrap {
+	border: 1px solid var(--border);
+	border-radius: var(--r-2xl);
+	overflow: hidden;
+	background-color: var(--bg-sub1);
+	.ptable {
+		width: 100%;
+		border-collapse: collapse;
+		table-layout: fixed;
+		thead th {
+			padding: 9px 14px;
+			background-color: var(--bg-sub1-header);
+			border-bottom: 1px solid var(--border);
+			font-size: var(--fs-xxs);
+			font-weight: 600;
+			letter-spacing: 0.12em;
+			text-transform: uppercase;
+			color: var(--text-tertiary);
+			text-align: left;
+			white-space: nowrap;
+		}
+		.colP { width: 21%; }
+		.colF { width: 13%; }
+		.colU { width: 27%; }
+		.colM { width: 25%; }
+		.colA { width: 14%; text-align: right; }
+		.rowMain {
+			border-bottom: 1px solid var(--border);
+			transition: background-color var(--dur-fast);
+			td {
+				padding: 9px 14px;
+				vertical-align: middle;
+			}
+			&:hover {
+				background-color: var(--bg-hover);
+			}
+			&.open {
+				background-color: var(--accent-soft);
+			}
+			.pName {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				font-size: var(--fs-s);
+				font-weight: 600;
+				color: var(--text-primary);
+				.pDot {
+					width: 7px;
+					height: 7px;
+					border-radius: 50%;
+					flex-shrink: 0;
+					background-color: var(--success);
+				}
+			}
+			.pMeta {
+				margin-top: 2px;
+				font-family: var(--font-mono);
+				font-size: var(--fs-xxxs);
+				color: var(--text-tertiary);
+			}
+			.badge {
+				display: inline-block;
+				padding: 2px 8px;
+				border-radius: var(--r-full);
+				background-color: var(--bg-chip);
+				border: 1px solid var(--border);
+				font-size: var(--fs-xxxs);
+				font-weight: 600;
+				color: var(--text-secondary);
+				white-space: nowrap;
+				&[data-format="anthropic"] {
+					color: var(--info);
+				}
+			}
+			.pUrl {
+				display: block;
+				font-size: var(--fs-xxs);
+				color: var(--text-secondary);
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			/* 表格「模型」列的小胶囊：圆点区分标准 / 节省，超过 2 个折成 +N */
+			.mChips {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 5px;
+				.mChip {
+					display: inline-flex;
+					align-items: center;
+					gap: 5px;
+					max-width: 100%;
+					padding: 2px 7px;
+					border-radius: var(--r-md);
+					border: 1px solid var(--border);
+					background-color: var(--bg-chip);
+					font-size: var(--fs-xxxs);
+					color: var(--text-secondary);
+					white-space: nowrap;
+					overflow: hidden;
+					text-overflow: ellipsis;
+					&.more {
+						background-color: transparent;
+						border-style: dashed;
+						color: var(--text-tertiary);
+					}
+					.dot {
+						width: 5px;
+						height: 5px;
+						border-radius: 50%;
+						flex-shrink: 0;
+						background-color: var(--accent);
+						&.eco {
+							background-color: var(--info);
+						}
+					}
+				}
+			}
+			.rowActions {
+				display: flex;
+				gap: 6px;
+				justify-content: flex-end;
+			}
+		}
+		.rowEdit > td {
+			padding: 0;
+			background-color: var(--bg-sub1-header);
+		}
+	}
+}
+/* 表格空态和「模型目录还没模型」都会用，平铺 */
+.modelsEmpty {
+	padding: 10px 2px;
+	font-size: var(--fs-xs);
+	color: var(--text-tertiary);
+}
+/* ---------- 行内编辑面板 ----------
+   .editor 本身在 .rowEdit 的 td 里，但它是独立组件，留平铺，只把内部收进来。 */
+.editor {
+	margin: 4px 10px 12px;
+	padding: 16px 18px 14px;
+	background-color: var(--bg-app);
+	border: 1px solid var(--border);
+	border-radius: var(--r-xl);
+	box-shadow: inset 3px 0 0 var(--accent), var(--shadow-sm);
+	.editorHead {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		margin-bottom: 14px;
+		.editorTitle {
+			margin-top: 2px;
+			font-size: var(--fs-m);
+			font-weight: 600;
+			color: var(--text-primary);
+		}
+		.right {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			/* 「✓ 已生效」：保存按钮的替代提示，1800ms 后自己淡出 */
+			.live {
+				padding: 2px 9px;
+				border-radius: var(--r-full);
+				border: 1px solid var(--accent-soft-border);
+				background-color: var(--accent-soft);
+				color: var(--success);
+				font-size: var(--fs-xxs);
+				white-space: nowrap;
+				opacity: 0;
+				transform: translateY(2px);
+				transition: opacity var(--dur), transform var(--dur);
+				&.show {
+					opacity: 1;
+					transform: none;
+				}
+				.note {
+					color: var(--text-tertiary);
+				}
+			}
+		}
+	}
+	.egrid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px 16px;
+	}
+	/* ---------- 区块分隔（模型目录 / 提供商级参数） ---------- */
+	.esec {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin: 18px 0 10px;
+		h4 {
+			margin: 0;
+			font-size: var(--fs-xxs);
+			font-weight: 600;
+			letter-spacing: 0.1em;
+			text-transform: uppercase;
+			color: var(--text-secondary);
+		}
+		.num {
+			font-family: var(--font-mono);
+			font-size: var(--fs-xxxs);
+			color: var(--text-tertiary);
+		}
+		.line {
+			flex: 1;
+			height: 1px;
+			background-color: var(--border);
+		}
+	}
+	/* ---------- 模型目录 → 模型行 → 参数区 ---------- */
+	.models {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		.mrow {
+			padding: 12px 14px;
+			border: 1px solid var(--border);
+			border-radius: var(--r-xl);
+			background-color: var(--bg-sub1);
+			transition: border-color var(--dur-fast);
+			&:hover {
+				border-color: var(--border-strong);
+			}
+			.top {
+				display: grid;
+				grid-template-columns: 1.25fr 1fr 108px 1.15fr auto;
+				gap: 10px;
+				align-items: end;
+				.del {
+					display: flex;
+					align-items: center;
+					height: 30px;
+				}
+			}
+			.mparams {
+				display: grid;
+				grid-template-columns: 1.35fr 1fr;
+				gap: 12px 18px;
+				margin-top: 12px;
+				padding-top: 12px;
+				border-top: 1px dashed var(--border);
+			}
+		}
+	}
+}
+/* ---------- 字段（竖排：小标签 + 控件） ----------
+   <Field> 把 children 全渲染在 .field 里，所以下面的控件都能收进这个大括号。
+   注意 .tagsInput 是另一个类，不会被 .input 命中。 */
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+	&.span2 {
+		grid-column: 1 / -1;
+	}
+	.label {
+		font-size: var(--fs-xxs);
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		color: var(--text-tertiary);
+	}
+	.input {
+		width: 100%;
+		height: 30px;
+		padding: 0 9px;
+		border-radius: var(--r-md);
+		border: 1px solid var(--border-input);
+		background-color: var(--bg-input);
+		color: var(--text-primary);
+		font-family: var(--font-ui);
+		font-size: var(--fs-xs);
+		outline: none;
+		transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+		&::placeholder {
+			color: var(--text-placeholder);
+		}
+		&:focus {
+			border-color: var(--accent);
+			box-shadow: var(--ring);
+		}
+	}
+	select.input {
+		cursor: pointer;
+	}
+	.connLine {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		height: 30px;
+		.connStatus {
+			min-width: 0;
+			font-family: var(--font-mono);
+			font-size: var(--fs-xxxs);
+			color: var(--text-tertiary);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			&[data-kind="ok"] { color: var(--success); }
+			&[data-kind="err"] { color: var(--danger); }
+			&[data-kind="busy"] { color: var(--accent); }
+		}
+	}
+	.checkLine {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		height: 30px;
+		font-size: var(--fs-xs);
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+	.ctxLine {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		.tagLab {
+			flex: 0 0 34px;
+			font-family: var(--font-mono);
+			font-size: var(--fs-xxxs);
+			color: var(--text-tertiary);
+		}
+		.presets {
+			display: flex;
+			gap: 4px;
+			flex-shrink: 0;
+			.chipBtn {
+				padding: 3px 7px;
+				border: 1px solid transparent;
+				border-radius: var(--r-md);
+				background-color: var(--accent-soft);
+				color: var(--accent);
+				font-family: var(--font-mono);
+				font-size: var(--fs-xxxs);
+				cursor: pointer;
+				transition: border-color var(--dur-fast);
+				&:hover {
+					border-color: var(--accent);
+				}
+			}
+		}
+	}
+	/* 请求地址 + 「完整 URL」复选框并排 */
+	.urlLine {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		.input {
+			flex: 1;
+			min-width: 0;
+		}
+		.checkLine {
+			flex: 0 0 auto;
+			white-space: nowrap;
+		}
+	}
+	/* 思考模式：参数名与强度列表左右并排 */
+	.thinkLine {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		.ctxLine {
+			flex: 0 1 240px;
+		}
+		.tagsBox {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+	}
+	/* 可选值标签长在输入框里：框内换行、回车添加、点 × 删除 */
+	.tagsBox {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 5px;
+		min-height: 30px;
+		padding: 4px 8px;
+		border: 1px solid var(--border-input);
+		border-radius: var(--r-md);
+		background-color: var(--bg-input);
+		&:focus-within {
+			border-color: var(--accent);
+			box-shadow: var(--ring);
+		}
+		.tag {
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			padding: 1px 6px;
+			border: 1px solid var(--border);
+			border-radius: var(--r-sm);
+			background-color: var(--bg-chip);
+			font-family: var(--font-mono);
+			font-size: var(--fs-xxxs);
+			color: var(--text-secondary);
+			.tagX {
+				padding: 0;
+				border: none;
+				background: none;
+				color: var(--text-tertiary);
+				font-size: var(--fs-xxs);
+				line-height: 1;
+				cursor: pointer;
+				&:hover {
+					color: var(--danger);
+				}
+			}
+		}
+		.tagsInput {
+			flex: 1;
+			min-width: 140px;
+			border: none;
+			outline: none;
+			background: transparent;
+			color: var(--text-primary);
+			font-family: var(--font-mono);
+			font-size: var(--fs-xxs);
+			&::placeholder {
+				color: var(--text-placeholder);
+			}
+		}
+	}
+}
+/* hint / err 既由 <Field> 渲染在 .field 里，也在编辑面板里直接单独用，只能平铺 */
+.hint {
+	font-size: var(--fs-xxxs);
+	color: var(--text-placeholder);
+	line-height: 1.5;
+}
+.err {
+	font-size: var(--fs-xxxs);
+	color: var(--danger);
+}

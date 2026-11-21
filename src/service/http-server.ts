@@ -10,13 +10,13 @@
 
 import { createReadStream, existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, MediaPrepareRequest, MediaSettings, ModeDefinition, ModeSummary, ModelConfig, RequestLogLevel, ToolSafety, UserConfig } from '@shared/agent';
-import { DEFAULT_MEDIA_SETTINGS, DRAFT_MEDIA_CONVERSATION_ID, IMAGE_QUALITY_VALUES, VIDEO_QUALITY_VALUES } from '@shared/agent';
+import type { AgentAnswerRequest, AgentCtx, AgentRunRequest, AgentStreamEvent, AuthInfo, LlmRequestRecord, McpServerConfig, MediaPrepareRequest, ModeDefinition, ModeSummary, ModelConfig, RequestLogLevel, SettingsPatch, SettingsSnapshot, UserConfig } from '@shared/agent';
+import { DEFAULT_CHAT_CONFIG, DEFAULT_MEDIA_SETTINGS, DRAFT_MEDIA_CONVERSATION_ID, IMAGE_QUALITY_VALUES, VIDEO_QUALITY_VALUES } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import * as agentRunner from './runner';
 import * as auth from './auth';
 import { getBuiltinToolNames } from './tools';
-import { normalizeSafety, SAFETY_VALUES } from './safety';
+import { normalizeSafety } from './safety';
 import { setMockResolver, testModelConnectivity } from './llm/model';
 import { ensureMockServer, MOCK_SCENARIOS, setMockScenario } from './llm/mock';
 import { clearRequests, readRequest, readRequests, setRequestLogOptions } from './llm/requestLog';
@@ -61,7 +61,7 @@ function healthInfo(): ServiceHealth {
 
 function setCors(res: ServerResponse) {
 	res.setHeader('Access-Control-Allow-Origin', '*');
-	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
 	// Authorization 必须放行：登录后所有请求都带 `Bearer <sessionId>`
 	res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
@@ -617,33 +617,96 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 			// #endregion
 
-			// #region 设置 — 模型提供商
+			// #region 设置 — 一次快照读 + 按字段 patch 写
 
-			if (req.method === 'GET' && path === '/api/settings/providers') {
-				sendJson(res, 200, settings.providers);
+			/**
+			 * 纯数据设置的快照。前端登录成功后只读这一次，取代原来 8 个并行的 settings GET。
+			 * ⚠️ 不含 users（写要权限）、不含 MCP 运行态、不含插件目录里的 mode.json。
+			 */
+			if (req.method === 'GET' && path === '/api/settings/snapshot') {
+				const mock = settings.debug?.mock;
+				const result: SettingsSnapshot = {
+					providers: snapshot(settings.providers),
+					chatDefaults: snapshot(settings.chatDefaults),
+					basePrompt: settings.basePrompt ?? '',
+					media: snapshot(settings.media) ?? DEFAULT_MEDIA_SETTINGS,
+					folders: snapshot(settings.folders),
+					mcpServers: snapshot(settings.mcpServers),
+					mock: {
+						enabled: mock?.enabled ?? false,
+						scenario: mock?.scenario ?? 'web',
+						scenarios: MOCK_SCENARIOS,
+					},
+				};
+				sendJson(res, 200, result);
 				return;
 			}
 
-			if (req.method === 'PUT' && path === '/api/settings/providers') {
+			/**
+			 * 只写请求里出现的 key。前端按脏字段提交，避免整份旧快照把别的窗口刚改过的字段盖回去。
+			 * mcp-servers（要 syncAll）/ users（权限）/ safety / mock / request-log 仍走各自的独立接口。
+			 */
+			if (req.method === 'PATCH' && path === '/api/settings') {
 				const body = await readBody(req);
-				settings.providers = JSON.parse(body || '[]');
-				sendJson(res, 200, { ok: true });
+				const patch = JSON.parse(body || '{}') as SettingsPatch;
+				const keys: string[] = [];
+				if (patch.providers !== undefined) {
+					if (!Array.isArray(patch.providers)) {
+						sendJson(res, 400, { ok: false, error: 'providers 必须是数组' });
+						return;
+					}
+					settings.providers = patch.providers;
+					keys.push('providers');
+				}
+				if (patch.chatDefaults !== undefined) {
+					const next = patch.chatDefaults;
+					if (!next || typeof next !== 'object') {
+						sendJson(res, 400, { ok: false, error: 'chatDefaults 必须是对象' });
+						return;
+					}
+					settings.chatDefaults = {
+						...DEFAULT_CHAT_CONFIG,
+						...next,
+						modeId: typeof next.modeId === 'string' && next.modeId ? next.modeId : DEFAULT_CHAT_CONFIG.modeId,
+						safety: normalizeSafety(next.safety),
+						thinkingLevels: next.thinkingLevels ?? {},
+						modeParams: next.modeParams ?? {},
+					};
+					keys.push('chatDefaults');
+				}
+				if (patch.basePrompt !== undefined) {
+					if (typeof patch.basePrompt !== 'string') {
+						sendJson(res, 400, { ok: false, error: 'basePrompt 必须是字符串' });
+						return;
+					}
+					settings.basePrompt = patch.basePrompt;
+					keys.push('basePrompt');
+				}
+				if (patch.media !== undefined) {
+					const imageQuality = patch.media?.imageQuality;
+					const videoQuality = patch.media?.videoQuality;
+					if (!IMAGE_QUALITY_VALUES.includes(imageQuality) || !VIDEO_QUALITY_VALUES.includes(videoQuality)) {
+						sendJson(res, 400, { ok: false, error: 'media 清晰度档位不合法' });
+						return;
+					}
+					settings.media = { imageQuality, videoQuality };
+					keys.push('media');
+				}
+				if (patch.folders !== undefined) {
+					if (!Array.isArray(patch.folders)) {
+						sendJson(res, 400, { ok: false, error: 'folders 必须是数组' });
+						return;
+					}
+					settings.folders = patch.folders;
+					keys.push('folders');
+				}
+				sendJson(res, 200, { ok: true, keys });
 				return;
 			}
 
-			if (req.method === 'GET' && path === '/api/settings/current-model') {
-				sendJson(res, 200, { standard: settings.currentStandardModel, economy: settings.currentEconomyModel });
-				return;
-			}
+			// #endregion
 
-			if (req.method === 'PUT' && path === '/api/settings/current-model') {
-				const body = await readBody(req);
-				const params = JSON.parse(body || '{}');
-				if (params.standard !== undefined) settings.currentStandardModel = params.standard;
-				if (params.economy !== undefined) settings.currentEconomyModel = params.economy;
-				sendJson(res, 200, { ok: true });
-				return;
-			}
+			// #region 设置 — 模型连通性测试（配置本身走 snapshot / PATCH）
 
 			// 测试连通性：设置页每个模型行上的按钮。
 			// 不写 requestLog、不碰会话 —— 只是拿「地址 + Key + 模型名」换一个 2xx。
@@ -660,13 +723,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 			// #endregion
 
-			// #region 设置 — 基座提示词
-
-			// 没有默认值：没填就返回空串，前端文本框也就是空的
-			if (req.method === 'GET' && path === '/api/settings/base-prompt') {
-				sendJson(res, 200, { basePrompt: settings.basePrompt ?? '' });
-				return;
-			}
+			// #region 设置 — 基座提示词（读走 snapshot；这里只留设置页点「保存」时的即时 PUT）
 
 			if (req.method === 'PUT' && path === '/api/settings/base-prompt') {
 				const body = await readBody(req);
@@ -682,73 +739,11 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 			// #endregion
 
-			// #region 设置 — 工具安全性（全局开关）
-
-			// 一份设置管所有模式 / 插件。运行中的 run 在开跑时已经固化了档位，这里改**不影响在飞的 run**，
-			// 所以不像 mock 那样需要 409 —— 半路换档位最多是「下一轮的工具表与这一轮不同」，
-			// 而闸门判定用的是 Runner 里那份固化的值，不会中途翻转。
-			if (req.method === 'GET' && path === '/api/settings/safety') {
-				sendJson(res, 200, { safety: normalizeSafety(settings.safety) });
-				return;
-			}
-
-			if (req.method === 'PUT' && path === '/api/settings/safety') {
-				const body = await readBody(req);
-				const { safety } = JSON.parse(body || '{}') as { safety?: unknown };
-				if (typeof safety !== 'string' || !SAFETY_VALUES.includes(safety as ToolSafety)) {
-					sendJson(res, 400, { ok: false, error: `safety 必须是 ${SAFETY_VALUES.join(' / ')} 之一` });
-					return;
-				}
-				settings.safety = safety as ToolSafety;
-				logMsg(`[HttpServer] 工具安全性：${settings.safety}`);
-				sendJson(res, 200, { ok: true, safety: settings.safety });
-				return;
-			}
-
-			// #endregion
-
-			// #region 设置 — 媒体输入（图片 / 视频的默认清晰度）
-
-			if (req.method === 'GET' && path === '/api/settings/media') {
-				const rawImage = settings.media?.imageQuality;
-				const rawVideo = settings.media?.videoQuality;
-				sendJson(res, 200, {
-					media: {
-						imageQuality: IMAGE_QUALITY_VALUES.includes(rawImage as MediaSettings['imageQuality']) ? rawImage : DEFAULT_MEDIA_SETTINGS.imageQuality,
-						videoQuality: VIDEO_QUALITY_VALUES.includes(rawVideo as MediaSettings['videoQuality']) ? rawVideo : DEFAULT_MEDIA_SETTINGS.videoQuality,
-					},
-				});
-				return;
-			}
-
-			if (req.method === 'PUT' && path === '/api/settings/media') {
-				const body = await readBody(req);
-				const { media } = JSON.parse(body || '{}') as { media?: Partial<MediaSettings> };
-				const imageQuality = media?.imageQuality ?? DEFAULT_MEDIA_SETTINGS.imageQuality;
-				const videoQuality = media?.videoQuality ?? DEFAULT_MEDIA_SETTINGS.videoQuality;
-				if (!IMAGE_QUALITY_VALUES.includes(imageQuality) || !VIDEO_QUALITY_VALUES.includes(videoQuality)) {
-					sendJson(res, 400, { ok: false, error: '媒体清晰度档位不合法' });
-					return;
-				}
-				settings.media = { imageQuality, videoQuality };
-				sendJson(res, 200, { ok: true, media: settings.media });
-				return;
-			}
-
-			// #endregion
+			// 工具安全性 / 媒体默认清晰度都是纯数据，统一走 snapshot / PATCH（会话级 safety 在 chatConfig 里）
 
 			// #region 设置 — 内置 mock
 
-			if (req.method === 'GET' && path === '/api/settings/mock') {
-				const mock = settings.debug?.mock;
-				sendJson(res, 200, {
-					enabled: mock?.enabled ?? false,
-					scenario: mock?.scenario ?? 'web',
-					scenarios: MOCK_SCENARIOS,
-				});
-				return;
-			}
-
+			// mock 状态（含剧本清单）由 snapshot 带回；这里只留带 409 守卫的切换接口
 			if (req.method === 'PUT' && path === '/api/settings/mock') {
 				// 运行期间禁止切换：它改的是「下一次 LLM 请求走谁」，中途改会让同一个 run 混入两种响应。
 				// 前端也会把开关禁用，这里是兜底（headless 调用同样受保护）。
@@ -803,12 +798,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 			// #endregion
 
-			// #region 设置 — MCP 服务器
-
-			if (req.method === 'GET' && path === '/api/settings/mcp-servers') {
-				sendJson(res, 200, settings.mcpServers);
-				return;
-			}
+			// #region 设置 — MCP 服务器（配置由 snapshot 读回；写必须走独立 PUT 以 await syncAll）
 
 			if (req.method === 'PUT' && path === '/api/settings/mcp-servers') {
 				const body = await readBody(req);
@@ -921,21 +911,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 
 			// #endregion
 
-			// #region 设置 — 文件夹
-
-			if (req.method === 'GET' && path === '/api/settings/folders') {
-				sendJson(res, 200, settings.folders);
-				return;
-			}
-
-			if (req.method === 'PUT' && path === '/api/settings/folders') {
-				const body = await readBody(req);
-				settings.folders = JSON.parse(body || '[]');
-				sendJson(res, 200, { ok: true });
-				return;
-			}
-
-			// #endregion
+			// 文件夹列表走 snapshot / PATCH
 
 			sendJson(res, 404, { ok: false, error: `Not found: ${path}` });
 		} catch (e: any) {

@@ -6,8 +6,7 @@
  * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
  */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ConversationMeta, ServiceConversation, ServiceSettings, LoginResult, ModelConfig, ModelProvider, ModelTestResult, ModeSummary, Folder, ImageQuality, LlmImageRef, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, MediaPrepareRequest, MediaPrepareResult, MediaSettings, UserConfig, VideoCodec, VideoQuality } from '@shared/agent';
-import { DEFAULT_MEDIA_SETTINGS } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ChatConfig, ConversationMeta, ServiceConversation, LoginResult, ModelConfig, ModelTestResult, ModeSummary, ImageQuality, LlmImageRef, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, MediaPrepareRequest, MediaPrepareResult, SettingsPatch, SettingsSnapshot, UserConfig, VideoCodec, VideoQuality } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import { sha256Hex } from '@shared/sha256';
 
@@ -115,27 +114,7 @@ export async function ensureMedia(conversationId: string, params: MediaParams, f
 	return uploadMedia(conversationId, params, file);
 }
 
-/** 媒体默认档位（后端 settings.media） */
-export async function getMediaSettings(): Promise<MediaSettings> {
-	try {
-		const r = await httpFetch<{ media: MediaSettings }>('/api/settings/media');
-		return r.media ?? DEFAULT_MEDIA_SETTINGS;
-	} catch {
-		return DEFAULT_MEDIA_SETTINGS;
-	}
-}
-
-export async function setMediaSettings(media: MediaSettings): Promise<{ ok: boolean; error?: string }> {
-	try {
-		return await httpFetch('/api/settings/media', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ media }),
-		});
-	} catch (e) {
-		return { ok: false, error: (e as Error)?.message ?? String(e) };
-	}
-}
+// 媒体默认档位走 GET /api/settings/snapshot 读、PATCH /api/settings 写
 
 // #endregion
 
@@ -383,7 +362,7 @@ export async function getConversation(id: string): Promise<ServiceConversation |
 	}
 }
 
-export async function createConversation(params: { folderId?: string; title?: string; modeId?: string }): Promise<ServiceConversation | null> {
+export async function createConversation(params: { folderId?: string; title?: string; modeId?: string; chatConfig?: ChatConfig }): Promise<ServiceConversation | null> {
 	try {
 		return await httpFetch<ServiceConversation>('/api/conversations', {
 			method: 'POST',
@@ -476,28 +455,36 @@ export async function stopBackgroundTask(conversationId: string, taskId: string)
 
 // #endregion
 
-// #region 设置 — 模型提供商
+// #region 设置 — 一次快照读 + 按字段 patch 写
 
-export async function getProviders(): Promise<ModelProvider[]> {
+/** 登录成功后一次拿齐所有纯数据设置（取代原来 8 个并行的 settings GET） */
+export async function getSettingsSnapshot(): Promise<SettingsSnapshot | null> {
 	try {
-		return await httpFetch<ModelProvider[]>('/api/settings/providers');
+		return await httpFetch<SettingsSnapshot>('/api/settings/snapshot');
 	} catch {
-		return [];
+		return null;
 	}
 }
 
-export async function setProviders(providers: ModelProvider[]): Promise<boolean> {
+/** 只写请求里出现的 key —— 前端按脏字段提交，不把其它字段的旧值一起盖上去 */
+export async function patchSettings(patch: SettingsPatch): Promise<boolean> {
 	try {
-		await httpFetch('/api/settings/providers', {
-			method: 'PUT',
+		await httpFetch('/api/settings', {
+			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(providers),
+			body: JSON.stringify(patch),
 		});
 		return true;
 	} catch {
 		return false;
 	}
 }
+
+// #endregion
+
+// #region 设置 — 模型提供商
+
+/** 模型提供商配置走 GET /api/settings/snapshot 读、PATCH /api/settings 写 */
 
 /**
  * 测试某个模型的连通性（设置页每行的按钮）。
@@ -515,29 +502,7 @@ export async function testProviderModel(config: ModelConfig): Promise<ModelTestR
 	}
 }
 
-export async function getCurrentModel(): Promise<{
-	standard: ServiceSettings['currentStandardModel'];
-	economy: ServiceSettings['currentEconomyModel'];
-} | null> {
-	try {
-		return await httpFetch('/api/settings/current-model');
-	} catch {
-		return null;
-	}
-}
-
-export async function setCurrentModel(params: { standard?: ServiceSettings['currentStandardModel']; economy?: ServiceSettings['currentEconomyModel'] }): Promise<boolean> {
-	try {
-		await httpFetch('/api/settings/current-model', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(params),
-		});
-		return true;
-	} catch {
-		return false;
-	}
-}
+// 新会话默认模型在 chatDefaults 里，由 snapshot / PATCH 读写
 
 // #endregion
 
@@ -576,16 +541,7 @@ export async function saveModeJson(id: string, json: string): Promise<{ ok: bool
 	}
 }
 
-/** 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌）。没有默认值，没填就是空串 */
-export async function getBasePrompt(): Promise<{ basePrompt: string }> {
-	try {
-		const resp = await httpFetch<{ basePrompt: string }>('/api/settings/base-prompt');
-		return { basePrompt: resp.basePrompt ?? '' };
-	} catch {
-		return { basePrompt: '' };
-	}
-}
-
+/** 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌）。读走 snapshot，写用下面的即时 PUT */
 export async function setBasePrompt(basePrompt: string): Promise<boolean> {
 	try {
 		await httpFetch('/api/settings/base-prompt', {
@@ -601,12 +557,12 @@ export async function setBasePrompt(basePrompt: string): Promise<boolean> {
 
 // #endregion
 
-// #region 设置 — 工具安全性（全局开关，所有模式共用）
+// #region 设置 — 工具安全性（会话级档位的类型与档位清单）
 
 /**
  * 工具安全性档位。
- * ⚠️ 这是**全局设置**（后端 `settings.safety`），不是模式配置：换模式不影响它，
- * 改它影响之后所有 run。闸门在后端工具执行层，前端只负责选。
+ * ⚠️ 每个会话的 `chatConfig.safety` 各存一份；新会话默认档位在 `chatDefaults.safety`，
+ * 由 snapshot / PATCH 读写。闸门在后端工具执行层，前端只负责选。
  */
 export type ToolSafety = 'readonly-strict' | 'readonly-smart' | 'normal' | 'smart' | 'off';
 
@@ -619,54 +575,11 @@ export const SAFETY_OPTIONS: { value: ToolSafety; label: string; description: st
 	{ value: 'off', label: '无防护', description: '全部工具可用，无防护无审核' },
 ];
 
-export async function getSafety(): Promise<ToolSafety> {
-	try {
-		const r = await httpFetch<{ safety: ToolSafety }>('/api/settings/safety');
-		return r.safety;
-	} catch {
-		return 'normal';
-	}
-}
-
-export async function setSafety(safety: ToolSafety): Promise<{ ok: boolean; error?: string }> {
-	try {
-		return await httpFetch('/api/settings/safety', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ safety }),
-		});
-	} catch (e: any) {
-		const raw = String(e?.message ?? e);
-		const json = raw.match(/\{.*\}$/)?.[0];
-		if (json) {
-			try {
-				return { ok: false, error: (JSON.parse(json) as { error?: string }).error ?? raw };
-			} catch {
-				// 解析失败就用原文
-			}
-		}
-		return { ok: false, error: raw };
-	}
-}
-
 // #endregion
 
 // #region 设置 — 内置 mock（开发用：LLM 走假模型，工具仍真实执行）
 
-export interface MockState {
-	enabled: boolean;
-	scenario: string;
-	/** 可选剧本（由后端给，前端不重复维护一份） */
-	scenarios: { id: string; label: string }[];
-}
-
-export async function getMock(): Promise<MockState> {
-	try {
-		return await httpFetch<MockState>('/api/settings/mock');
-	} catch {
-		return { enabled: false, scenario: 'web', scenarios: [] };
-	}
-}
+/** mock 状态（含剧本清单）由 GET /api/settings/snapshot 一次带回，这里只保留切换接口 */
 
 /**
  * 切换 mock。⚠️ 运行期间后端会拒绝（409，服务正在跑 LLM 时不让换），所以调用方必须处理失败。
@@ -723,14 +636,7 @@ export async function reloadPlugins(): Promise<{ ok: boolean; modes?: string[]; 
 
 // #region 设置 — MCP 服务器
 
-export async function getMcpServers(): Promise<McpServerConfig[]> {
-	try {
-		return await httpFetch<McpServerConfig[]>('/api/settings/mcp-servers');
-	} catch {
-		return [];
-	}
-}
-
+/** MCP 服务器配置由 snapshot 读回；写必须走下面的独立 PUT（后端要 await syncAll） */
 export async function setMcpServers(servers: McpServerConfig[]): Promise<boolean> {
 	try {
 		await httpFetch('/api/settings/mcp-servers', {
@@ -830,30 +736,7 @@ export async function callMcpTool(name: string, args: Record<string, unknown>): 
 
 // #endregion
 
-// #region 设置 — 文件夹
-
-export async function getFolders(): Promise<Folder[]> {
-	try {
-		return await httpFetch<Folder[]>('/api/settings/folders');
-	} catch {
-		return [];
-	}
-}
-
-export async function setFolders(folders: Folder[]): Promise<boolean> {
-	try {
-		await httpFetch('/api/settings/folders', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(folders),
-		});
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-// #endregion
+// 文件夹列表走 GET /api/settings/snapshot 读、PATCH /api/settings 写
 
 // #region LLM 请求日志
 

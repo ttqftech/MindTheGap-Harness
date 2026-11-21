@@ -32,8 +32,8 @@ import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import type { AgentCtx, ConversationMeta, ServiceConversation, ServiceSettings, McpServerConfig } from '../shared/agent';
-import { defaultUsers, DEFAULT_MEDIA_SETTINGS } from '../shared/agent';
+import type { AgentCtx, ChatConfig, ConversationMeta, ModelRef, ServiceConversation, ServiceSettings, ToolSafety, McpServerConfig } from '../shared/agent';
+import { defaultUsers, DEFAULT_MEDIA_SETTINGS, DEFAULT_CHAT_CONFIG } from '../shared/agent';
 
 // #region 路径 & 文件读写
 
@@ -235,13 +235,11 @@ export function defaultMcpServers(): McpServerConfig[] {
 
 const defaultSettings: ServiceSettings = {
 	providers: [],
-	currentStandardModel: null,
-	currentEconomyModel: null,
+	// 新会话的默认聊天配置（模板）。每个会话自己的那份在 ctx.json 的 chatConfig 里
+	chatDefaults: { ...DEFAULT_CHAT_CONFIG },
 	// 基座提示词没有默认值：唯一来源是 settings.basePrompt，没填就是空串（空串是合法状态）。
 	// 这里列出来只是为了让缺字段的老 settings.json 补上一个空键，免得读侧到处判 undefined。
 	basePrompt: '',
-	// 工具安全性：全局开关，所有模式共用。缺字段的老 settings.json 走这里（normal = 全开 + 删除进回收站）
-	safety: 'normal',
 	// 图片 / 视频输入默认档位：缺字段的老 settings.json 由 loadSettings 整键补上
 	media: { ...DEFAULT_MEDIA_SETTINGS },
 	folders: [{ id: 'local', isLocal: true }],
@@ -284,6 +282,28 @@ async function doLoadSettings(): Promise<void> {
 		const value = (raw as Record<string, unknown>)[key];
 		if (value !== undefined) (settingsRaw as unknown as Record<string, unknown>)[key] = value;
 	}
+
+	// 老 settings.json 把「默认模型 / 安全性」摊在顶层，收进 chatDefaults 这一份模板里。
+	// 之后无论新老文件都补齐子字段，读侧不必到处判 undefined。
+	const legacy = raw as Record<string, unknown> & {
+		currentStandardModel?: ModelRef | null;
+		currentEconomyModel?: ModelRef | null;
+		safety?: ToolSafety;
+	};
+	if (legacy.chatDefaults === undefined) {
+		settingsRaw.chatDefaults = {
+			...settingsRaw.chatDefaults,
+			standardModel: legacy.currentStandardModel ?? null,
+			economyModel: legacy.currentEconomyModel ?? null,
+			safety: legacy.safety ?? DEFAULT_CHAT_CONFIG.safety,
+		};
+	}
+	settingsRaw.chatDefaults = {
+		...DEFAULT_CHAT_CONFIG,
+		...settingsRaw.chatDefaults,
+		thinkingLevels: { ...(settingsRaw.chatDefaults.thinkingLevels ?? {}) },
+		modeParams: { ...(settingsRaw.chatDefaults.modeParams ?? {}) },
+	};
 
 	// 基座提示词没有任何「缺失就补默认值」的逻辑：没填就是空串（用户可以在设置页清空），
 	// 空串是合法状态。缺字段时上面那个默认值循环会补一个空串进来。
@@ -521,6 +541,8 @@ export function conversationMetas(): ConversationMeta[] {
 			createdAt: conv.createdAt,
 			updatedAt: conv.updatedAt,
 			extraInfo: getFolderExtraInfo(conv.folderId),
+			// 会话自己的聊天配置随 meta 一起下发：切会话时前端同步读回，不必再发一次请求
+			chatConfig: conv.chatConfig,
 		});
 	}
 	return metas.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -539,19 +561,26 @@ function newConversationId(): string {
 }
 
 /** 新建会话（需要生成 id 和默认字段），返回可直接改的代理 */
-export function createConversation(params: { folderId?: string; title?: string; modeId?: string } = {}): ServiceConversation {
+export function createConversation(params: { folderId?: string; title?: string; modeId?: string; chatConfig?: ChatConfig } = {}): ServiceConversation {
 	let id = newConversationId();
 	while (slots.has(id) || existsSync(conversationDir(id))) {
 		id = newConversationId();
 	}
 	const now = Date.now();
+	// 「新建会话 = 以当前默认模板克隆一份」：之后这个会话怎么改都只改自己这份
+	const chatConfig: ChatConfig = {
+		...DEFAULT_CHAT_CONFIG,
+		...(params.chatConfig ?? {}),
+		modeId: params.chatConfig?.modeId ?? params.modeId ?? DEFAULT_CHAT_CONFIG.modeId,
+	};
 	const raw: ServiceConversation = {
 		id,
 		folderId: params.folderId ?? 'local',
 		title: params.title ?? '新任务',
-		modeId: params.modeId ?? 'code',
+		modeId: chatConfig.modeId,
 		createdAt: now,
 		updatedAt: now,
+		chatConfig,
 	};
 	ensureConversationDir(id);
 	writeJsonFile(conversationCtxPath(id), raw);

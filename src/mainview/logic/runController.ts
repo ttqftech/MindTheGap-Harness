@@ -31,7 +31,7 @@ import {
 	markConversationUnread,
 } from '@mainview/stores';
 import type { OverlayCtx } from '@mainview/logic/projection';
-import type { AgentInstanceMessage, AgentStreamEvent, LlmImageRef, LlmVideoRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
+import type { AgentInstanceMessage, AgentStreamEvent, ChatConfig, LlmImageRef, LlmVideoRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
 
 // #region 订阅集合
 
@@ -338,9 +338,8 @@ const handleStreamEvent = (conversationId: string, event: AgentStreamEvent) => {
 		return;
 	}
 	if (event.type === 'error') {
+		// 运行期错误已落进 ctx 的 notice，重拉后由投影就地渲染；这里只兜「ctx 里没有对应消息」的框架级失败（Agent 启动失败 / run 顶层抛错）。
 		runErrorActions.set(conversationId, event.message);
-		// endRun 会 unsubscribe + clear overlay + set runStatus='stopped' + 重拉 ctx。
-		// endRun 不再 clear runError（见下方 endRun 注释），所以错误会持续显示到下一轮 beginRun。
 		void endRun(conversationId);
 		return;
 	}
@@ -461,6 +460,8 @@ export interface StartRunParams {
 	videos?: LlmVideoRef[];
 	/** Composer 下方动态表单的选择（覆盖 mode.json 的 params 默认值），见 shared/modeParams.ts */
 	params?: Record<string, ParamValue>;
+	/** 本轮生效的聊天配置，后端开跑时固化进该会话的 ctx.json */
+	chatConfig?: ChatConfig;
 }
 
 /**
@@ -484,6 +485,7 @@ export async function startRun(params: StartRunParams): Promise<void> {
 			images: params.images,
 			videos: params.videos,
 			params: params.params,
+			chatConfig: params.chatConfig,
 		});
 		if (!result.ok) {
 			runErrorActions.set(conversationId, `❌ Agent 错误: ${result.error}`);

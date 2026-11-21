@@ -136,9 +136,9 @@ export interface ModeLimits {
 }
 
 /**
- * 工具安全性档位 —— **全局设置**（`settings.safety`），不是模式配置。
+ * 工具安全性档位 —— **会话级配置**（`chatConfig.safety`），全局只留一份默认模板 `settings.chatDefaults.safety`。
  *
- * 它是横切所有插件 / 模式的一道闸门：换模式不换档位，改档位对所有会话生效。
+ * 它是横切所有插件 / 模式的一道闸门：换模式不换档位，改某个会话的档位只影响这个会话之后开始的 run。
  * 落点是工具执行层（`service/safety.ts`），与各 Agent 的 `ability.tools` 名单**正交**：
  * 名单决定「这个角色该有哪些工具」（工作流），档位决定「这批工具里有副作用的那部分能不能真跑」。
  *
@@ -700,6 +700,11 @@ export interface AgentRunRequest {
 	 * 后端用它覆盖 `mode.json` 的 `params` 默认值；不传 = 全用默认。
 	 */
 	params?: Record<string, ParamValue>;
+	/**
+	 * 本轮生效的聊天配置（会话级）。后端在开跑时固化进 `conversations/<id>/ctx.json` 的 `chatConfig`，
+	 * 并从中取 `safety` 作为本次 run 的工具闸门；不传时退回全局 `settings.chatDefaults`。
+	 */
+	chatConfig?: ChatConfig;
 }
 
 /** ask_user 中单个问题的定义 */
@@ -854,6 +859,42 @@ export type RequestLogLevel = 'default' | 'input' | 'full';
  */
 export type ConversationRunStatus = 'running' | 'waiting' | 'stopped';
 
+/** 模型引用。不存完整 ModelConfig —— 那是每轮 run 按当前 providers 现算出来的 */
+export interface ModelRef {
+	providerId: string;
+	modelId: string;
+}
+
+/**
+ * 聊天配置 —— Composer 那几颗 chip（模式 / 模型 / 强度 / 安全性）的完整状态。
+ *
+ * ⚠️ 真相在后端，前端只是内存镜像：
+ *   · `settings.chatDefaults` = 新会话的默认模板（全局）
+ *   · `conversations/<id>/ctx.json` 顶层的 `chatConfig` = 这一会话自己的快照
+ * 切会话从列表下发的 meta 里读回，改 chip 时 PUT 回该会话；新建会话拿默认模板克隆一份。
+ * ⛔ 不写 localStorage —— 这些是会话数据，不是本机界面偏好。
+ */
+export interface ChatConfig {
+	modeId: string;
+	standardModel: ModelRef | null;
+	economyModel: ModelRef | null;
+	/** key = `providerId/modelId`，value = 思考强度档位；缺省 = 「默认（不传参数）」 */
+	thinkingLevels: Record<string, string>;
+	/** Composer 下方 form 控件的选择，按 modeId 分组 */
+	modeParams: Record<string, Record<string, ParamValue>>;
+	safety: ToolSafety;
+}
+
+/** 聊天配置的兜底值（老会话缺 chatConfig、或 Service 还没连上时用） */
+export const DEFAULT_CHAT_CONFIG: ChatConfig = {
+	modeId: 'code',
+	standardModel: null,
+	economyModel: null,
+	thinkingLevels: {},
+	modeParams: {},
+	safety: 'normal',
+};
+
 /** 会话元信息（列表展示用，不含 ctx） */
 export interface ConversationMeta {
 	id: string;
@@ -880,6 +921,12 @@ export interface ConversationMeta {
 	 * 切走再回来时，因为订阅跟着会话走、不跟着视图走，回来时 runStatus 已经是新鲜的，不会再出现「切走再回来显示不在运行」。
 	 */
 	runStatus?: ConversationRunStatus;
+	/**
+	 * 这一会话当前用的聊天配置（模式 / 模型 / 强度 / 安全性）。
+	 * 存在 ctx.json 顶层，列表接口顺手带回：切会话时前端从 meta 里同步读回，不必再发一次请求。
+	 * 老会话没有这个字段 = 用 `settings.chatDefaults` 兜底。
+	 */
+	chatConfig?: ChatConfig;
 }
 
 /**
@@ -1069,8 +1116,13 @@ export interface AuthInfo {
 /** 后端完整设置 */
 export interface ServiceSettings {
 	providers: ModelProvider[];
-	currentStandardModel: { providerId: string; modelId: string } | null;
-	currentEconomyModel: { providerId: string; modelId: string } | null;
+	/**
+	 * 新会话的默认聊天配置（模式 / 模型 / 强度 / 安全性）。
+	 * ⚠️ 它只是**模板**：每个会话在 ctx.json 的 `chatConfig` 里存自己的一份，互不影响。
+	 * 老的 settings.json 里 `currentStandardModel` / `currentEconomyModel` / `safety` 三个顶层字段
+	 * 由 `loadSettings()` 迁移到这里。
+	 */
+	chatDefaults: ChatConfig;
 	/**
 	 * 基座提示词。所有模式共享，由设置页的「提示词」面板编辑。
 	 * **不自动拼进 system prompt**：要不要内嵌由各 Agent 的 prompt.md 里有没有 `{{ basePrompt }}` 决定；
@@ -1078,11 +1130,6 @@ export interface ServiceSettings {
 	 * **没有默认值**：没填就是空串，空串是合法状态（等于不提供基座），代码不会拿任何硬编码文案去补。
 	 */
 	basePrompt: string;
-	/**
-	 * 工具安全性档位。**全局开关**：所有模式 / 所有插件共用一份，不是 mode.json 的字段。
-	 * 缺字段（老 settings.json）按 `normal` 处理，见 `service/safety.ts` 的 `normalizeSafety`。
-	 */
-	safety: ToolSafety;
 	/** 图片 / 视频输入的默认压缩档位（设置页「媒体」Tab） */
 	media: MediaSettings;
 	folders: Folder[];
@@ -1090,6 +1137,35 @@ export interface ServiceSettings {
 	/** 用户列表（见 §11）。缺字段时按「空用户名的管理员、无密码、全权限」处理 */
 	users: UserConfig[];
 	debug: DebugSettings;
+}
+
+/**
+ * `GET /api/settings/snapshot` 的响应：一次拿齐所有「纯数据」设置。
+ * 不含 users（要权限）、mode.json（在插件目录）、MCP 运行态（内存），也不含任何有写副作用的字段。
+ * `loadBackendState()` 只发这一个设置类请求，其余是 /api/modes、/api/conversations、/api/health。
+ */
+export interface SettingsSnapshot {
+	providers: ModelProvider[];
+	chatDefaults: ChatConfig;
+	basePrompt: string;
+	media: MediaSettings;
+	folders: Folder[];
+	mcpServers: McpServerConfig[];
+	/** 内置 mock 开关 + 后端给的剧本清单（debug.mock） */
+	mock: { enabled: boolean; scenario: string; scenarios: { id: string; label: string }[] };
+}
+
+/**
+ * `PATCH /api/settings` 的请求体：**只写请求里出现的 key**。
+ * 前端按「与上次保存的快照逐字段比对」收集脏字段，避免把别的窗口刚改过的字段用旧值盖回去。
+ * mcp-servers 不在这里（PUT 必须 await syncAll），users / safety / mock / request-log 各有独立接口。
+ */
+export interface SettingsPatch {
+	providers?: ModelProvider[];
+	chatDefaults?: ChatConfig;
+	basePrompt?: string;
+	media?: MediaSettings;
+	folders?: Folder[];
 }
 
 // #endregion

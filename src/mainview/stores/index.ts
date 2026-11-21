@@ -1,19 +1,20 @@
-﻿/* ==========================================================================
-   全局状态管理（Solid.js store）
-
-   重构后：
-   - 后端设置（providers, basePrompt, folders, conversations）→ Agent Service HTTP
-   - 前端设置（themeMode, currentModeId, ui state, usage）→ localStorage
-   - 会话列表从后端获取，切换时从后端拉完整数据
-   - SSE patch 更新保持前后端尽量同步
-   - 模式配置不再进 store：它就是插件目录里的 mode.json，设置页直接编辑该文件
-   ========================================================================== */
+﻿/*
+ * 全局状态管理（Solid.js store）
+ *
+ * 重构后：
+ * - 后端设置（providers, basePrompt, folders, conversations）→ Agent Service HTTP
+ * - 前端设置（themeMode, ui state, usage）→ localStorage
+ * - 聊天配置（模式 / 模型 / 强度 / 安全性）→ 每个会话的 ctx.json；默认模板是后端 settings.chatDefaults
+ * - 会话列表从后端获取，切换时从后端拉完整数据
+ * - SSE patch 更新保持前后端尽量同步
+ * - 模式配置不再进 store：它就是插件目录里的 mode.json，设置页直接编辑该文件
+ */
 
 import { createStore, produce } from 'solid-js/store';
 import { localSettings, isElectrobunEnv } from '@mainview/bridges/localBridge';
 import * as agentBridge from '@mainview/bridges/agentBridge';
-import type { AgentCtx, ConversationMeta, ConversationRunStatus, ImageQuality, MediaSettings, ModelProvider, ModelProviderModel, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission, VideoQuality } from '@shared/agent';
-import { DEFAULT_MEDIA_SETTINGS } from '@shared/agent';
+import type { AgentCtx, ChatConfig, ConversationMeta, ConversationRunStatus, ImageQuality, MediaSettings, ModelProvider, ModelProviderModel, ModelRef, ModeSummary, Folder, McpServerConfig, McpServerStatus, ParamValue, Permission, SettingsPatch, VideoQuality } from '@shared/agent';
+import { DEFAULT_CHAT_CONFIG, DEFAULT_MEDIA_SETTINGS } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import type { Density, Accent } from '@mainview/theme/theme';
 import { createEmptyOverlay, type OverlayCtx } from '@mainview/logic/projection';
@@ -87,6 +88,9 @@ export interface AuthState {
 	endpoint: { host: string; port: number };
 }
 
+/** 设置面板的 Tab id。分组（本机 / 服务）见 App/Settings/Settings.tsx */
+export type SettingsTabId = '外观' | '用量' | '服务' | '模型' | '媒体' | '提示词' | '插件 / 模式' | 'MCP' | '用户管理';
+
 export type UIState = {
 	leftSidebarWidth: number;
 	leftSidebarCollapsed: boolean;
@@ -97,28 +101,9 @@ export type UIState = {
 	exitTheme: ExitThemeId;
 	conversationSort: ConversationSort;
 	settingsProgress: number;	// 设置面板的打开进度：0 = 完全收起，1 = 完全展开，中间 = 拖拽中的实时位置。拖拽时逐帧写入（`setSettingsProgress`），松手 / 点击后由 store 用 rAF 缓动到 0 或 1。
-	activeSettingsTab: '通用' | '模型' | '提示词' | '用量' | '插件 / 模式' | 'MCP' | '用户管理' | '媒体';
+	activeSettingsTab: SettingsTabId;
 	viewMode: ViewMode;
-	/**
-	 * 「跑完了但你还没看」的会话 id（侧边栏绿点，相当于未读标记）。
-	 *
-	 * ⚠️ 纯前端状态（localStorage），不回写后端：后端不知道用户看没看。
-	 *   run 结束时由 `endRun()` 加入（用户正看着这个会话则不加），点开该会话时移除。
-	 */
-	unreadConversationIds: string[];
-	/**
-	 * Composer 输入框下方「模式参数」表单的选择，按 modeId 分组：`{ [modeId]: { [controlKey]: 选项 value } }`。
-	 *
-	 * ⚠️ 纯前端偏好（localStorage）：后端只认 `AgentRunRequest.params` 里那一次选择，
-	 *   自己不去记住「用户上次选了什么强度」。换模式再换回来时靠这份表恢复。
-	 */
-	modeParams: Record<string, Record<string, ParamValue>>;
-	/**
-	 * 每个模型的思考强度偏好：key = `providerId/modelId`，value = 设置页 `thinking.values` 里的某一档。
-	 *
-	 * ⚠️ 缺省 / 空串 = 「默认（不传参数）」；只有用户显式选了档位才会真的写进请求体。
-	 */
-	thinkingLevels: Record<string, string>;
+	unreadConversationIds: string[];	// 「跑完了但你还没看」的会话 id（侧边栏绿点，相当于未读标记）。run 结束时由 `endRun()` 加入（用户正看着这个会话则不加），点开该会话时移除
 };
 
 export type AppState = {
@@ -129,28 +114,18 @@ export type AppState = {
 	draftFolder: Folder | null;	// 「空白会话」（还没发出第一句话 ⇒ 后端还没有这个会话）选中的工作目录。不落盘、不通知后端。等首句发出时才由 `addFolder()` 落地。null = 本地
 	ui: UIState;
 	providers: ModelProvider[];
-	currentStandardModel: { providerId: string; modelId: string } | null;
-	currentEconomyModel: { providerId: string; modelId: string } | null;
-	currentModeId: string;
+	chatConfig: ChatConfig;	// 当前会话（或空白态草稿）的聊天配置 —— 模式 / 模型 / 强度 / 安全性，切会话从后端列表的 meta 读回，改 chip 时 PUT 回该会话
+	chatDefaults: ChatConfig;	// 全局「新会话默认模板」（后端 settings.chatDefaults）；新建会话时克隆成 chatConfig
 	modes: ModeSummary[];	// 插件提供的全部模式（聚合自 GET /api/modes）
-	/** 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌），后端 settings.basePrompt 的镜像。没有默认值，没填就是空串 */
-	basePrompt: string;
-	/** Agent Service 自报的构建 / 运行信息（GET /api/health）；服务不可达时为 null */
-	serviceHealth: ServiceHealth | null;
-	/** 登录态与 Service 连接（逻辑在 `logic/authController.ts`，这里只存界面要用的镜像） */
-	auth: AuthState;
-	// 插件加载错误 / 被覆盖标记（设置页展示用）
-	pluginErrors: { level: 'error' | 'warn'; pluginId?: string; modeId?: string; agentId?: string; message: string }[];
-	overriddenModes: string[];
+	basePrompt: string;	// 基座提示词（由各 Agent 的 prompt.md 用 {{ basePrompt }} 决定是否内嵌），后端 settings.basePrompt 的镜像。没有默认值，没填就是空串
+	serviceHealth: ServiceHealth | null;	// Agent Service 自报的构建 / 运行信息（GET /api/health）；服务不可达时为 null
+	auth: AuthState;	// 登录态与 Service 连接（逻辑在 `logic/authController.ts`，这里只存界面要用的镜像）
+	pluginErrors: { level: 'error' | 'warn'; pluginId?: string; modeId?: string; agentId?: string; message: string }[];	// 插件加载错误（设置页展示用）
 	usage: UsageStats;	// 设置页用量统计（TODO 收归到设置页本身，不直接存储在 AppState 中）
 	mcpServers: McpServerConfig[];	// MCP 服务器配置（持久化在后端 settings.json）
 	mcpStatus: McpServerStatus[];	// MCP 运行态（后端内存维护，不持久化）
-	/** 工具安全性档位（后端 settings.safety）。**全局开关**，所有模式 / 插件共用一份，不是模式配置 */
-	safety: agentBridge.ToolSafety;
-	/** 图片 / 视频输入的默认清晰度（后端 settings.media 的镜像） */
-	media: MediaSettings;
-	/** 内置 mock 开关（后端 settings.debug.mock）。开发用：LLM 走假模型，**工具仍真实执行** */
-	mock: { enabled: boolean; scenario: string; scenarios: { id: string; label: string }[] };
+	media: MediaSettings;	// 图片 / 视频输入的默认清晰度（后端 settings.media 的镜像）
+	mock: { enabled: boolean; scenario: string; scenarios: { id: string; label: string }[] };	// 内置 mock 开关（后端 settings.debug.mock）。开发用：LLM 走假模型，**工具仍真实执行**）
 };
 
 // #endregion
@@ -158,6 +133,19 @@ export type AppState = {
 // #region 初始状态、store
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+/** 聊天配置要「按值」克隆：Solid store / 后端代理里的嵌套对象不能直接共用引用 */
+function cloneChatConfig(config: ChatConfig): ChatConfig {
+	return {
+		...config,
+		standardModel: config.standardModel ? { ...config.standardModel } : null,
+		economyModel: config.economyModel ? { ...config.economyModel } : null,
+		thinkingLevels: { ...(config.thinkingLevels ?? {}) },
+		modeParams: Object.fromEntries(
+			Object.entries(config.modeParams ?? {}).map(([modeId, values]) => [modeId, { ...values }]),
+		),
+	};
+}
 
 const initialUI: UIState = {
 	leftSidebarWidth: 260,
@@ -169,11 +157,9 @@ const initialUI: UIState = {
 	exitTheme: 'tunnel',
 	conversationSort: 'updated',
 	settingsProgress: 0,
-	activeSettingsTab: '通用',
+	activeSettingsTab: '外观',
 	viewMode: 'chat',
 	unreadConversationIds: [],
-	modeParams: {},
-	thinkingLevels: {},
 };
 
 export const defaultState: AppState = {
@@ -184,9 +170,8 @@ export const defaultState: AppState = {
 	draftFolder: null,
 	ui: initialUI,
 	providers: [],
-	currentStandardModel: null,
-	currentEconomyModel: null,
-	currentModeId: 'code',
+	chatConfig: cloneChatConfig(DEFAULT_CHAT_CONFIG),
+	chatDefaults: cloneChatConfig(DEFAULT_CHAT_CONFIG),
 	modes: [],
 	basePrompt: '',
 	serviceHealth: null,
@@ -202,7 +187,6 @@ export const defaultState: AppState = {
 		endpoint: { ...agentBridge.LOCAL_ENDPOINT },
 	},
 	pluginErrors: [],
-	overriddenModes: [],
 	usage: {
 		timeRange: '7d',
 		showApiRequests: true,
@@ -213,7 +197,6 @@ export const defaultState: AppState = {
 	},
 	mcpServers: [],
 	mcpStatus: [],
-	safety: 'normal',
 	media: { ...DEFAULT_MEDIA_SETTINGS },
 	mock: { enabled: false, scenario: 'web', scenarios: [] },
 };
@@ -270,13 +253,13 @@ export function getTodoList(conversationId: string): string {
 export const overlayActions = {
 	/** 一轮 run 开始 / 结束时清空该会话的在飞 overlay */
 	clear(conversationId: string) {
-		setOverlayState(conversationId, createEmptyOverlay(conversationId, state.currentModeId));
+		setOverlayState(conversationId, createEmptyOverlay(conversationId, state.chatConfig.modeId));
 	},
 	/** SSE 事件进来：把事件翻译成 ctx 形状的增量，合进该会话的 overlay */
 	produce(conversationId: string, fn: (draft: OverlayCtx) => void) {
 		setOverlayState(
 			produce((draft) => {
-				if (!draft[conversationId]) draft[conversationId] = createEmptyOverlay(conversationId, state.currentModeId);
+				if (!draft[conversationId]) draft[conversationId] = createEmptyOverlay(conversationId, state.chatConfig.modeId);
 				fn(draft[conversationId]);
 			}),
 		);
@@ -364,11 +347,8 @@ function saveLocalSettings() {
 		conversationSort: state.ui.conversationSort,
 		viewMode: state.ui.viewMode,
 		unreadConversationIds: state.ui.unreadConversationIds,
-		modeParams: state.ui.modeParams,
-		thinkingLevels: state.ui.thinkingLevels,
 	});
 	localSettings.set('themeMode', state.themeMode);
-	localSettings.set('currentModeId', state.currentModeId);
 	localSettings.set('usage', state.usage);	// TODO 收归
 }
 
@@ -376,8 +356,7 @@ function loadLocalSettings() {
 	const theme = localSettings.get<'light' | 'dark' | 'system'>('themeMode', defaultState.themeMode);
 	setState('themeMode', theme);
 
-	// 当前模式是纯前端状态：这里恢复上次的选择，「插件是否真的提供了这个模式」由 loadBackendState 校验
-	setState('currentModeId', localSettings.get<string>('currentModeId', defaultState.currentModeId));
+	// 聊天配置由后端快照 / 会话 meta 恢复（loadBackendState / setActiveConversation），这里不碰
 
 	// TODO 不用本地持久化 ui 设置项
 	const ui = localSettings.get<Partial<UIState>>('ui', {});
@@ -400,6 +379,8 @@ function loadLocalSettings() {
 
 const SAVE_DEBOUNCE_MS = 500;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** 上次成功提交给后端的纯数据快照。用它逐字段比对，只 PATCH 变脏的那几个 */
+let lastSavedPatch: SettingsPatch | null = null;
 
 function scheduleSaveBackend() {
 	if (saveTimer) clearTimeout(saveTimer);
@@ -408,17 +389,51 @@ function scheduleSaveBackend() {
 	}, SAVE_DEBOUNCE_MS);
 }
 
+/** 取一份「按值」的纯数据快照（不能持有 Solid store 的活代理，否则 diff 永远相等） */
+function collectSettingsPatch(): SettingsPatch {
+	return JSON.parse(JSON.stringify({
+		providers: state.providers,
+		chatDefaults: state.chatDefaults,
+		basePrompt: state.basePrompt,
+		media: state.media,
+		folders: state.folders,
+	})) as SettingsPatch;
+}
+
 async function saveBackendSettings() {
-	console.log('[Store] Harness 设置正在保存到 Agent Service ');
-	await agentBridge.setProviders(state.providers);
-	await agentBridge.setCurrentModel({
-		standard: state.currentStandardModel,
-		economy: state.currentEconomyModel,
-	});
-	await agentBridge.setBasePrompt(state.basePrompt);
-	await agentBridge.setFolders(state.folders);
-	await agentBridge.setMcpServers(state.mcpServers);
-	await agentBridge.setMediaSettings(state.media);
+	const next = collectSettingsPatch();
+	const patch: Record<string, unknown> = {};
+	for (const key of Object.keys(next) as (keyof SettingsPatch)[]) {
+		// 只提交与上次写盘不同的字段：别的窗口刚改过的字段不会被本地旧值盖回去
+		if (!lastSavedPatch || JSON.stringify(next[key]) !== JSON.stringify(lastSavedPatch[key])) {
+			patch[key] = next[key];
+		}
+	}
+	if (Object.keys(patch).length === 0) return;
+	const ok = await agentBridge.patchSettings(patch as SettingsPatch);
+	if (ok) lastSavedPatch = next;	// 失败保留旧基线，下次继续重试这几个字段
+}
+
+/** 改当前会话的聊天配置：已有会话 PUT 回 ctx.json，空白态同时更新「新会话默认模板」 */
+function applyChatConfig(patch: Partial<ChatConfig>) {
+	setState('chatConfig', (prev) => ({ ...prev, ...patch }));
+	const conversationId = state.activeConversationId;
+	if (conversationId) {
+		const chatConfig = cloneChatConfig(state.chatConfig);
+		// ⚠️ 就地改：换整个数组会让侧栏 `<For>` 把每一行都当成新对象重建
+		setState('conversations', produce((list) => {
+			const conv = list.find((c) => c.id === conversationId);
+			if (conv) {
+				conv.chatConfig = chatConfig;
+				conv.modeId = chatConfig.modeId;
+			}
+		}));
+		void agentBridge.updateConversation(conversationId, { chatConfig, modeId: chatConfig.modeId });
+	} else {
+		// 空白态的选择 = 「当前的设置」，下次新建会话就从这份默认模板克隆
+		setState('chatDefaults', (prev) => ({ ...prev, ...patch }));
+		scheduleSaveBackend();
+	}
 }
 
 /**
@@ -428,44 +443,45 @@ async function saveBackendSettings() {
 export async function loadBackendState(): Promise<void> {
 	console.log('[Store] Harness 设置正在从 Agent Service 读取');
 
-	const [providers, currentModel, modes, folders, conversations, mcpServers, basePrompt, serviceHealth, safety, mock, media] = await Promise.all([
-		agentBridge.getProviders(),
-		agentBridge.getCurrentModel(),
+	// ⭐ 一次快照读取代原来 8 个并行的 settings GET；另外三个本来就不是设置类接口
+	const [settingsSnapshot, modes, conversations, serviceHealth] = await Promise.all([
+		agentBridge.getSettingsSnapshot(),
 		agentBridge.getModes(),
-		agentBridge.getFolders(),
 		agentBridge.getConversations(),
-		agentBridge.getMcpServers(),
-		agentBridge.getBasePrompt(),
 		agentBridge.health(),
-		agentBridge.getSafety(),
-		agentBridge.getMock(),
-		agentBridge.getMediaSettings(),
 	]);
 
-	if (providers.length > 0) setState('providers', providers);
-	if (currentModel) {
-		if (currentModel.standard) setState('currentStandardModel', currentModel.standard);
-		if (currentModel.economy) setState('currentEconomyModel', currentModel.economy);
+	if (settingsSnapshot) {
+		setState('providers', settingsSnapshot.providers);
+		const chatDefaults = cloneChatConfig(settingsSnapshot.chatDefaults ?? DEFAULT_CHAT_CONFIG);
+		setState('chatDefaults', chatDefaults);
+		setState('chatConfig', cloneChatConfig(chatDefaults));
+		setState('basePrompt', settingsSnapshot.basePrompt);
+		setState('media', settingsSnapshot.media);
+		setState('folders', settingsSnapshot.folders);
+		setState('mcpServers', settingsSnapshot.mcpServers);
+		setState('mock', settingsSnapshot.mock);
 	}
 	setState('modes', modes);
-	// 空串是合法状态（用户可以把基座清空），所以无条件同步
-	setState('basePrompt', basePrompt.basePrompt);
 	setState('serviceHealth', serviceHealth);
-	// 当前模式是纯前端状态（由本地偏好恢复），这里只校验「插件真的提供了这个模式」，否则退回第一个可用模式
-	if (modes.length > 0 && !modes.some((m) => m.id === state.currentModeId)) {
-		setState('currentModeId', modes[0].id);
+	// 默认模式必须真的存在于插件里，否则退回第一个可用模式
+	if (modes.length > 0 && !modes.some((m) => m.id === state.chatDefaults.modeId)) {
+		setState('chatDefaults', 'modeId', modes[0].id);
+		setState('chatConfig', 'modeId', modes[0].id);
 	}
-	if (folders.length > 0) setState('folders', folders);
-	setState('mcpServers', mcpServers);
-	setState('safety', safety);
-	setState('mock', mock);
-	setState('media', media);
 
 	if (conversations.length > 0) {
-		// UI 侧会话 = 元信息（ctx 按需拉，见 loadConversationCtx）
+		// UI 侧会话 = 元信息（ctx 按需拉，见 loadConversationCtx）；chatConfig 随 meta 一起回来
 		const uiConvs: UIConversation[] = conversations.map((meta) => ({ ...meta }));
 		setState('conversations', uiConvs);
+		// 重连 / 刷新时可能已经打开了一个会话：把它自己那份配置读回来
+		const active = state.activeConversationId;
+		if (active) {
+			const meta = uiConvs.find((c) => c.id === active);
+			if (meta?.chatConfig) setState('chatConfig', cloneChatConfig(meta.chatConfig));
+		}
 	}
+	lastSavedPatch = collectSettingsPatch();
 }
 
 /**
@@ -644,13 +660,17 @@ export const actions = {
 	/** 新建会话 = **只进入空白态**（`activeConversationId = null`），不碰后端、不进侧边栏。真正的会话（连带它的工作目录）在**首句发出时**才建。 */
 	newConversation() {
 		setState('activeConversationId', null);
+		// 「以当前的设置新建会话」：从全局默认模板克隆一份聊天配置作为草稿，首句发出时随会话落盘
+		setState('chatConfig', cloneChatConfig(state.chatDefaults));
 	},
 	/** 空白会话的工作目录（见 `AppState.draftFolder`）。已经存在的会话走 `setConversationFolder()`（要回写后端），这里只动界面。 */
 	setDraftFolder(folder: Folder | null) {
 		setState('draftFolder', folder);
 	},
 	async createConversation(folderId: string, title = '新会话') {
-		const conv = await agentBridge.createConversation({ folderId, title, modeId: state.currentModeId });
+		// 首句发出时才真建会话：草稿期的聊天配置在这一刻一起写进 ctx.json
+		const chatConfig = cloneChatConfig(state.chatConfig);
+		const conv = await agentBridge.createConversation({ folderId, title, modeId: chatConfig.modeId, chatConfig });
 		if (conv) {
 			// 只取元信息：ctx 由界面按需拉（loadConversationCtx）
 			const uiConv: UIConversation = {
@@ -660,6 +680,7 @@ export const actions = {
 				modeId: conv.modeId,
 				createdAt: conv.createdAt,
 				updatedAt: conv.updatedAt,
+				chatConfig: conv.chatConfig ?? chatConfig,
 				// ⚠️ extraInfo / runStatus 都是后端现算的运行态（不落盘），创建接口的返回值里已经带了
 				extraInfo: conv.extraInfo,
 				runStatus: conv.runStatus,
@@ -751,10 +772,23 @@ export const actions = {
 
 	setActiveConversation(id: string | null) {
 		setState('activeConversationId', id);
-		// 点开 = 已读：清掉这个会话的未读绿点（未读只是前端标记，不回写后端）
-		if (id) markConversationRead(id);
-		// 按需加载 ctx（界面唯一的数据源）
-		if (id) void loadConversationCtx(id);
+		if (id) {
+			// 点开 = 已读：清掉这个会话的未读绿点（未读只是前端标记，不回写后端）
+			markConversationRead(id);
+			// ⭐ 切会话 = 把这一会话自己的聊天配置从 meta 读回，Composer 的 chip 立刻跟着换。
+			//    老会话没有 chatConfig：用全局默认模板兜底，但**模式要认它自己跑过的那个**（meta.modeId 一直在）。
+			const conv = state.conversations.find((c) => c.id === id);
+			const fallback: ChatConfig = {
+				...cloneChatConfig(state.chatDefaults),
+				modeId: conv?.modeId ?? state.chatDefaults.modeId,
+			};
+			setState('chatConfig', cloneChatConfig(conv?.chatConfig ?? fallback));
+			// 按需加载 ctx（界面唯一的数据源）
+			void loadConversationCtx(id);
+		} else {
+			// 空白态：新建会话先拿全局默认模板
+			setState('chatConfig', cloneChatConfig(state.chatDefaults));
+		}
 		saveLocalSettings();
 	},
 
@@ -810,12 +844,11 @@ export const actions = {
 	addProvider(provider: Omit<ModelProvider, 'id'>) {
 		const p: ModelProvider = { ...provider, id: uid() };
 		setState('providers', (prev) => [...prev, p]);
-        // 自动选择第一个模型为标准模型
-		if (p.models.length > 0 && !state.currentStandardModel) {
-			setState('currentStandardModel', {
-				providerId: p.id,
-				modelId: p.models[0].id,
-			});
+		// 自动选择第一个模型为「新会话默认模型」
+		if (p.models.length > 0 && !state.chatDefaults.standardModel) {
+			const ref: ModelRef = { providerId: p.id, modelId: p.models[0].id };
+			setState('chatDefaults', 'standardModel', ref);
+			if (!state.activeConversationId) setState('chatConfig', 'standardModel', ref);
 		}
 		scheduleSaveBackend();
 		return p.id;
@@ -891,50 +924,44 @@ export const actions = {
 			'providers',
 			produce((list) => list.filter((p) => p.id !== id)),
 		);
-		if (state.currentStandardModel?.providerId === id) {
-			setState('currentStandardModel', null);
+		// 默认模板与当前会话里指向这家提供商的引用都清掉，免得 chip 显示一个不存在的模型
+		if (state.chatDefaults.standardModel?.providerId === id) setState('chatDefaults', 'standardModel', null);
+		if (state.chatDefaults.economyModel?.providerId === id) setState('chatDefaults', 'economyModel', null);
+		if (state.chatConfig.standardModel?.providerId === id || state.chatConfig.economyModel?.providerId === id) {
+			applyChatConfig({
+				standardModel: state.chatConfig.standardModel?.providerId === id ? null : state.chatConfig.standardModel,
+				economyModel: state.chatConfig.economyModel?.providerId === id ? null : state.chatConfig.economyModel,
+			});
 		}
-		if (state.currentEconomyModel?.providerId === id) {
-			setState('currentEconomyModel', null);
-		}
-		scheduleSaveBackend();
-	},
-	setCurrentStandardModel(ref: { providerId: string; modelId: string } | null) {
-		setState('currentStandardModel', ref);
-		scheduleSaveBackend();
-	},
-	setCurrentEconomyModel(ref: { providerId: string; modelId: string } | null) {
-		setState('currentEconomyModel', ref);
 		scheduleSaveBackend();
 	},
 
-	/** 切换当前模式（第一层的 chip）。纯前端状态，只落本地偏好，不惊动后端设置 */
-	setCurrentModeId(modeId: string) {
-		setState('currentModeId', modeId);
-		saveLocalSettings();
+	/** 改当前会话用的模型（标准 / 节省） */
+	setChatModel(role: 'standard' | 'economy', ref: ModelRef | null) {
+		applyChatConfig(role === 'standard' ? { standardModel: ref } : { economyModel: ref });
+	},
+	/** 切换当前会话的模式（第一层 chip） */
+	setChatMode(modeId: string) {
+		applyChatConfig({ modeId });
+	},
+	/** 改「新会话默认模板」（设置页 → 服务 Tab）。只改全局模板，不动当前会话 */
+	updateChatDefaults(patch: Partial<ChatConfig>) {
+		setState('chatDefaults', (prev) => ({ ...prev, ...patch }));
+		scheduleSaveBackend();
 	},
 	/**
-	 * 设置某个模式参数（Composer 下方由 `mode.json` 的 `form` 动态生成的控件）。
-	 *
-	 * 存的是「**每个控件当前的值**」，不是「用户点过什么」：选一档 = 把它的 `value`
-	 * 连同它 `vars` 里那些**有控件的 key** 一起写进去（= 这一档重新刷新自己负责的那片）。
-	 * 所以强度改完，反思次数那格就是新的值（哪怕不在它的选项里）；反过来手调反思次数
-	 * 只覆盖它自己，强度那档的承诺对不上就打 `*`。没有「手选优先」，也没有清除项。
+	 * 设置某个模式的表单参数（Composer 下方由 `mode.json` 的 `form` 动态生成的控件）。
 	 */
 	setModeParam(modeId: string, key: string, value: ParamValue) {
 		const form = state.modes.find((m) => m.id === modeId)?.form ?? [];
 		const option = form.find((c) => c.key === key)?.options.find((o) => sameParamValue(o.value, value));
 		const controlKeys = new Set(form.map((c) => c.key));
-		setState('ui', 'modeParams', produce((all) => {
-			const next: Record<string, ParamValue> = { ...(all[modeId] ?? {}), [key]: value };
-			// 只落「有控件的 key」：没有控件的变量（totalRounds 之类）每次读的时候由选项 vars 现算，
-			// 存下来只会变成改配置后的陈旧值
-			for (const [k, v] of Object.entries(option?.vars ?? {})) {
-				if (k !== key && controlKeys.has(k)) next[k] = v;
-			}
-			all[modeId] = next;
-		}));
-		saveLocalSettings();
+		const next: Record<string, ParamValue> = { ...(state.chatConfig.modeParams[modeId] ?? {}), [key]: value };
+		// 只落「有控件的 key」：没有控件的变量（totalRounds 之类）每次读的时候由选项 vars 现算，存下来只会变成改配置后的陈旧值
+		for (const [k, v] of Object.entries(option?.vars ?? {})) {
+			if (k !== key && controlKeys.has(k)) next[k] = v;
+		}
+		applyChatConfig({ modeParams: { ...state.chatConfig.modeParams, [modeId]: next } });
 	},
 	/**
 	 * 设置某模型的思考强度档位（模型下拉框第三级菜单）。
@@ -942,11 +969,10 @@ export const actions = {
 	 */
 	setThinkingLevel(providerId: string, modelId: string, level: string | null) {
 		const key = `${providerId}/${modelId}`;
-		setState('ui', 'thinkingLevels', produce((all) => {
-			if (level) all[key] = level;
-			else delete all[key];
-		}));
-		saveLocalSettings();
+		const thinkingLevels = { ...state.chatConfig.thinkingLevels };
+		if (level) thinkingLevels[key] = level;
+		else delete thinkingLevels[key];
+		applyChatConfig({ thinkingLevels });
 	},
 	/**
 	 * 基座提示词（设置页「提示词」面板）。
@@ -954,7 +980,10 @@ export const actions = {
 	 */
 	async saveBasePrompt(text: string) {
 		setState('basePrompt', text);
-		return agentBridge.setBasePrompt(text);
+		const ok = await agentBridge.setBasePrompt(text);
+		// 立刻同步写盘基线，免得下次防抖 PATCH 因为「basePrompt 看着变了」又重发一次
+		if (ok && lastSavedPatch) lastSavedPatch = { ...lastSavedPatch, basePrompt: text };
+		return ok;
 	},
 	/** 重新加载插件并刷新模式列表 */
 	async reloadPlugins() {
@@ -962,7 +991,6 @@ export const actions = {
 		const [modes, plugins] = await Promise.all([agentBridge.getModes(), agentBridge.getPlugins()]);
 		setState('modes', modes);
 		setState('pluginErrors', plugins.errors);
-		setState('overriddenModes', plugins.overridden);
 		return result;
 	},
 	/** 从后端拉一次模式列表（启动 / 插件变更后） */
@@ -970,7 +998,6 @@ export const actions = {
 		const [modes, plugins] = await Promise.all([agentBridge.getModes(), agentBridge.getPlugins()]);
 		setState('modes', modes);
 		setState('pluginErrors', plugins.errors);
-		setState('overriddenModes', plugins.overridden);
 		return modes;
 	},
 	/** 从后端重新取一次构建 / 运行信息（设置页「通用」面板手动刷新用） */
@@ -985,14 +1012,12 @@ export const actions = {
 	},
 
 	/**
-	 * 切换工具安全性档位（全局开关）。
-	 * 只影响**之后**开始的 run（后端在开跑时固化档位），所以不做 409 守卫；
-	 * 仍然只有后端接受了才更新本地状态，失败原样返回给调用方提示。
+	 * 切换**当前会话**的工具安全性档位。
+	 * 只影响这个会话之后开始的 run（后端开跑时从 chatConfig 固化），随会话 ctx.json 持久化。
 	 */
 	async setSafety(safety: agentBridge.ToolSafety) {
-		const result = await agentBridge.setSafety(safety);
-		if (result.ok) setState('safety', safety);
-		return result;
+		applyChatConfig({ safety });
+		return { ok: true };
 	},
 
 	/**
@@ -1157,7 +1182,7 @@ export function getModeSummary(modeId: string): ModeSummary | undefined {
 
 /** 当前模式的展示名 */
 export function currentModeName(): string {
-	return state.modes.find((m) => m.id === state.currentModeId)?.name ?? state.currentModeId;
+	return state.modes.find((m) => m.id === state.chatConfig.modeId)?.name ?? state.chatConfig.modeId;
 }
 
 // #endregion

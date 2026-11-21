@@ -384,7 +384,7 @@ export default function Sidebar() {
 						<span style="flex: 1" />
 						<span class={styles['runtime-version']}>{serviceVersion()}</span>
 					</div>
-					<button class={styles['settings-btn']} onclick={() => actions.openSettings('通用')}>
+					<button class={styles['settings-btn']} onclick={() => actions.openSettings('外观')}>
 						<SettingsIcon />
 						<span class={styles['settings-text']}>设置</span>
 						<span style="flex: 1" />

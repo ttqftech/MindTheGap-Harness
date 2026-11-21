@@ -1,0 +1,19 @@
+/* 服务 Tab — 构建 / 运行信息的键值对列表 */
+.infoList {
+	font-size: 12px;
+	line-height: 1.9;
+	.row {
+		display: flex;
+		gap: 8px;
+		align-items: baseline;
+		.key {
+			flex: 0 0 84px;
+			color: var(--fontColorMuted);
+		}
+		.value {
+			flex: 1;
+			min-width: 0;
+			word-break: break-all;
+		}
+	}
+}

@@ -1,7 +1,7 @@
 /* ==========================================================================
    工具安全闸门 — MindTheGap-Harness
 
-   档位是**全局设置** `settings.safety`（类型见 `shared/agent.ts` 的 ToolSafety），
+   档位来自会话的 `chatConfig.safety`（类型见 `shared/agent.ts` 的 ToolSafety），
    Runner 开跑时固化到 `ToolContext.safety`。本文件只做三件事：
 
      1. 归一化档位 + 回答「这档是不是只读」（`getToolsForAgentInstance` 用它裁工具表）
@@ -32,7 +32,7 @@ export function normalizeSafety(value: unknown): ToolSafety {
 	return SAFETY_VALUES.includes(value as ToolSafety) ? (value as ToolSafety) : 'normal';
 }
 
-/** 本次 run 生效的档位（全局设置，由 Runner 在开跑时固化到 ctx.safety） */
+/** 本次 run 生效的档位（由 Runner 从会话 chatConfig 固化到 ctx.safety） */
 export function currentSafety(ctx: ToolContext): ToolSafety {
 	return normalizeSafety(ctx.safety);
 }
