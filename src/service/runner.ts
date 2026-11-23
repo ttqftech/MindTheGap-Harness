@@ -19,7 +19,7 @@
  */
 
 import { join } from 'node:path';
-import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, BackgroundTask, ConversationRunStatus, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, LlmVideoRef, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentDefinition, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AgentRunRequest, AgentStreamEvent, BackgroundTask, ConversationRunStatus, LlmAudioRef, LlmImageRef, LlmMessage, LlmPurpose, LlmTriggerReason, LlmVideoRef, ModeDefinition, ModelConfig, StreamEventDraft, TokenUsage, ToolControl, ToolResult, ToolResultInfo, ToolSafety, UsageEntry } from '@shared/agent';
 import { DEFAULT_CHAT_CONFIG } from '@shared/agent';
 import { callLlm, LlmEmptyResponseError } from './llm/model';
 import { mcpManager } from './mcp/manager';
@@ -207,7 +207,7 @@ function noticeEntry(content: string): AgentInstanceMessage {
  *
  * ⚠️ 所有 callLlm 调用点都必须经过本函数 —— 直接 map instance.messages 会把 UI 专用内容塞给模型。
  */
-function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?: string; supportsVision?: boolean; supportsVideo?: boolean }): LlmMessage[] {
+function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?: string; supportsImage?: boolean; supportsVideo?: boolean; supportsAudio?: boolean }): LlmMessage[] {
 	const base = entries
 		.filter((m) => !m.uiOnly)
 		.map(({ id: _id, updatedAt: _updatedAt, uiOnly: _uiOnly, kind: _kind, data: _data, usages: _usages, ...rest }) => rest);
@@ -216,11 +216,12 @@ function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?
 	// return compactContext(base);
 	// 附件引用现读成 base64：只有对应能力开启的模型才做，不然 wire 层会丢掉，提前读盘只是白烧 IO。
 	// ⭐ 视频走**原生通道**（转码后的 mp4 本体），不抽帧、不降级成图片。
+	// ⭐ 音频原样字节；wire 形状由模型设置的 audioApi 决定（不再自动探测），这里只按能力开关读 base64。
 	return base.map((msg) => {
-		// 没读成 base64 的 videos 是内部引用，绝不能混进 wire 层
-		const { videos: _videos, ...rest } = msg;
+		// 没读成 base64 的 videos / audios 是内部引用，绝不能混进 wire 层
+		const { videos: _videos, audios: _audios, ...rest } = msg;
 		if (!opts?.conversationId) return rest;
-		const images = opts.supportsVision && msg.images?.length
+		const images = opts.supportsImage && msg.images?.length
 			? msg.images.flatMap((img) => {
 				const base64 = img.file ? readAttachmentBase64(opts.conversationId!, img.file) : null;
 				return base64 ? [{ ...img, base64 }] : [];
@@ -232,7 +233,13 @@ function toLlmMessages(entries: AgentInstanceMessage[], opts?: { conversationId?
 				return base64 ? [{ ...video, base64 }] : [];
 			})
 			: undefined;
-		return { ...rest, ...(images ? { images } : {}), ...(videos?.length ? { videos } : {}) };
+		const audios = opts.supportsAudio && msg.audios?.length
+			? msg.audios.flatMap((audio) => {
+				const base64 = audio.file ? readAttachmentBase64(opts.conversationId!, audio.file) : null;
+				return base64 ? [{ ...audio, base64 }] : [];
+			})
+			: undefined;
+		return { ...rest, ...(images ? { images } : {}), ...(videos?.length ? { videos } : {}), ...(audios?.length ? { audios } : {}) };
 	});
 }
 
@@ -488,11 +495,13 @@ export class AgentRunner {
 	 * - 会话还没有根实例 → 新建，实例树里只有它自己
 	 * - 根实例的 Agent 不再是当前模式的根 Agent（切换过模式）→ **就地转换**成新模式的根 Agent，消息记录原样保留
 	 */
-	async run(userMessage: string, imageRefs?: LlmImageRef[], videoRefs?: LlmVideoRef[]): Promise<void> {
+	async run(userMessage: string, imageRefs?: LlmImageRef[], videoRefs?: LlmVideoRef[], audioRefs?: LlmAudioRef[]): Promise<void> {
 		// 媒体由前端先上传进会话附件目录（远程连接也一样），ctx 里只落引用；请求时再读成 base64
 		const images = (imageRefs ?? []).filter((img) => !!img?.file && attachmentExists(this.conversationId, img.file));
 		// 视频只留下转码产物还在的引用，避免 ctx 里挂一串读不出来的空壳
 		const videos = (videoRefs ?? []).filter((video) => !!video?.file && attachmentExists(this.conversationId, video.file));
+		// 音频产物就是原始字节本身，同样只留还在的引用
+		const audios = (audioRefs ?? []).filter((audio) => !!audio?.file && attachmentExists(this.conversationId, audio.file));
 		const limits = this.getModeLimits();
 		this.ctx.budget = { total: limits.totalRounds, spent: 0 };
 		// ⚠️ 循环预算（`ctx.budget` + 每个实例的 `rounds`）是**一次 run 的护栏**，不是会话 / 实例的终身上限：用户一开口就是新的预算周期。
@@ -513,6 +522,7 @@ export class AgentRunner {
 				task: userMessage,
 				images,
 				videos,
+				audios,
 			});
 			this.ctx.agentInstances[instanceId] = root;
 			this.ctx.rootAgentInstanceId = instanceId;
@@ -555,9 +565,9 @@ export class AgentRunner {
 		root.lastUpdatedAt = now();
 		if (!isNewRoot) root.reflectionsRemaining = agentDef.reflectionCount ?? 0;	// 反思次数是实例级字段且只减不增；根实例永续之后必须按轮重置，否则反思用尽一次就再也不反思了
 		if (!isNewRoot) {
-			const userEntry = message({ role: 'user', content: userMessage, images, videos });
+			const userEntry = message({ role: 'user', content: userMessage, images, videos, audios });
 			root.messages.push(userEntry);	// 新建实例时 createInstance 已经把这条用户消息作为首条 message 放进去了，非新建的时候才在这里再补一条
-			this.emitEvent(root, 'user_message', { content: userMessage, images, videos });
+			this.emitEvent(root, 'user_message', { content: userMessage, images, videos, audios });
 			this.emitStream({
 				type: 'agent_start',
 				agentInstanceId: root.agentInstanceId,
@@ -568,9 +578,10 @@ export class AgentRunner {
 				task: userMessage,
 				images,
 				videos,
+				audios,
 			});
 		} else {
-			this.emitEvent(root, 'user_message', { content: userMessage, images, videos });
+			this.emitEvent(root, 'user_message', { content: userMessage, images, videos, audios });
 		}
 		this.enterLoop(root.agentInstanceId, 'user_message');
 	}
@@ -596,7 +607,7 @@ export class AgentRunner {
 	}
 
 	/** 创建一个 Agent 实例，放入 this.ctx 中，并补充父实例的 childAgentInstanceIds、发送事件 */
-	private createInstance(params: { agentInstanceId: string; agentId: string; def: AgentDefinition; depth: number; task: string; parentAgentInstanceId?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[] }): AgentInstance {
+	private createInstance(params: { agentInstanceId: string; agentId: string; def: AgentDefinition; depth: number; task: string; parentAgentInstanceId?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[]; audios?: LlmAudioRef[] }): AgentInstance {
 		const firstUserEntry = message({
 			role: 'user',
 			content: params.parentAgentInstanceId
@@ -604,6 +615,7 @@ export class AgentRunner {
 				: params.task,
 			images: params.images,
 			videos: params.videos,
+			audios: params.audios,
 		});
 		const instance: AgentInstance = {
 			agentInstanceId: params.agentInstanceId,
@@ -641,6 +653,7 @@ export class AgentRunner {
 			task: params.task,
 			images: params.images,
 			videos: params.videos,
+			audios: params.audios,
 		});
 		this.emitStream({
 			type: 'agent_start',
@@ -653,6 +666,7 @@ export class AgentRunner {
 			task: params.task,
 			images: params.images,
 			videos: params.videos,
+			audios: params.audios,
 		});
 		return instance;
 	}
@@ -736,7 +750,7 @@ export class AgentRunner {
 			// 动态状态：渲染 prompt.state.md，非空则拼入本次 LLM 请求尾部（不写入 instance.messages）
 			const promptCtx = this.buildPromptContext(instance, tools);
 			const { content: stateContent, snapshot } = renderStatePrompt(promptCtx);
-			const llmMessages = toLlmMessages(instance.messages, { conversationId: this.conversationId, supportsVision: this.model?.supportsVision, supportsVideo: this.model?.supportsVideo });
+			const llmMessages = toLlmMessages(instance.messages, { conversationId: this.conversationId, supportsImage: this.model?.supportsImage, supportsVideo: this.model?.supportsVideo, supportsAudio: this.model?.supportsAudio });
 			// ⭐ 强度指令（模式级 effort.md）同样走尾部，且排在动态状态之前：
 			//    这样「按 run 稳定的那一段」尽量靠前、每轮变化的只有最后一条。
 			//    它不进 system prompt —— 改强度不碰前缀 ⇒ 会话中途换档不会炸掉整段历史的缓存。
@@ -1249,7 +1263,7 @@ export class AgentRunner {
 		if (!target) return { success: false, content: `找不到子实例 ${targetId}` };
 
 		// 去掉首条 system，其余全带上（uiOnly 条目由 toLlmMessages 滤掉）
-		const history = toLlmMessages(target.messages.filter((_, index) => index !== 0), { conversationId: this.conversationId, supportsVision: this.model?.supportsVision, supportsVideo: this.model?.supportsVideo });
+		const history = toLlmMessages(target.messages.filter((_, index) => index !== 0), { conversationId: this.conversationId, supportsImage: this.model?.supportsImage, supportsVideo: this.model?.supportsVideo, supportsAudio: this.model?.supportsAudio });
 
 		const prompt = `${ASK_CHILD_FIXED_PROMPT}\n\n# 提问\n${question}`;
 		try {

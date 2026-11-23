@@ -9,6 +9,45 @@
 	height: 100%;
 	overflow: visible;
 	min-width: 0;
+	position: relative;
+}
+
+/* ---------- 拖拽导入：覆盖整个聊天视图的投放提示 ---------- */
+.drop-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 30;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 2px dashed var(--accent);
+	border-radius: var(--r-md);
+	background-color: var(--bg-app);
+	pointer-events: none;	/* 别挡住 mainContent 上的 drop */
+}
+.drop-hint {
+	padding: 12px 20px;
+	border-radius: var(--r-md);
+	background-color: var(--bg-chip);
+	border: 1px solid var(--accent);
+	color: var(--text-primary);
+	font-size: 13px;
+}
+/* 音频没有缩略图，chip 里用一个音符占位 */
+.attachment-audio-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	flex: 0 0 auto;
+	border-radius: calc(var(--r-sm) - 1px);
+	background-color: var(--bg-sub1);
+	color: var(--text-secondary);
+	font-size: 16px;
+}
+.add-media-chip {
+	font-size: 14px;
 }
 
 /* ---------- 会话头部（设计稿：58px 高，标题 + 面包屑在左，状态与操作在右） ---------- */

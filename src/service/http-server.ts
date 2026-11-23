@@ -173,7 +173,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 	activeRunners.set(conversationId, runner);
 
 	runner
-		.run(params.userMessage, params.images, params.videos)
+		.run(params.userMessage, params.images, params.videos, params.audios)
 		.then(() => runner.waitDone())
 		.then(() => {
 			if (activeRunners.get(conversationId) === runner) activeRunners.delete(conversationId);
@@ -468,7 +468,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 					}
 				}
 
-			// 媒体附件（图片 / 视频）：prepare 判重 → 缺原始字节才 upload → 转码完成才返回
+			// 媒体附件（图片 / 视频 / 音频）：prepare 判重 → 缺原始字节才 upload → 编码完成才返回
 			if (rest === 'media/prepare' && req.method === 'POST') {
 				if (conversationId !== DRAFT_MEDIA_CONVERSATION_ID && !conversations[conversationId]) {
 					sendJson(res, 404, { ok: false, error: '会话不存在' });
@@ -491,8 +491,9 @@ export function startHttpServer(options: { channel?: string } = {}) {
 					return;
 				}
 				// 参数走 query：body 是原始字节，不能混 JSON（文件名 / MIME 都是 ASCII，编码无忧）
-				const params: MediaPrepareRequest = {
-					kind: url.searchParams.get('kind') === 'video' ? 'video' : 'image',
+			const rawKind = url.searchParams.get('kind');
+			const params: MediaPrepareRequest = {
+				kind: rawKind === 'video' || rawKind === 'audio' ? rawKind : 'image',
 					hash: url.searchParams.get('hash') ?? '',
 					name: url.searchParams.get('name') ?? '',
 					mime: url.searchParams.get('mime') ?? String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase(),
@@ -504,7 +505,7 @@ export function startHttpServer(options: { channel?: string } = {}) {
 				return;
 			}
 
-			// 会话附件（图片 / 视频）：`<img>` `<video>` 直接读，鉴权走 query sessionId（见上面的闸门例外）
+			// 会话附件（图片 / 视频 / 音频）：`<img>` `<video>` `<audio>` 直接读，鉴权走 query sessionId（见上面的闸门例外）
 			if (rest.startsWith('attachments/')) {
 					if (req.method === 'GET') {
 						const file = decodeURIComponent(rest.slice('attachments/'.length));

@@ -10,7 +10,7 @@
  * 设计稿：docs/设计-ctx唯一真相与动态投影.md §4
  */
 
-import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, LlmImageRef, LlmVideoRef, ReflectionInfo, ToolResultInfo, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, AskUserStructured, LlmAudioRef, LlmImageRef, LlmVideoRef, ReflectionInfo, ToolResultInfo, UsageEntry } from '@shared/agent';
 
 // #region 渲染树类型
 
@@ -135,6 +135,7 @@ export interface RenderUserBlock extends BlockBase {
 	content: string;
 	images?: LlmImageRef[];
 	videos?: LlmVideoRef[];
+	audios?: LlmAudioRef[];
 }
 
 /**
@@ -196,6 +197,13 @@ function sameVideos(a?: LlmVideoRef[], b?: LlmVideoRef[]): boolean {
 	if (!a?.length && !b?.length) return true;
 	if (!a || !b || a.length !== b.length) return false;
 	return a.every((video, i) => video.file === b[i].file);
+}
+
+/** 音频引用按原始字节文件名比较（原样传输，内容不会在原地变） */
+function sameAudios(a?: LlmAudioRef[], b?: LlmAudioRef[]): boolean {
+	if (!a?.length && !b?.length) return true;
+	if (!a || !b || a.length !== b.length) return false;
+	return a.every((audio, i) => audio.file === b[i].file);
 }
 
 /** `run` 每次投影都是新对象，所以 diff 必须**按值**比较，否则每帧都判定「变了」→ 整块重建 DOM */
@@ -412,7 +420,7 @@ function buildNode(ctx: AgentCtx, instance: AgentInstance): RenderAgentNode {
 		// ⑤ 用户发言（根实例 = 用户每轮的原话；子实例的任务在节点头部显示）
 		if (entry.role === 'user') {
 			turn += 1;	// 用户消息 = 新一轮的开始
-			blocks.push({ type: 'user', key: entry.id, updatedAt: entry.updatedAt, turn, content: entry.content, images: entry.images, videos: entry.videos });
+			blocks.push({ type: 'user', key: entry.id, updatedAt: entry.updatedAt, turn, content: entry.content, images: entry.images, videos: entry.videos, audios: entry.audios });
 			continue;
 		}
 
@@ -577,7 +585,7 @@ function diffBlock(old: RenderBlock, nu: RenderBlock): RenderBlock {
 	switch (nu.type) {
 		case 'user': {
 			const o = old as RenderUserBlock;
-			if (o.content === nu.content && o.updatedAt === nu.updatedAt && sameImages(o.images, nu.images) && sameVideos(o.videos, nu.videos)) return old;
+			if (o.content === nu.content && o.updatedAt === nu.updatedAt && sameImages(o.images, nu.images) && sameVideos(o.videos, nu.videos) && sameAudios(o.audios, nu.audios)) return old;
 			return nu;
 		}
 		case 'llm': {

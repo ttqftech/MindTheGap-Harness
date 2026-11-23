@@ -82,12 +82,14 @@
 		color: var(--text-user);
 		white-space: pre-wrap;
 		word-break: break-word;
-		.user-images {
+		/* 图片 / 视频 / 音频混在一个 flex 容器里，按 ref 的 order 排（不按类型分组） */
+		.user-media {
 			display: flex;
 			flex-wrap: wrap;
+			align-items: flex-start;
 			gap: 8px;
 			margin-top: 8px;
-			white-space: normal;	/* 图片区不要继承气泡的 pre-wrap，否则换行会把缩略图挤散 */
+			white-space: normal;	/* 媒体区不要继承气泡的 pre-wrap，否则换行会把缩略图挤散 */
 		}
 		.user-image {
 			display: flex;
@@ -114,13 +116,6 @@
 			text-overflow: ellipsis;
 			white-space: nowrap;
 		}
-		.user-videos {
-			display: flex;
-			flex-wrap: wrap;
-			gap: 8px;
-			margin-top: 8px;
-			white-space: normal;
-		}
 		.user-video {
 			display: flex;
 			flex-direction: column;
@@ -138,6 +133,27 @@
 			}
 		}
 		.user-video-name {
+			max-width: 260px;
+			overflow: hidden;
+			font-size: 11px;
+			font-family: var(--font-mono);
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.user-audio {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			max-width: 260px;
+			color: var(--text-placeholder);
+
+			audio {
+				width: 260px;
+				height: 40px;
+				border-radius: var(--r-md);
+			}
+		}
+		.user-audio-name {
 			max-width: 260px;
 			overflow: hidden;
 			font-size: 11px;

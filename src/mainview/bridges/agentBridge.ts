@@ -57,9 +57,9 @@ export function getAttachmentUrl(conversationId: string, file: string): string {
 	return `${baseUrlOf(endpoint.host, endpoint.port)}/api/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(file)}${query}`;
 }
 
-// #region 媒体附件（图片 / 视频）
+// #region 媒体附件（图片 / 视频 / 音频）
 
-/** prepare / upload 共用的一组参数：内容 hash + 当前档位 + 视频编码 */
+/** prepare / upload 共用的一组参数：内容 hash + 当前档位 + 视频编码（音频忽略后两项） */
 export type MediaParams = MediaPrepareRequest;
 
 /** 判重：命中就拿现成的 ref；后端已有 raw 时它自己重编码，前端连字节都不用发 */

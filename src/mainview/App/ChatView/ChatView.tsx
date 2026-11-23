@@ -12,8 +12,8 @@
    ========================================================================== */
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
-import type { MenuItem } from 'ffbox-ui';
-import type { Folder, ImageQuality, LlmImageRef, LlmVideoRef, MediaPrepareRequest, ModelConfig, ModeParamControl, ParamValue, VideoCodec, VideoQuality } from '@shared/agent';
+import { FFBoxPopup, type MenuItem } from 'ffbox-ui';
+import type { Folder, ImageQuality, LlmAudioRef, LlmImageRef, LlmVideoRef, MediaPrepareRequest, ModelConfig, ModeParamControl, ParamValue, VideoCodec, VideoQuality } from '@shared/agent';
 import { DEFAULT_THINKING_PARAM, DRAFT_MEDIA_CONVERSATION_ID } from '@shared/agent';
 import { findOption, resolveModeParams, sameParamValue } from '@shared/modeParams';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
@@ -28,21 +28,21 @@ import { folderLabel, getTimeString, sameFolderPath } from '@shared/utils';
 import { alertMsgbox, showMenu } from '@mainview/bridges/ffboxBridge';
 import DiagramView from './DiagramView/DiagramView';
 import MTGlogo from './MTG-logo-transparent.svg';
-import { FolderChipIcon, ImageChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow, fmtTokens } from '@mainview/App/ChatView/RenderTree/shared';
+import { FolderChipIcon, SendIcon, StopIcon, MOCK_PLACEHOLDER_MODEL, clockNow, fmtTokens } from '@mainview/App/ChatView/RenderTree/shared';
 import RenderTreeView from './RenderTree/RenderTree';
 import { createOpenState } from './RenderTree/openState';
 import { hashMediaFile, mediaKindOf } from '@mainview/logic/mediaHash';
 import { showMediaPreviewMsgbox } from './MediaPreview';
 import styles from './ChatView.module.css';
 
-/** 输入框里一个待发送的媒体（图片或视频）；hash 在选入时后台算，发送前 await */
+/** 输入框里一个待发送的媒体（图片 / 视频 / 音频）；hash 在选入时后台算，发送前 await */
 interface PendingMedia {
 	id: string;
 	file: File;
 	name: string;
-	kind: 'image' | 'video';
+	kind: 'image' | 'video' | 'audio';
 	previewUrl: string;
-	quality: ImageQuality | VideoQuality;
+	quality: ImageQuality | VideoQuality;	// 音频固定 'original'（不区分档位）
 	codec: VideoCodec;
 	hashPromise: Promise<string>;
 }
@@ -61,9 +61,10 @@ export default function ChatView() {
 	const [mediaHashes, setMediaHashes] = createSignal<Record<string, string>>({});
 	/** 正在上传 / 转码媒体（这期间禁用发送，避免只发出半套附件） */
 	const [uploading, setUploading] = createSignal(false);
-	/** 隐藏的文件选择框：走浏览器原生 `accept` 过滤，不依赖主进程对话框 */
-	let imageInputRef: HTMLInputElement | undefined;
-	let videoInputRef: HTMLInputElement | undefined;
+	/** 拖拽文件悬停在聊天界面上：显示一层投放提示 */
+	const [dragActive, setDragActive] = createSignal(false);
+	/** 一个文件选择框通吃三种媒体：选完之后由 mediaKindOf 判类型，不依赖主进程对话框 */
+	let mediaInputRef: HTMLInputElement | undefined;
 	/**
 	 * 「当前查看的会话是不是正在跑」—— 直接从后端下发的三态 runStatus 派生，不再有本地镜像。
 	 *
@@ -160,11 +161,9 @@ export default function ChatView() {
 		return `${entry.provider.name} / ${entry.model.displayName}${level ? ` · ${level}` : ''}`;
 	};
 
-	/** 当前模型能不能收图（设置页 model.supportsVision）；没选模型一律当不支持 */
-	const currentModelSupportsVision = () => !!currentModelEntry()?.model.supportsVision;
-	/** 当前模型能不能收视频（按模型配置的 supportsVideo） */
+	const currentModelSupportsImage = () => !!currentModelEntry()?.model.supportsImage;
 	const currentModelSupportsVideo = () => !!currentModelEntry()?.model.supportsVideo;
-	/** 该模型接收视频时用的编码（缺省 H.264） */
+	const currentModelSupportsAudio = () => !!currentModelEntry()?.model.supportsAudio;
 	const currentModelVideoCodec = (): VideoCodec => currentModelEntry()?.model.videoCodec ?? 'h264';
 
 	/** 百分比文案：没有上下文窗口配置就显示 — */
@@ -571,11 +570,28 @@ export default function ChatView() {
 	// #region 发送 / 停止 / 回答提问
 
 	/**
-	 * 把媒体文件收进待发送区（选文件 / 粘贴共用）。
+	 * 把媒体文件收进待发送区（选择 / 粘贴 / 拖拽共用）。
+	 * ⭐ 判类型与判模型能力都在**拿到文件之后**做：一个 ➕ 按钮事先不知道用户会选什么。
 	 * 预览用本地 object URL；内容 hash 后台异步算，真正发出去前才判重 / 上传。
 	 */
 	const addMediaFiles = (files: File[]) => {
-		const accepted = files.filter((file) => !!mediaKindOf(file.type, file.name));
+		if (isGenerating() || uploading()) return;
+		let blocked: 'image' | 'video' | 'audio' | null = null;
+		const accepted = files.filter((file) => {
+			const kind = mediaKindOf(file.type, file.name);
+			if (!kind) return false;
+			if (kind === 'image' && !currentModelSupportsImage()) { blocked = 'image'; return false; }
+			if (kind === 'video' && !currentModelSupportsVideo()) { blocked = 'video'; return false; }
+			if (kind === 'audio' && !currentModelSupportsAudio()) { blocked = 'audio'; return false; }
+			return true;
+		});
+		if (blocked === 'image') {
+			void FFBoxPopup.show({ message: '当前配置的模型不支持图片输入，请调整模型配置或更换其他模型', level: 2 });
+		} else if (blocked === 'video') {
+			void FFBoxPopup.show({ message: '当前配置的模型不支持视频输入，请调整模型配置或更换其他模型', level: 2 });
+		} else if (blocked === 'audio') {
+			void FFBoxPopup.show({ message: '当前配置的模型不支持音频输入，请调整模型配置或更换其他模型', level: 2 });
+		}
 		if (!accepted.length) return;
 		const items: PendingMedia[] = accepted.map((file) => {
 			const kind = mediaKindOf(file.type, file.name)!;
@@ -585,7 +601,7 @@ export default function ChatView() {
 				name: file.name || `${kind}-${Date.now()}`,
 				kind,
 				previewUrl: URL.createObjectURL(file),
-				quality: kind === 'image' ? appState.media.imageQuality : appState.media.videoQuality,
+				quality: kind === 'image' ? appState.media.imageQuality : kind === 'video' ? appState.media.videoQuality : 'original',
 				codec: currentModelVideoCodec(),
 				hashPromise: hashMediaFile(file).catch(() => ''),
 			};
@@ -596,18 +612,10 @@ export default function ChatView() {
 		}
 	};
 
-	/** 点「图片」/「视频」按钮：走隐藏的 `<input type=file>`（WebView2 / 远程浏览器都可用） */
-	const pickMedia = (kind: 'image' | 'video') => {
+	/** 点 ➕：走隐藏的 `<input type=file multiple>`（WebView2 / 远程浏览器都可用） */
+	const pickMedia = () => {
 		if (isGenerating() || uploading()) return;
-		if (kind === 'image' && !currentModelSupportsVision()) {
-			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
-			return;
-		}
-		if (kind === 'video' && !currentModelSupportsVideo()) {
-			void alertMsgbox('当前模型不支持视频输入', '请到「设置 → 模型」为该模型打开「支持视频输入」并选择编码。');
-			return;
-		}
-		(kind === 'image' ? imageInputRef : videoInputRef)?.click();
+		mediaInputRef?.click();
 	};
 
 	const onMediaInputChange = (e: Event) => {
@@ -616,7 +624,7 @@ export default function ChatView() {
 		input.value = '';	// 清空才能再次选同一份
 	};
 
-	/** Ctrl+V 粘贴截图 / 视频：与选文件走同一条待发送队列（纯文本粘贴仍交给 textarea 默认行为） */
+	/** Ctrl+V 粘贴文件：与选择 / 拖拽走同一条队列（纯文本粘贴仍交给 textarea 默认行为） */
 	const handlePaste = (e: ClipboardEvent) => {
 		const files = [...(e.clipboardData?.items ?? [])]
 			.filter((item) => item.kind === 'file' && !!mediaKindOf(item.type, ''))
@@ -624,15 +632,25 @@ export default function ChatView() {
 			.filter((f): f is File => !!f);
 		if (!files.length || isGenerating()) return;
 		e.preventDefault();
-		if (files.some((f) => mediaKindOf(f.type, f.name) === 'image') && !currentModelSupportsVision()) {
-			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
-			return;
-		}
-		if (files.some((f) => mediaKindOf(f.type, f.name) === 'video') && !currentModelSupportsVideo()) {
-			void alertMsgbox('当前模型不支持视频输入', '请到「设置 → 模型」为该模型打开「支持视频输入」并选择编码。');
-			return;
-		}
 		addMediaFiles(files);
+	};
+
+	/** 拖拽导入：整个聊天界面都是投放区，dragleave 只在真正离开容器时才收起提示 */
+	const handleDragOver = (e: DragEvent) => {
+		if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return;
+		e.preventDefault();
+		e.dataTransfer!.dropEffect = 'copy';
+		if (!isGenerating() && !uploading()) setDragActive(true);
+	};
+	const handleDragLeave = (e: DragEvent) => {
+		const container = e.currentTarget as HTMLElement;
+		if (!container.contains(e.relatedTarget as Node | null)) setDragActive(false);
+	};
+	const handleDrop = (e: DragEvent) => {
+		e.preventDefault();
+		setDragActive(false);
+		if (isGenerating() || uploading()) return;
+		addMediaFiles([...(e.dataTransfer?.files ?? [])]);
 	};
 
 	/** 点缩略图 → 弹 Msgbox 看后端真实转码产物，并可改这一份附件的清晰度 */
@@ -682,6 +700,7 @@ export default function ChatView() {
 		if ((!text && !media.length) || isGenerating() || uploading()) return;
 		const hasImages = media.some((item) => item.kind === 'image');
 		const hasVideos = media.some((item) => item.kind === 'video');
+		const hasAudios = media.some((item) => item.kind === 'audio');
 
 		/** 从 store 组装完整的 ModelConfig（给 AgentRunRequest 用） */
 		function buildModelConfig(): ModelConfig | null {
@@ -697,8 +716,10 @@ export default function ChatView() {
 				fullUrl: provider.fullUrl,
 				apiKey: provider.apiKey,
 				customParams: { ...provider.customParams, ...model.customParams },
-				supportsVision: !!model.supportsVision,
+				supportsImage: !!model.supportsImage,
 				supportsVideo: !!model.supportsVideo,
+				supportsAudio: !!model.supportsAudio,
+				audioApi: model.audioApi ?? 'input_audio',
 				// 只有用户显式选过档位才写参数；「默认」= 不传。参数名没填时用 reasoning_effort
 				thinking: level ? { param: model.thinking?.param || DEFAULT_THINKING_PARAM, value: level } : undefined,
 			};
@@ -710,12 +731,16 @@ export default function ChatView() {
 			void alertMsgbox('未配置模型', '请先在「设置 → 模型」里配置模型提供商与模型，然后再发起任务。');
 			return;
 		}
-		if (hasImages && !modelConfig.supportsVision) {
+		if (hasImages && !modelConfig.supportsImage) {
 			void alertMsgbox('当前模型不支持图片输入', '请到「设置 → 模型」为该模型打开「支持图片输入」，或切换到支持视觉的模型。');
 			return;
 		}
 		if (hasVideos && !currentModelSupportsVideo()) {
 			void alertMsgbox('当前模型不支持视频输入', '视频以转码后的 mp4 本体发给模型，请到「设置 → 模型」为该模型打开「支持视频输入」并选择编码。');
+			return;
+		}
+		if (hasAudios && !currentModelSupportsAudio()) {
+			void alertMsgbox('当前模型不支持音频输入', '请到「设置 → 模型」为该模型打开「支持音频输入」并选择音频接口。');
 			return;
 		}
 		if (appState.modes.length === 0) {
@@ -733,11 +758,11 @@ export default function ChatView() {
 				const folder = appState.folders.find((f) => sameFolderPath(f.id, draft.id)) ?? actions.addFolder(draft.id);
 				folderId = folder?.id ?? draft.id;
 			}
-			conv = await actions.createConversation(folderId, text.slice(0, 20) || (hasVideos ? '视频任务' : hasImages ? '图片任务' : '新会话'));
+			conv = await actions.createConversation(folderId, text.slice(0, 20) || (hasVideos ? '视频任务' : hasImages ? '图片任务' : hasAudios ? '音频任务' : '新会话'));
 			if (!conv) return;
 		} else if (!conv.agentCtx) {
 			// 会话还没有跑过 → 用首句当标题（旧逻辑用 messages 为空判断，现在等价于「没有 ctx」）
-			await actions.renameConversation(conv.id, text.slice(0, 30) || (hasVideos ? '视频任务' : hasImages ? '图片任务' : '新会话'));
+			await actions.renameConversation(conv.id, text.slice(0, 30) || (hasVideos ? '视频任务' : hasImages ? '图片任务' : hasAudios ? '音频任务' : '新会话'));
 		}
 		const convId = conv.id;
 
@@ -752,6 +777,7 @@ export default function ChatView() {
 		 */
 		const imageRefs: LlmImageRef[] = [];
 		const videoRefs: LlmVideoRef[] = [];
+		const audioRefs: LlmAudioRef[] = [];
 		if (media.length) {
 			setUploading(true);
 			try {
@@ -775,8 +801,11 @@ export default function ChatView() {
 						void alertMsgbox('媒体准备失败', `${item.name}：${result.error ?? '未知错误'}`);
 						return;	// 输入文本与待发送媒体都保留，让用户重试
 					}
-					if (item.kind === 'image' && result.image) imageRefs.push(result.image);
-					if (item.kind === 'video' && result.video) videoRefs.push(result.video);
+					// ⭐ order 记的是**这条消息里的附件原始顺序**（图片 / 视频 / 音频共用一个序号）：
+					// 混排时 wire 层要按它铺开，不能按类型重排
+					if (item.kind === 'image' && result.image) imageRefs.push({ ...result.image, order: i });
+					if (item.kind === 'video' && result.video) videoRefs.push({ ...result.video, order: i });
+					if (item.kind === 'audio' && result.audio) audioRefs.push({ ...result.audio, order: i });
 				}
 			} finally {
 				setUploading(false);
@@ -799,6 +828,7 @@ export default function ChatView() {
 			model: modelConfig,
 			images: imageRefs,
 			videos: videoRefs,
+			audios: audioRefs,
 			params: runParams(),
 			chatConfig: appState.chatConfig,	// 本轮生效的聊天配置随 run 一起提交，后端固化进该会话的 ctx.json
 		});
@@ -822,7 +852,13 @@ export default function ChatView() {
 	const openState = createOpenState();
 
 	return (
-		<div class={styles.mainContent}>
+		<div class={styles.mainContent} ondragover={handleDragOver} ondragleave={handleDragLeave} ondrop={handleDrop}>
+			{/* 拖拽文件进聊天界面时的投放提示（覆盖整个视图，不拦截 drop） */}
+			<Show when={dragActive()}>
+				<div class={styles['drop-overlay']}>
+					<div class={styles['drop-hint']}>松开即可添加图片 / 视频 / 音频</div>
+				</div>
+			</Show>
 			{/* 会话头部：标题 + 面包屑 + 状态 / 操作 */}
 			<div class={styles.header}>
 				<div class={styles['session-title-block']}>
@@ -951,7 +987,7 @@ export default function ChatView() {
 				<div class={styles['input-wrapper']}>
 					<textarea
 						class={styles['input-textarea']}
-						placeholder="描述任务，或输入 / 唤起指令；shift + enter 换行；Ctrl+V 可粘贴截图"
+						placeholder="描述任务，或输入 / 唤起指令；shift + enter 换行；可粘贴或直接拖入图片 / 视频 / 音频"
 						value={inputText()}
 						oninput={(e) => setInputText(e.currentTarget.value)}
 						onkeydown={handleKeyDown}
@@ -959,19 +995,11 @@ export default function ChatView() {
 						rows={1}
 					/>
 
-					{/* 隐藏的文件选择框：`accept` 在系统文件对话框里就过滤，不会退化成「选文件夹」 */}
+					{/* 一个选择框通吃三种媒体；选完由 mediaKindOf 判类型，不在这里分流 */}
 					<input
-						ref={imageInputRef}
+						ref={mediaInputRef}
 						type="file"
-						accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
-						multiple
-						style={{ display: 'none' }}
-						onchange={onMediaInputChange}
-					/>
-					<input
-						ref={videoInputRef}
-						type="file"
-						accept="video/mp4,video/webm,video/quicktime,video/x-matroska,video/x-msvideo,video/*"
+						accept="image/*,video/*,audio/*"
 						multiple
 						style={{ display: 'none' }}
 						onchange={onMediaInputChange}
@@ -981,15 +1009,18 @@ export default function ChatView() {
 					<Show when={pendingMedia().length > 0}>
 						<div class={styles['input-attachments']}>
 							<For each={pendingMedia()}>{(item, index) => (
-								<span class={styles['attachment-chip']} title={`${item.name} · 点击预览并调整清晰度`}>
-									<button class={styles['attachment-thumb-btn']} title="预览 / 调整清晰度" onclick={() => openMediaPreview(index())}>
-										<Show when={item.kind === 'image'}>
-											<img class={styles['attachment-thumb']} src={item.previewUrl} alt={item.name} />
-										</Show>
-										<Show when={item.kind === 'video'}>
-											<video class={styles['attachment-thumb']} src={item.previewUrl} muted preload="metadata" />
-										</Show>
-									</button>
+							<span class={styles['attachment-chip']} title={`${item.name} · 点击预览`}>
+								<button class={styles['attachment-thumb-btn']} title="预览" onclick={() => openMediaPreview(index())}>
+									<Show when={item.kind === 'image'}>
+										<img class={styles['attachment-thumb']} src={item.previewUrl} alt={item.name} />
+									</Show>
+									<Show when={item.kind === 'video'}>
+										<video class={styles['attachment-thumb']} src={item.previewUrl} muted preload="metadata" />
+									</Show>
+									<Show when={item.kind === 'audio'}>
+										<span class={styles['attachment-audio-icon']} aria-hidden="true">♫</span>
+									</Show>
+								</button>
 									<span class={styles['attachment-name']}>{item.name}</span>
 									<button
 										class={styles['attachment-remove']}
@@ -1004,27 +1035,14 @@ export default function ChatView() {
 					</Show>
 
 					<div class={styles['input-toolbar']}>
-						{/* 图片 / 视频附件：模型没开对应能力时点按给出明确提示 */}
+						{/* 一个 ➕ 通吃图片 / 视频 / 音频：选完文件后按类型分流并检查模型能力 */}
 						<button
-							class={styles['ctx-chip']}
-							title={currentModelSupportsVision() ? '添加图片（发送时按所选清晰度压缩后交给模型）' : '当前模型未开启「支持图片输入」，去「设置 → 模型」里打开'}
+							class={`${styles['ctx-chip']} ${styles['add-media-chip']}`}
+							title="添加图片 / 视频 / 音频，也可以直接拖进窗口"
 							disabled={isGenerating() || uploading()}
-							onclick={() => pickMedia('image')}
+							onclick={pickMedia}
 						>
-							<ImageChipIcon />
-							<span class={styles['ctx-chip-text']}>图片</span>
-						</button>
-						<button
-							class={styles['ctx-chip']}
-							title={currentModelSupportsVideo() ? '添加视频（转码后以 mp4 本体交给模型）' : '当前模型未开启「支持视频输入」，去「设置 → 模型」里打开'}
-							disabled={isGenerating() || uploading()}
-							onclick={() => pickMedia('video')}
-						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-								<rect x="3" y="5" width="13" height="14" rx="2" />
-								<path d="M16 10l5-3v10l-5-3z" />
-							</svg>
-							<span class={styles['ctx-chip-text']}>视频</span>
+							<span class={styles['ctx-chip-text']}>➕</span>
 						</button>
 
 						{/* 运行文件夹 */}

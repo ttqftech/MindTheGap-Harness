@@ -7,8 +7,8 @@
    再叠一层 CSS 过渡只会把它变成「松手才动」。
    进度 0 时整棵树根本不挂载（可见性派生自进度），所以这里不需要 display 开关。
 
-   整个面板的界面结构就是这里的大括号层级：root → overlay / panel → header / tabs / content，
-   所以子元素一律用短名（如 .dot / .box），不再带父级前缀。
+   整个面板的界面结构就是这里的大括号层级：root → overlay / panel → header（含 tabs）/ content，
+   所以子元素一律用短名（如 .box），不再带父级前缀。
    各 Tab 的内容样式在各自的 *.module.css；共用样式在 SettingsCommon.module.css。
    ========================================================================== */
 .settingsRoot {
@@ -33,41 +33,31 @@
 		border: none;
 		border-radius: 0;
 		box-shadow: none;
-		overflow: hidden;
+		/* overflow: hidden; */
 		pointer-events: auto;
 		/* 位移 = 进度：0 → -100%（完全滑出上方），1 → 0（铺满） */
 		transform: translateY(calc((var(--settings-progress, 0) - 1) * 100%));
-		/* ---------- 头部 ---------- */
+		/* ---------- 头部：齿轮 + 标题 + Tab 栏（同一行，窄窗口自动换行） ---------- */
 		.settingsHeader {
 			display: flex;
 			align-items: center;
+			flex-wrap: wrap;
 			gap: 12px;
-			height: 58px;
+			min-height: 58px;
 			flex-shrink: 0;
-			padding: 0 var(--section-pad-lr);
-			/* 拖拽手柄：标题栏左侧的 grip 图标，按住它可以上下滑动面板拉出 / 关闭 */
-			.settingsDragHandle {
+			padding: 10px var(--section-pad-lr);
+			/* 齿轮标记：纯装饰，不吃鼠标 */
+			.settingsGear {
 				display: inline-flex;
 				align-items: center;
 				justify-content: center;
 				width: 28px;
 				height: 28px;
 				flex-shrink: 0;
-				cursor: grab;
 				color: var(--text-tertiary);
-				border-radius: var(--r-md);
-				transition: background-color var(--dur-fast), color var(--dur-fast);
-				&:hover {
-					background-color: var(--bg-hover);
-					color: var(--text-secondary);
-				}
-				&:active {
-					cursor: grabbing;
-				}
 			}
 			.settingsTitleBlock {
-				flex: 1;
-				min-width: 0;
+				flex-shrink: 0;
 				display: flex;
 				flex-direction: column;
 				gap: 3px;
@@ -77,55 +67,35 @@
 					color: var(--text-primary);
 				}
 			}
-			.settingsCloseBtn {
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				width: 28px;
-				height: 28px;
-				flex-shrink: 0;
-				border-radius: var(--r-md);
-				border: 1px solid var(--border-strong);
-				background-color: var(--bg-hover);
-				color: var(--text-tertiary);
-				transition: background-color var(--dur-fast), color var(--dur-fast);
-				&:hover {
-					background-color: var(--bg-active);
-					color: var(--text-primary);
-				}
-			}
 		}
-		/* ---------- 分页栏 ---------- */
+		/* ---------- 分页栏：DOM 上在 header 内、紧跟「设置」文本，选择器按后代匹配 ---------- */
 		.settingsTabs {
 			display: flex;
 			align-items: center;
 			flex-wrap: wrap;
 			gap: 6px;
-			flex-shrink: 0;
-			padding: 0 var(--section-pad-lr) 12px;
-			/* 本机 / 服务两组 Tab 的分界：小字组标签 + 一条竖线 */
-			.settingsTabGroup {
+			flex: 1;
+			min-width: 0;
+			/* 一组 Tab 的外框：常态透明占位，悬浮时浮出一圈高透明度的边框把整组框住 */
+			.settingsTabScope {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
 				flex-shrink: 0;
-				padding-right: 2px;
-				font-size: 11px;
-				letter-spacing: 0.06em;
-				color: var(--text-tertiary);
-				white-space: nowrap;
-				user-select: none;
-				&[data-scope='service'] {
-					color: var(--accent);
-					font-weight: 600;
+				padding: 2px 4px;
+				border: 1px solid transparent;
+				border-radius: var(--r-md);
+				transition: border-color var(--dur-fast);
+				&:hover {
+					border-color: hwb(var(--bg90) / 0.8);
 				}
 			}
 			.settingsTabSplit {
 				width: 1px;
 				height: 18px;
-				margin: 0 4px;
+				margin: 0 2px;
 				flex-shrink: 0;
 				background-color: var(--border-strong);
-			}
-			.settingsTabsSpacer {
-				flex: 1;
 			}
 			.settingsTab {
 				height: 30px;
@@ -147,20 +117,6 @@
 					font-weight: 500;
 				}
 			}
-			.settingsDoneBtn {
-				height: 30px;
-				padding: 0 13px;
-				flex-shrink: 0;
-				border-radius: var(--r-md);
-				background-color: var(--accent);
-				color: var(--accent-ink);
-				font-size: var(--fs-s);
-				font-weight: 500;
-				transition: background-color var(--dur-fast);
-				&:hover {
-					background-color: var(--accent-hover);
-				}
-			}
 		}
 		.settingsDivider {
 			height: 1px;
@@ -175,58 +131,20 @@
 			flex-direction: column;
 			gap: 20px;
 			padding: 20px var(--section-pad-lr) 28px;
-			/* 作用域提示条：这一页的设置会写去哪 */
-			.settingsScope {
-				display: flex;
-				align-items: center;
-				gap: 8px;
-				flex-shrink: 0;
-				margin-bottom: -8px;
-				padding: 8px 12px;
-				border: 1px solid var(--border);
-				border-radius: var(--r-md);
-				background-color: var(--bg-sub1-header);
-				font-size: var(--fs-s);
-				color: var(--text-tertiary);
-				.dot {
-					width: 6px;
-					height: 6px;
-					flex-shrink: 0;
-					border-radius: 50%;
-					background-color: var(--text-tertiary);
-				}
-				&[data-scope='service'] {
-					border-color: var(--accent);
-					color: var(--text-primary);
-					.dot {
-						background-color: var(--accent);
-					}
-				}
-			}
 		}
-	}
-	/* 全屏浮动占位小方块：跟着下拉量（--settings-progress）移动。
-	   预置的演示元素，证明下拉可以同时控制多个元素（后期可换成进度页等）。
-	   不拦截鼠标：pointer-events: none，避免抢设置面板的交互。 */
-	.settingsPlaceholder {
-		position: absolute;
-		inset: 0;
-		z-index: 6;
-		pointer-events: none;
-		.box {
+		.deco {
 			position: absolute;
-			width: 44px;
-			height: 44px;
-			border-radius: 12px;
-			background-color: var(--accent);
-			box-shadow: 0 2px 10px hwb(var(--bg90) / 0.3);
-			/* 跟着下拉进度：从右上角往下掉，同时放大、淡入 */
-			top: calc(var(--settings-progress, 0) * 45vh);
-			right: 22px;
-			opacity: calc(var(--settings-progress, 0) * 0.7);
-			transform: scale(calc(0.5 + var(--settings-progress, 0) * 0.5));
+			left: -30%;
+			right: -30%;
+			bottom: calc(-16px * var(--settings-progress, 0));
+			height: calc(16px * var(--settings-progress, 0));
+			background: repeating-linear-gradient(115deg, #ffd400 0 24px, #666 24px 48px);
+			box-shadow: 0 0 10px hwb(0 0% 100% / 0.30);
+			opacity: 0.85;
+			transform: translateX(calc(var(--settings-progress, 0) * -30% + 15%));
 		}
 	}
+
 }
 @media (max-width: 768px) {
 	.settingsRoot .settingsPanel {

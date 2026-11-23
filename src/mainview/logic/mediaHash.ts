@@ -138,11 +138,13 @@ export async function hashMediaFile(file: File): Promise<string> {
 }
 
 /** 从 MIME / 文件名粗判媒体类型（只用于前端 UI，后端还会再校验一次） */
-export function mediaKindOf(mime: string, name: string): 'image' | 'video' | null {
+export function mediaKindOf(mime: string, name: string): 'image' | 'video' | 'audio' | null {
 	if (/^image\//.test(mime)) return 'image';
 	if (/^video\//.test(mime)) return 'video';
+	if (/^audio\//.test(mime)) return 'audio';
 	const ext = name.split('.').pop()?.toLowerCase() ?? '';
 	if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
 	if (['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi'].includes(ext)) return 'video';
+	if (['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'oga', 'opus', 'weba', 'wma', 'aiff', 'aif'].includes(ext)) return 'audio';
 	return null;
 }

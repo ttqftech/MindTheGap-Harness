@@ -231,7 +231,7 @@ export interface ModeSummary {
 
 // #endregion
 
-// #region 媒体输入（图片 / 视频）
+// #region 媒体输入（图片 / 视频 / 音频）
 
 /**
  * - OpenAI Chat：`image_url.url` 可以是 `data:image/png;base64,...`
@@ -247,6 +247,7 @@ export interface LlmImageRef {
 	quality?: ImageQuality;	// 压缩档位（老附件没有这个字段 = 未经过重编码）
 	width?: number;
 	height?: number;
+	order?: number;	// 在**这条用户消息**里的原始位置（0 起，图片 / 视频 / 音频共用一个序号）；老数据没有，wire 层按「图 → 视频 → 音频」兜底
 }
 
 export type ImageQuality = 'low' | 'normal' | 'original';	// 图片压缩档位：低清 = 1/4 宽高 + 长边 512（≈300 token）；普通 = 1/2 宽高 + 长边 1536（≈2000 token）；原图 = 不重编码
@@ -296,6 +297,19 @@ export const VIDEO_CODEC_OPTIONS: { value: VideoCodec; label: string; desc: stri
 ];
 
 /**
+ * 音频内容块的 wire 形状 —— 各家不一致，按模型选定，**不做自动探测**：
+ * - `input_audio`：OpenAI 官方（Chat / Responses）、智谱 glm-4-voice 等兼容网关，纯 base64 + `format`；
+ * - `audio_url`：只认 URL 的网关（如 dots3-note-prev 必须带 `data:` 前缀），data URI 内联。
+ * anthropic 协议不看这项，固定发对称的 `audio` base64 block（非官方规格）。
+ */
+export type AudioApi = 'input_audio' | 'audio_url';
+
+export const AUDIO_API_OPTIONS: { value: AudioApi; label: string; desc: string }[] = [
+	{ value: 'input_audio', label: 'input_audio', desc: 'OpenAI 官方：纯 base64 + format（只认 wav / mp3，其它格式自动改走 data URI）' },
+	{ value: 'audio_url', label: 'audio_url', desc: 'data URI 内联：只认 URL 的网关（如 dots3-note-prev）选这项' },
+];
+
+/**
  * 一段视频在会话附件目录里的引用。
  * `file` 是按当前档位 + 编码转码后的 mp4 产物：前端 `<video>` 直接读它，
  * 模型也直接收它本体（`video_url` + base64），**不抽帧、不降级成图片**。
@@ -311,15 +325,32 @@ export interface LlmVideoRef {
 	height?: number;
 	duration?: number;	// 秒
 	base64?: string;	// 请求时由 runner 现读，不进 ctx.json
+	order?: number;	// 同一条消息里的原始位置（见 LlmImageRef.order）
+}
+
+/**
+ * 一段音频在会话附件目录里的引用。
+ * ⭐ 音频不区分质量档位（token 只跟时长走，≈10 token/s），**原样传输、不压缩**，
+ * 所以产物就是 `raw-<hash>.<ext>` 本身，后端一次 ffmpeg 都不调。
+ */
+export interface LlmAudioRef {
+	name: string;
+	mime: string;	// 原始音频 mime（audio/mpeg / audio/wav / audio/flac …）
+	file: string;
+	size?: number;
+	format: string;	// 扩展名去点（mp3 / wav / m4a / flac / ogg …）；OpenAI 官方 input_audio 的 format 只认 wav / mp3
+	duration?: number;	// 秒
+	base64?: string;	// 请求时由 runner 现读，不进 ctx.json
+	order?: number;	// 同一条消息里的原始位置（见 LlmImageRef.order）
 }
 
 /** 前端 prepare 时告诉后端「我要哪个产物」——后端据此拼文件名判重 */
 export interface MediaPrepareRequest {
-	kind: 'image' | 'video';
+	kind: 'image' | 'video' | 'audio';
 	hash: string;	// 前端算的内容 hash，后端用它当文件名
 	name: string;
 	mime: string;	// 原始文件 mime
-	quality: ImageQuality | VideoQuality;
+	quality: ImageQuality | VideoQuality;	// 音频忽略它（前端固定传 original）
 	codec?: VideoCodec;	// 视频才有
 }
 
@@ -331,6 +362,7 @@ export interface MediaPrepareResult {
 	cached?: boolean;
 	image?: LlmImageRef;
 	video?: LlmVideoRef;
+	audio?: LlmAudioRef;
 }
 
 // #endregion
@@ -352,8 +384,9 @@ export interface LlmMessage {
 	toolCalls?: LlmToolCall[];
 	toolCallId?: string;
 	reasoningContent?: string;	// 思考模型的推理内容，多轮工具调用时必须回传
-	images?: LlmImageRef[];	// 用户消息附带的图片（仅 `supportsVision` 的模型会真正发出去）
+	images?: LlmImageRef[];	// 用户消息附带的图片（仅 `supportsImage` 的模型会真正发出去）
 	videos?: LlmVideoRef[];	// 用户消息附带的视频（已经转码完成）；只有 supportsVideo 的模型才会带 base64 发给上游
+	audios?: LlmAudioRef[];	// 用户消息附带的音频（原样字节）；wire 形状读模型的 audioApi
 }
 
 export interface LlmTool {
@@ -625,7 +658,7 @@ export type AgentStreamEvent = StreamEventBase & (
 	| { type: 'reasoning'; agentInstanceId: string; messageId: string; chunk: string }
 	| { type: 'tool_start'; agentInstanceId: string; messageId: string; callId: string; toolName: string; args: unknown; reason: string }
 	| { type: 'tool_end'; agentInstanceId: string; messageId: string; callId: string; toolName: string; result: ToolResult }
-	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[] }
+	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[]; audios?: LlmAudioRef[] }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
 	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
 	| { type: 'reflection_start'; agentInstanceId: string; messageId: string; remaining: number }
@@ -667,8 +700,10 @@ export interface ModelConfig {
 	baseUrl: string;
 	apiKey: string;
 	customParams?: Record<string, unknown>;
-	supportsVision?: boolean;
+	supportsImage?: boolean;
 	supportsVideo?: boolean;
+	supportsAudio?: boolean;
+	audioApi?: AudioApi;	// 音频内容块形状（supportsAudio 时生效），缺省 input_audio
 	fullUrl?: boolean;	// 勾选「完整 URL」：baseUrl 即完整端点，请求时不再补 /v1 与接口路径
 	/**
 	 * 本次请求要写的思考强度：`param` 是模型设置里的参数名（支持 `a.b` 嵌套路径），
@@ -695,6 +730,7 @@ export interface AgentRunRequest {
 	 */
 	images?: LlmImageRef[];
 	videos?: LlmVideoRef[];
+	audios?: LlmAudioRef[];
 	/**
 	 * Composer 下方动态表单的选择（`{ [controlKey]: 选项 value }`）。
 	 * 后端用它覆盖 `mode.json` 的 `params` 默认值；不传 = 全用默认。
@@ -1031,9 +1067,11 @@ export interface ModelProviderModel {
 	role: 'standard' | 'economy';
 	customParams?: Record<string, unknown>;
 	contextWindow?: { input?: number; output?: number };
-	supportsVision?: boolean;
+	supportsImage?: boolean;
 	supportsVideo?: boolean;
+	supportsAudio?: boolean;
 	videoCodec?: VideoCodec;	// supportsVideo 时生效，缺省按 h264
+	audioApi?: AudioApi;	// supportsAudio 时生效，缺省按 input_audio（anthropic 协议固定发 audio block）
 	thinking?: { param: string; values: string[] };
 }
 

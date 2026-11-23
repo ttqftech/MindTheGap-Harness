@@ -9,8 +9,8 @@
 import { createEffect, createSignal, For, onCleanup, Show, untrack, type JSX } from 'solid-js';
 import { state, actions } from '@mainview/stores';
 import type { ModelProvider } from '@mainview/stores';
-import type { ModelProviderModel, VideoCodec } from '@shared/agent';
-import { DEFAULT_THINKING_PARAM, VIDEO_CODEC_OPTIONS } from '@shared/agent';
+import type { AudioApi, ModelProviderModel, VideoCodec } from '@shared/agent';
+import { AUDIO_API_OPTIONS, DEFAULT_THINKING_PARAM, VIDEO_CODEC_OPTIONS } from '@shared/agent';
 import { confirmMsgbox, alertMsgbox } from '@mainview/bridges/ffboxBridge';
 import { testProviderModel } from '@mainview/bridges/agentBridge';
 import { XIcon, radioValue } from './SettingsCommon';
@@ -256,7 +256,7 @@ function ModelRow(props: {
 
 				<Field label="支持图片输入">
 					<label class={styles.checkLine}>
-						<ffbox-checkbox prop:checked={!!props.model.supportsVision} onchange={(e) => patch({ supportsVision: e.detail === true })} />
+						<ffbox-checkbox prop:checked={!!props.model.supportsImage} onchange={(e) => patch({ supportsImage: e.detail === true })} />
 						<span>该模型可以接收图片</span>
 					</label>
 				</Field>
@@ -288,6 +288,39 @@ function ModelRow(props: {
 						</div>
 						<div class={common.mediaOptionList}>
 							<For each={VIDEO_CODEC_OPTIONS}>{(option) => (
+								<div class={common.mediaOptionDesc}>{option.label} · {option.desc}</div>
+							)}</For>
+						</div>
+					</Field>
+				</Show>
+
+				<Field label="支持音频输入">
+					<label class={styles.checkLine}>
+						<ffbox-checkbox prop:checked={!!props.model.supportsAudio} onchange={(e) => patch({ supportsAudio: e.detail === true })} />
+						<span>该模型可以接收音频（原样字节，不压缩）</span>
+					</label>
+				</Field>
+
+				<Show when={props.model.supportsAudio}>
+					<Field
+						label="音频接口"
+						hint={props.provider.apiFormat === 'anthropic'
+							? 'Anthropic Messages 官方不支持音频输入，这里固定发对称的 audio base64 block（非官方规格，取决于网关）'
+							: '各家音频内容块写法不一致，只能按上游选；选错会由上游直接报错'}
+						wide
+					>
+						<div class={common.codecRadio}>
+							<ffbox-radio-list
+								prop:list={AUDIO_API_OPTIONS.map((option) => ({ value: option.value, caption: option.label }))}
+								prop:value={props.model.audioApi ?? 'input_audio'}
+								onchange={(e) => {
+									const value = radioValue(e) as AudioApi;
+									if (value) patch({ audioApi: value });
+								}}
+							/>
+						</div>
+						<div class={common.mediaOptionList}>
+							<For each={AUDIO_API_OPTIONS}>{(option) => (
 								<div class={common.mediaOptionDesc}>{option.label} · {option.desc}</div>
 							)}</For>
 						</div>

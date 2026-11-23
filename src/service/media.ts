@@ -1,11 +1,12 @@
 /*
- * 媒体转码 — 图片压缩 / 视频重编码
+ * 媒体转码 — 图片压缩 / 视频重编码（音频不转码）
  *
  * 设计取舍：
  * - 前端发来的**原始字节**按内容 hash 落进会话附件目录（raw-<hash>.<ext>），
  *   之后换档位 / 换编码都由后端拿这份 raw 重新转码，前端一次都不用重传。
  * - 「原图」档不调 ffmpeg，直接把 raw 当产物引用（复制都不做，谈不上重编码）。
  * - 视频按 1fps 重编码成 mp4，产物本体直接发给模型；不抽帧、不降级成图片。
+ * - 音频**不进 ffmpeg**：token 只跟时长走（≈10 token/s），压缩省不了钱，原样字节直接发；这里只补一个 ffprobe 时长。
  * - ffmpeg / ffprobe 走系统二进制（PATH 或 MTG_FFMPEG / MTG_FFPROBE 覆盖）。
  */
 
@@ -157,7 +158,7 @@ export async function encodeImage(rawPath: string, outPath: string, quality: Exc
 }
 
 /** 视频重编码：按档位缩放 + 统一 1fps，产物是 mp4（这份 mp4 本体直接发给模型） */
-export async function encodeVideo(rawPath: string, outPath: string, quality: VideoQuality, codec: Exclude<VideoCodec, 'h266'>): Promise<CommandResult> {
+export async function encodeVideo(rawPath: string, outPath: string, quality: VideoQuality, codec: VideoCodec): Promise<CommandResult> {
 	const vf = `${scaleFilter(VIDEO_PROFILES[quality])},fps=1`;
 	return runFfmpeg([
 		'-hide_banner',
@@ -195,6 +196,18 @@ export async function probeVideo(videoPath: string): Promise<{ width?: number; h
 	], true);
 	const seconds = Number(duration.stdout?.trim() ?? '');
 	return { ...size, duration: Number.isFinite(seconds) && seconds > 0 ? seconds : undefined };
+}
+
+/** 音频产物的时长（原样传输，不转码）；ffprobe 不可用或读不到就留空，不阻断发送 */
+export async function probeAudio(audioPath: string): Promise<{ duration?: number }> {
+	const bin = resolveFfprobe();
+	if (!bin) return {};
+	const result = await runBinary(bin, [
+		'-v', 'error', '-show_entries', 'format=duration',
+		'-of', 'default=noprint_wrappers=1:nokey=1', audioPath,
+	], true);
+	const seconds = Number(result.stdout?.trim() ?? '');
+	return Number.isFinite(seconds) && seconds > 0 ? { duration: seconds } : {};
 }
 
 // #endregion

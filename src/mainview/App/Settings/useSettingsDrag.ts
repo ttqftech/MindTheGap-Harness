@@ -1,7 +1,7 @@
 import { state, actions } from '@mainview/stores';
 
 /* ==========================================================================
-   设置面板的拖拽拉出（标题栏品牌区 / 面板上的拖拽手柄共用）
+   设置面板的拖拽拉出（标题栏品牌区 / 面板表面共用）
 
    ⚠️ 这个文件只做一件事：把鼠标位移换算成 0~1 的**进度**写进 store。
    位移（transform）、遮罩浓度、可见性全部由 Settings 自己从进度派生 ——
@@ -36,10 +36,12 @@ export function setSettingsTravelMeasure(measure: () => number) {
 	measureTravel = measure;
 }
 
-/** 品牌区 / 手柄按下：开始拖拽（顺带 preventDefault，避免选中文字或触发窗口原生拖拽） */
-export function startSettingsDrag(e: MouseEvent) {
-	e.preventDefault();
-
+/**
+ * 品牌区 / 面板表面按下：开始拖拽。
+ * toggleOnClick = true（标题栏品牌区）：死区内的点击 = 切换开合；
+ * false（面板整块）：点击只是点了一下内容，不切换、也不打断正在进行的开合动画。
+ */
+export function startSettingsDrag(e: MouseEvent, toggleOnClick = true) {
 	const startY = e.clientY;
 	const startTime = performance.now();
 	// 起点进度：拖拽是在它基础上做增量，所以按住时开没开都不影响手感
@@ -51,6 +53,11 @@ export function startSettingsDrag(e: MouseEvent) {
 	let velocity = 0;
 
 	const onMouseMove = (ev: MouseEvent) => {
+		// 真拖起来才拦默认行为：mousedown 就 preventDefault 会吃掉面板里的选字与点击
+		if (Math.abs(ev.clientY - startY) > DEAD_ZONE) {
+			ev.preventDefault();
+			window.getSelection()?.removeAllRanges();
+		}
 		lastY = ev.clientY;
 		const travel = measureTravel() || window.innerHeight;
 		const progress = startProgress + (ev.clientY - startY) / travel;
@@ -68,9 +75,12 @@ export function startSettingsDrag(e: MouseEvent) {
 
 		// 开还是关只由「进度 + 动量投影」决定：
 		// - 拖拽：当前进度 + 速度投影，看落点在上半边（收回）还是下半边（展开）
-		// - 点击（位移在死区内）：进度取反 —— 不足一半就补满、过半就收回，也就是「切换」
-		const progress = state.ui.settingsProgress;
+		// - 点击（位移在死区内，仅品牌区）：进度取反 —— 不足一半就补满、过半就收回，也就是「切换」
 		const dragged = Math.abs(lastY - startY) > DEAD_ZONE;
+		// 面板表面的单击：不切换、也不打断正在进行的开合动画
+		if (!dragged && !toggleOnClick) return;
+
+		const progress = state.ui.settingsProgress;
 		const still = performance.now() - lastTime > VELOCITY_STALE_MS;
 		const projected = progress + (still ? 0 : velocity * FLICK_PROJECT_MS);
 		const target = dragged ? projected >= PROGRESS_THRESHOLD : progress < PROGRESS_THRESHOLD;

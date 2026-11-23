@@ -49,10 +49,21 @@ export function MediaTab() {
 						/>
 					</div>
 				</div>
-				<For each={VIDEO_QUALITY_OPTIONS}>{(option) => (
-					<div class={common.mediaOptionDesc}>{option.label} · {option.desc}</div>
-				)}</For>
+			<For each={VIDEO_QUALITY_OPTIONS}>{(option) => (
+				<div class={common.mediaOptionDesc}>{option.label} · {option.desc}</div>
+			)}</For>
+		</div>
+
+		<div class={common.settingGroup}>
+			<div class={common['settingGroup-label']}>音频输入</div>
+			<div class={common['settingGroup-desc']}>音频不区分质量档位：token 只跟时长走（约 10 token/s），压缩省不了钱，因此原样传输、不重编码。这里没有可调项。</div>
+			<div class={common.settingRow}>
+				<div class={common.label}>
+					<span class={common.title}>内容块格式</span>
+					<span class={common.desc}>各家的音频块写法不一致且无法通用，所以不再自动探测：按模型在「模型」页选「支持音频输入」与接口（input_audio / audio_url）</span>
+				</div>
 			</div>
-		</>
-	);
+		</div>
+	</>
+);
 }
