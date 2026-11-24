@@ -15,7 +15,7 @@ import { ensureMedia, getAttachmentUrl, type MediaParams } from '@mainview/bridg
 import { showMsgbox } from '@mainview/bridges/ffboxBridge';
 import {
 	IMAGE_QUALITY_OPTIONS, VIDEO_CODEC_OPTIONS, VIDEO_QUALITY_OPTIONS,
-	type ImageQuality, type LlmAudioRef, type LlmImageRef, type LlmVideoRef, type VideoCodec, type VideoQuality,
+	type ImageQuality, type LlmAttachmentRef, type VideoCodec, type VideoQuality,
 } from '@shared/agent';
 
 export interface MediaPreviewOptions {
@@ -44,32 +44,24 @@ function fmtSize(bytes?: number): string {
 }
 
 /** 压缩效果说明：尺寸 / 体积 / 时长 / 编码 / 预估 token / 是否命中缓存 */
-function describeResult(
-	kind: 'image' | 'video' | 'audio',
-	image: LlmImageRef | undefined,
-	video: LlmVideoRef | undefined,
-	audio: LlmAudioRef | undefined,
-	cached: boolean | undefined,
-): string {
-	const target = image ?? video ?? audio;
-	if (!target) return '';
+function describeResult(attachment: LlmAttachmentRef | undefined, cached: boolean | undefined): string {
+	if (!attachment) return '';
 	const parts: string[] = [];
-	if (image?.width && image.height) parts.push(`${image.width} × ${image.height}`);
-	if (video?.width && video.height) parts.push(`${video.width} × ${video.height}`);
-	const size = fmtSize(target.size);
+	if (attachment.kind !== 'audio' && attachment.width && attachment.height) parts.push(`${attachment.width} × ${attachment.height}`);
+	const size = fmtSize(attachment.size);
 	if (size) parts.push(size);
-	if (kind === 'image' && image) {
-		const option = IMAGE_QUALITY_OPTIONS.find((o) => o.value === image.quality);
-		if (option && image.quality !== 'original') parts.push(`预估 ${image.quality === 'low' ? 300 : 2000} token`);
-	} else if (video) {
+	if (attachment.kind === 'image') {
+		const option = IMAGE_QUALITY_OPTIONS.find((o) => o.value === attachment.quality);
+		if (option && attachment.quality !== 'original') parts.push(`预估 ${attachment.quality === 'low' ? 300 : 2000} token`);
+	} else if (attachment.kind === 'video') {
 		parts.push('1fps');
-		if (video.duration) parts.push(`${video.duration.toFixed(1)} 秒`);
-		parts.push(VIDEO_CODEC_OPTIONS.find((o) => o.value === video.codec)?.label ?? video.codec);
-	} else if (audio) {
-		parts.push(`${audio.format.toUpperCase()} · 原样传输`);
-		if (audio.duration) parts.push(`${audio.duration.toFixed(1)} 秒 · 约 ${Math.round(audio.duration * 10)} token`);
+		if (attachment.duration) parts.push(`${attachment.duration.toFixed(1)} 秒`);
+		parts.push(VIDEO_CODEC_OPTIONS.find((o) => o.value === attachment.codec)?.label ?? attachment.codec);
+	} else {
+		parts.push(`${attachment.format.toUpperCase()} · 原样传输`);
+		if (attachment.duration) parts.push(`${attachment.duration.toFixed(1)} 秒 · 约 ${Math.round(attachment.duration * 10)} token`);
 	}
-	parts.push(cached ? '已命中缓存（未重新传输）' : kind === 'audio' ? '本次已完成接收' : '本次已完成转码');
+	parts.push(cached ? '已命中缓存（未重新传输）' : attachment.kind === 'audio' ? '本次已完成接收' : '本次已完成转码');
 	return parts.join(' · ');
 }
 
@@ -115,7 +107,7 @@ export function showMediaPreviewMsgbox(options: MediaPreviewOptions): void {
 			refresh();
 			return;
 		}
-		const target = result.image ?? result.video ?? result.audio;
+		const target = result.attachment;
 		if (!target) {
 			state.phase = 'error';
 			state.message = '后端没有返回预览产物';
@@ -124,7 +116,7 @@ export function showMediaPreviewMsgbox(options: MediaPreviewOptions): void {
 		}
 		state.phase = 'ready';
 		state.url = withCacheBuster(getAttachmentUrl(options.conversationId, target.file));
-		state.info = describeResult(options.kind, result.image, result.video, result.audio, result.cached);
+		state.info = describeResult(target, result.cached);
 		refresh();
 	};
 

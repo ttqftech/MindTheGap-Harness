@@ -13,7 +13,7 @@
 
 import { createEffect, createMemo, createSignal, For, Show, onCleanup } from 'solid-js';
 import { FFBoxPopup, type MenuItem } from 'ffbox-ui';
-import type { Folder, ImageQuality, LlmAudioRef, LlmImageRef, LlmVideoRef, MediaPrepareRequest, ModelConfig, ModeParamControl, ParamValue, VideoCodec, VideoQuality } from '@shared/agent';
+import type { Folder, ImageQuality, LlmAttachmentRef, MediaPrepareRequest, ModelConfig, ModeParamControl, ParamValue, VideoCodec, VideoQuality } from '@shared/agent';
 import { DEFAULT_THINKING_PARAM, DRAFT_MEDIA_CONVERSATION_ID } from '@shared/agent';
 import { findOption, resolveModeParams, sameParamValue } from '@shared/modeParams';
 import { state as appState, actions, getActiveConversation, getProviderById, loadConversationCtx, refreshConversationMeta, getOverlay, getRunError, getStreamTick } from '@mainview/stores';
@@ -775,9 +775,8 @@ export default function ChatView() {
 		 * 只有后端说 needUpload 才 POST 原始字节，且接口要等转码完成才返回。
 		 * ⚠️ 不能传本地路径：前端连的可能是另一台机器上的 Service（保留远程连接能力）。
 		 */
-		const imageRefs: LlmImageRef[] = [];
-		const videoRefs: LlmVideoRef[] = [];
-		const audioRefs: LlmAudioRef[] = [];
+		// ⭐ 按待发送队列的顺序 push，数组顺序就是用户在输入框里的添加顺序（可混排），后端照此铺开
+		const attachmentRefs: LlmAttachmentRef[] = [];
 		if (media.length) {
 			setUploading(true);
 			try {
@@ -801,11 +800,7 @@ export default function ChatView() {
 						void alertMsgbox('媒体准备失败', `${item.name}：${result.error ?? '未知错误'}`);
 						return;	// 输入文本与待发送媒体都保留，让用户重试
 					}
-					// ⭐ order 记的是**这条消息里的附件原始顺序**（图片 / 视频 / 音频共用一个序号）：
-					// 混排时 wire 层要按它铺开，不能按类型重排
-					if (item.kind === 'image' && result.image) imageRefs.push({ ...result.image, order: i });
-					if (item.kind === 'video' && result.video) videoRefs.push({ ...result.video, order: i });
-					if (item.kind === 'audio' && result.audio) audioRefs.push({ ...result.audio, order: i });
+					if (result.attachment) attachmentRefs.push(result.attachment);
 				}
 			} finally {
 				setUploading(false);
@@ -826,9 +821,7 @@ export default function ChatView() {
 			modeId: appState.chatConfig.modeId,
 			runningDir,
 			model: modelConfig,
-			images: imageRefs,
-			videos: videoRefs,
-			audios: audioRefs,
+			attachments: attachmentRefs,
 			params: runParams(),
 			chatConfig: appState.chatConfig,	// 本轮生效的聊天配置随 run 一起提交，后端固化进该会话的 ctx.json
 		});

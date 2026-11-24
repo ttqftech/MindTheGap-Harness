@@ -233,25 +233,36 @@ export interface ModeSummary {
 
 // #region 媒体输入（图片 / 视频 / 音频）
 
+/** 附件类型：`kind` 决定 wire 层用哪种内容块 */
+export type MediaKind = 'image' | 'video' | 'audio';
+
+/**
+ * 图片 / 视频 / 音频共有的引用字段。
+ * 产物已经在会话附件目录里，`base64` 只在真正发请求时由 runner 现读（不进 ctx.json）。
+ */
+interface LlmAttachmentBase {
+	kind: MediaKind;
+	name: string;	// 原始文件名（聊天框与附件清单里都用它指代这份附件）
+	mime: string;
+	file: string;	// conversations/<id>/attachments/ 内的产物文件名
+	size?: number;	// 产物字节数
+	base64?: string;
+}
+
 /**
  * - OpenAI Chat：`image_url.url` 可以是 `data:image/png;base64,...`
  * - OpenAI Responses：`input_image.image_url` 同上
  * - Anthropic：`{ type:'image', source:{ type:'base64', media_type, data } }`
  */
-export interface LlmImageRef {
-	name: string;	// 原始文件名（聊天框里用它指代这张图）
-	mime: string;	// image/png、image/jpeg、image/webp、image/gif
-	file: string;	// conversations/<id>/attachments/ 内的文件名，真正发给模型时由 runner 读成 `base64` 再交给 llm 层
-	size?: number;	// 产物字节数
-	base64?: string;
+export interface LlmImageRef extends LlmAttachmentBase {
+	kind: 'image';
 	quality?: ImageQuality;	// 压缩档位（老附件没有这个字段 = 未经过重编码）
 	width?: number;
 	height?: number;
-	order?: number;	// 在**这条用户消息**里的原始位置（0 起，图片 / 视频 / 音频共用一个序号）；老数据没有，wire 层按「图 → 视频 → 音频」兜底
 }
 
 export type ImageQuality = 'low' | 'normal' | 'original';	// 图片压缩档位：低清 = 1/4 宽高 + 长边 512（≈300 token）；普通 = 1/2 宽高 + 长边 1536（≈2000 token）；原图 = 不重编码
-export type VideoQuality = 'low' | 'normal' | 'high';	// 视频压缩档位：低清 = 1/4 + 长边 480；普通 = 1/2 + 长边 1280；高清 = 长边 1920；统一按 1fps 重编码
+export type VideoQuality = 'low' | 'normal' | 'high';	// 视频压缩档位：低清 = 1/4 + 长边 480（≈200 token/s）；普通 = 1/2 + 长边 960（≈600 token/s）；高清 = 长边 1920（≈2000 token/s）；统一按 1fps 重编码
 export type VideoCodec = 'h264' | 'h265' | 'av1' | 'h266';	// 视频编码：h266 只是设置页的彩蛋选项，后端一律拒收（见 service/media.ts）
 
 export const IMAGE_QUALITY_VALUES: ImageQuality[] = ['low', 'normal', 'original'];
@@ -285,7 +296,7 @@ export const IMAGE_QUALITY_OPTIONS: { value: ImageQuality; label: string; desc: 
 
 export const VIDEO_QUALITY_OPTIONS: { value: VideoQuality; label: string; desc: string }[] = [
 	{ value: 'low', label: '低清', desc: '四分之一宽高 · 长边 ≤ 480 · 1fps' },
-	{ value: 'normal', label: '普通', desc: '二分之一宽高 · 长边 ≤ 1280 · 1fps' },
+	{ value: 'normal', label: '普通', desc: '二分之一宽高 · 长边 ≤ 960 · 1fps' },
 	{ value: 'high', label: '高清', desc: '长边 ≤ 1920 · 1fps' },
 ];
 
@@ -310,39 +321,36 @@ export const AUDIO_API_OPTIONS: { value: AudioApi; label: string; desc: string }
 ];
 
 /**
- * 一段视频在会话附件目录里的引用。
+ * 一段视频在会话附件目录里的引用（`mime` 固定 video/mp4）。
  * `file` 是按当前档位 + 编码转码后的 mp4 产物：前端 `<video>` 直接读它，
  * 模型也直接收它本体（`video_url` + base64），**不抽帧、不降级成图片**。
  */
-export interface LlmVideoRef {
-	name: string;
-	mime: string;	// video/mp4（转码产物统一 mp4）
-	file: string;
-	size?: number;
+export interface LlmVideoRef extends LlmAttachmentBase {
+	kind: 'video';
 	quality: VideoQuality;
 	codec: VideoCodec;
 	width?: number;
 	height?: number;
 	duration?: number;	// 秒
-	base64?: string;	// 请求时由 runner 现读，不进 ctx.json
-	order?: number;	// 同一条消息里的原始位置（见 LlmImageRef.order）
 }
 
 /**
- * 一段音频在会话附件目录里的引用。
+ * 一段音频在会话附件目录里的引用（`mime` 为原始音频 mime）。
  * ⭐ 音频不区分质量档位（token 只跟时长走，≈10 token/s），**原样传输、不压缩**，
  * 所以产物就是 `raw-<hash>.<ext>` 本身，后端一次 ffmpeg 都不调。
  */
-export interface LlmAudioRef {
-	name: string;
-	mime: string;	// 原始音频 mime（audio/mpeg / audio/wav / audio/flac …）
-	file: string;
-	size?: number;
+export interface LlmAudioRef extends LlmAttachmentBase {
+	kind: 'audio';
 	format: string;	// 扩展名去点（mp3 / wav / m4a / flac / ogg …）；OpenAI 官方 input_audio 的 format 只认 wav / mp3
 	duration?: number;	// 秒
-	base64?: string;	// 请求时由 runner 现读，不进 ctx.json
-	order?: number;	// 同一条消息里的原始位置（见 LlmImageRef.order）
 }
+
+/**
+ * 一条用户消息附带的全部附件。
+ * ⭐ **数组顺序就是用户在输入框里添加的顺序**，wire 层照此铺开、附件清单的序号也照此编号 ——
+ * 所以不需要 `order` 字段，也不需要把图片 / 视频 / 音频拆成三个数组再拼回来。
+ */
+export type LlmAttachmentRef = LlmImageRef | LlmVideoRef | LlmAudioRef;
 
 /** 前端 prepare 时告诉后端「我要哪个产物」——后端据此拼文件名判重 */
 export interface MediaPrepareRequest {
@@ -360,9 +368,7 @@ export interface MediaPrepareResult {
 	error?: string;
 	needUpload?: boolean;
 	cached?: boolean;
-	image?: LlmImageRef;
-	video?: LlmVideoRef;
-	audio?: LlmAudioRef;
+	attachment?: LlmAttachmentRef;
 }
 
 // #endregion
@@ -384,9 +390,7 @@ export interface LlmMessage {
 	toolCalls?: LlmToolCall[];
 	toolCallId?: string;
 	reasoningContent?: string;	// 思考模型的推理内容，多轮工具调用时必须回传
-	images?: LlmImageRef[];	// 用户消息附带的图片（仅 `supportsImage` 的模型会真正发出去）
-	videos?: LlmVideoRef[];	// 用户消息附带的视频（已经转码完成）；只有 supportsVideo 的模型才会带 base64 发给上游
-	audios?: LlmAudioRef[];	// 用户消息附带的音频（原样字节）；wire 形状读模型的 audioApi
+	attachments?: LlmAttachmentRef[];
 }
 
 export interface LlmTool {
@@ -658,7 +662,7 @@ export type AgentStreamEvent = StreamEventBase & (
 	| { type: 'reasoning'; agentInstanceId: string; messageId: string; chunk: string }
 	| { type: 'tool_start'; agentInstanceId: string; messageId: string; callId: string; toolName: string; args: unknown; reason: string }
 	| { type: 'tool_end'; agentInstanceId: string; messageId: string; callId: string; toolName: string; result: ToolResult }
-	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; images?: LlmImageRef[]; videos?: LlmVideoRef[]; audios?: LlmAudioRef[] }
+	| { type: 'agent_start'; agentInstanceId: string; messageId: string; parentAgentInstanceId?: string; agentId: string; agentName: string; depth: number; task?: string; attachments?: LlmAttachmentRef[] }
 	| { type: 'agent_end'; agentInstanceId: string; status: 'succeeded' | 'failed' | 'interrupted'; summary?: string }
 	| { type: 'client_tool_call'; agentInstanceId: string; callId: string; toolName: string; args: unknown; needResponse: boolean }	// 需要客户端响应的工具（ask_user）。参考 langchain-aliyun 的 client_tool_call
 	| { type: 'reflection_start'; agentInstanceId: string; messageId: string; remaining: number }
@@ -724,13 +728,11 @@ export interface AgentRunRequest {
 	runningDir?: string;
 	model: ModelConfig;
 	/**
-	 * 用户本轮附带的图片（**已经是上传到服务器的附件引用**，不是本地路径）。
-	 * 前端先 `POST /api/conversations/:id/attachments` 把字节传进会话附件目录，
-	 * 这里只带 `{ name, mime, file, size }`；ctx 里只存引用，请求时才读成 base64。
+	 * 用户本轮附带的附件（**已经是上传到服务器的附件引用**，不是本地路径）。
+	 * 前端先 `POST /api/conversations/:id/media/prepare` 判重、缺字节才 upload，
+	 * 这里只带 `{ kind, name, mime, file, size }`；ctx 里只存引用，请求时才读成 base64。
 	 */
-	images?: LlmImageRef[];
-	videos?: LlmVideoRef[];
-	audios?: LlmAudioRef[];
+	attachments?: LlmAttachmentRef[];
 	/**
 	 * Composer 下方动态表单的选择（`{ [controlKey]: 选项 value }`）。
 	 * 后端用它覆盖 `mode.json` 的 `params` 默认值；不传 = 全用默认。

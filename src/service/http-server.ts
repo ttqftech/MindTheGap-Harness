@@ -173,7 +173,7 @@ async function handleAgentRun(params: AgentRunRequest) {
 	activeRunners.set(conversationId, runner);
 
 	runner
-		.run(params.userMessage, params.images, params.videos, params.audios)
+		.run(params.userMessage, params.attachments)
 		.then(() => runner.waitDone())
 		.then(() => {
 			if (activeRunners.get(conversationId) === runner) activeRunners.delete(conversationId);

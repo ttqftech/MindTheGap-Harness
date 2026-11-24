@@ -11,7 +11,7 @@
    从 agent 目录迁入本目录（本次重构唯一的目录结构变化）。
    ========================================================================== */
 
-import type { AudioApi, LlmAudioRef, LlmImageRef, LlmMessage, LlmTool, LlmToolCall, LlmVideoRef, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
+import type { AudioApi, LlmAttachmentRef, LlmAudioRef, LlmImageRef, LlmMessage, LlmTool, LlmToolCall, LlmVideoRef, MediaKind, ModelConfig, ModelTestResult, TokenUsage, LlmPurpose, LlmTriggerReason, LlmRequestRecord } from '@shared/agent';
 import { logMsg, safeParseJson } from '../../shared/utils';
 import { allocateLogId, appendRequestRecord, dumpPayload, getRequestLogOptions } from './requestLog';
 
@@ -180,79 +180,47 @@ function applyThinkingParams(body: Record<string, unknown>, config: ModelConfig)
 	setParamByPath(body, thinking.param, coerceParamValue(thinking.value));
 }
 
-/** 真正能进 wire 的图片：模型勾了 supportsImage + runner 已读出 base64 */
-function inputImages(msg: LlmMessage, config: ModelConfig): LlmImageRef[] {
-	if (!config?.supportsImage) return [];
-	return (msg.images ?? []).filter((img) => !!img.base64);
+/** 模型有没有开这类附件的能力（与 runner 的开关同源） */
+function attachmentAllowed(kind: MediaKind, config: ModelConfig): boolean {
+	if (kind === 'image') return !!config?.supportsImage;
+	if (kind === 'video') return !!config?.supportsVideo;
+	return !!config?.supportsAudio;
 }
-
-/** 视频同理：supportsVideo + 转码产物已读成 base64 */
-function inputVideos(msg: LlmMessage, config: ModelConfig): LlmVideoRef[] {
-	if (!config?.supportsVideo) return [];
-	return (msg.videos ?? []).filter((video) => !!video.base64);
-}
-
-/** 音频同理：supportsAudio + 原样字节已读成 base64（三个入口形状一致，别再单独少一道开关） */
-function inputAudios(msg: LlmMessage, config: ModelConfig): LlmAudioRef[] {
-	if (!config?.supportsAudio) return [];
-	return (msg.audios ?? []).filter((audio) => !!audio.base64);
-}
-
-// #region 附件的原始顺序（混排）
-
-/** 一条用户消息里的一个媒体，带上它的原始位置 */
-type MediaEntry =
-	| { kind: 'image'; order: number; image: LlmImageRef }
-	| { kind: 'video'; order: number; video: LlmVideoRef }
-	| { kind: 'audio'; order: number; audio: LlmAudioRef };
 
 /**
- * ⭐ 把三类媒体按**用户添加时的原始顺序**拼回来。
- *
- * 起因：ctx 里 images / videos / audios 是分开存的，早先 wire 层按「图 → 视频 → 音频」
- * 分组铺开，用户「第 2 个附件」指的是自己发的视频，到了模型那里却排到第 3 个 —— 顺序被悄悄改了。
- * 现在每条 ref 带 `order`（ChatView 发送时按待发送队列的下标写），这里统一按它排序；
- * 老消息没有 `order` 时按「图 → 视频 → 音频」兜底（与历史行为一致，不会打乱老上下文）。
+ * 真正能进 wire 的附件：模型开了对应能力 + runner 已读出 base64。
+ * ⭐ 数组顺序就是用户在输入框里的添加顺序，不需要再看 `order` 之类的位置字段。
  */
-function orderedMedia(images: LlmImageRef[], videos: LlmVideoRef[], audios: LlmAudioRef[]): MediaEntry[] {
-	const FALLBACK = 1_000_000;	// 没有 order 的老数据排在所有有序条目之后，且保持原来的分组次序
-	const entries: MediaEntry[] = [
-		...images.map((image, i) => ({ kind: 'image' as const, order: image.order ?? FALLBACK + i, image })),
-		...videos.map((video, i) => ({ kind: 'video' as const, order: video.order ?? FALLBACK + images.length + i, video })),
-		...audios.map((audio, i) => ({ kind: 'audio' as const, order: audio.order ?? FALLBACK + images.length + videos.length + i, audio })),
-	];
-	return entries.sort((a, b) => a.order - b.order);
+function inputAttachments(msg: LlmMessage, config: ModelConfig): LlmAttachmentRef[] {
+	return (msg.attachments ?? []).filter((attachment) => !!attachment.base64 && attachmentAllowed(attachment.kind, config));
 }
+
+// #region 附件清单
 
 /**
  * 附件的「身份证」：三家协议的媒体块**都没有名字字段**，模型只按出现顺序看到它们。
- * 多资源时用户说「第 2 个附件」或「sun-b.jpg」，没有清单模型只能猜 —— 实测小米 mimo：
- * 无清单时混排（图 / 视频 / 音频 / 图）会把视频和音频都当成图片、顺序也乱；
- * 带清单 4/4 全对（含「第 2 个是视频、第 3 个是音频」）。清单约 40~80 token，仅在有附件时出现。
+ * 清单为模型提供文件名与少量元信息，序号 == parts 里媒体的出现序号。
  */
-function mediaManifest(entries: MediaEntry[]): string {
-	const rows = entries.map((entry, i) => {
+function mediaManifest(attachments: LlmAttachmentRef[]): string {
+	const rows = attachments.map((attachment, i) => {
 		const index = i + 1;
-		if (entry.kind === 'image') {
-			const img = entry.image;
-			return `${index}. image ${img.name}${img.width && img.height ? `(${img.width}×${img.height})` : ''}`;
+		if (attachment.kind === 'image') {
+			return `${index}. image ${attachment.name}${attachment.width && attachment.height ? `(${attachment.width}×${attachment.height})` : ''}`;
 		}
-		if (entry.kind === 'video') {
-			const video = entry.video;
-			const meta = [video.duration ? `${video.duration.toFixed(1)}s` : '', video.codec].filter(Boolean).join(' · ');
-			return `${index}. video ${video.name}${meta ? `(${meta})` : ''}`;
+		if (attachment.kind === 'video') {
+			const meta = [attachment.duration ? `${attachment.duration.toFixed(1)}s` : '', attachment.codec].filter(Boolean).join(' · ');
+			return `${index}. video ${attachment.name}${meta ? `(${meta})` : ''}`;
 		}
-		const audio = entry.audio;
-		const meta = [audio.duration ? `${audio.duration.toFixed(1)}s` : '', audio.format].filter(Boolean).join(' · ');
-		return `${index}. audio ${audio.name}${meta ? `(${meta})` : ''}`;
+		const meta = [attachment.duration ? `${attachment.duration.toFixed(1)}s` : '', attachment.format].filter(Boolean).join(' · ');
+		return `${index}. audio ${attachment.name}${meta ? `(${meta})` : ''}`;
 	});
 	if (!rows.length) return '';
 	return `<attachments>\n${rows.join('\n')}</attachments>`;
 }
 
 /** 用户文本 + 附件清单；没有附件时原样返回，纯文本请求一个字节都不多 */
-function withMediaManifest(text: string, entries: MediaEntry[]): string {
-	const manifest = mediaManifest(entries);
+function withMediaManifest(text: string, attachments: LlmAttachmentRef[]): string {
+	const manifest = mediaManifest(attachments);
 	if (!manifest) return text;
 	return text ? `${text}\n\n${manifest}` : manifest;
 }
@@ -287,13 +255,10 @@ function toVideoDataUrl(video: LlmVideoRef): string {
 }
 
 /** 日志 / dump 里剥掉 base64：一张图 / 一段视频 / 一段音频就是几 MB，留着会把 requestLog 撑爆 */
-function messagesWithoutImageBase64(list: LlmMessage[]): LlmMessage[] {
+function messagesWithoutAttachmentBase64(list: LlmMessage[]): LlmMessage[] {
 	return list.map((msg) => {
-		const images = msg.images?.length ? msg.images.map(({ base64: _base64, ...rest }) => rest) : undefined;
-		const videos = msg.videos?.length ? msg.videos.map(({ base64: _base64, ...rest }) => rest) : undefined;
-		const audios = msg.audios?.length ? msg.audios.map(({ base64: _base64, ...rest }) => rest) : undefined;
-		if (!images && !videos && !audios) return msg;
-		return { ...msg, ...(images ? { images } : {}), ...(videos ? { videos } : {}), ...(audios ? { audios } : {}) };
+		if (!msg.attachments?.length) return msg;
+		return { ...msg, attachments: msg.attachments.map(({ base64: _base64, ...rest }) => rest) };
 	});
 }
 
@@ -441,17 +406,17 @@ async function streamOpenAiChat(
 				}
 				return out;
 			}
-			// 用户消息带图 / 带视频 / 带音频 → content 变 parts 数组；纯文本仍保持字符串（兼容老网关）
-			const media = orderedMedia(inputImages(msg, config), inputVideos(msg, config), inputAudios(msg, config));
-			if (msg.role === 'user' && media.length) {
+			// 用户消息带附件 → content 变 parts 数组；纯文本仍保持字符串（兼容老网关）
+			const attachments = inputAttachments(msg, config);
+			if (msg.role === 'user' && attachments.length) {
 				const parts: Array<Record<string, unknown>> = [];
-				const text = withMediaManifest(msg.content, media);
+				const text = withMediaManifest(msg.content, attachments);
 				if (text) parts.push({ type: 'text', text });
-				// ⭐ 按用户的原始顺序铺开（可混排）；视频发 mp4 本体，音频形状读 audioApi
-				for (const entry of media) {
-					if (entry.kind === 'image') parts.push({ type: 'image_url', image_url: { url: toImageDataUrl(entry.image) } });
-					else if (entry.kind === 'video') parts.push({ type: 'video_url', video_url: { url: toVideoDataUrl(entry.video) } });
-					else parts.push(audioPart(entry.audio, config.audioApi));
+				// ⭐ 数组顺序即用户添加顺序（可混排）；视频发 mp4 本体，音频形状读 audioApi
+				for (const attachment of attachments) {
+					if (attachment.kind === 'image') parts.push({ type: 'image_url', image_url: { url: toImageDataUrl(attachment) } });
+					else if (attachment.kind === 'video') parts.push({ type: 'video_url', video_url: { url: toVideoDataUrl(attachment) } });
+					else parts.push(audioPart(attachment, config.audioApi));
 				}
 				return { role: 'user', content: parts };
 			}
@@ -625,19 +590,19 @@ async function streamOpenAiResponses(
 			inputMsgs.push({ role: 'function_call_output', call_id: m.toolCallId, output: m.content });
 			continue;
 		}
-		// 用户消息带图 → Responses 的 input_image 同样吃 data URL；视频沿用 video_url part，音频按模型的 audioApi
-		const media = orderedMedia(inputImages(m, config), inputVideos(m, config), inputAudios(m, config));
-		if (m.role === 'user' && media.length) {
-			const text = withMediaManifest(m.content, media);
+		// 用户消息带附件 → Responses 的 input_image 同样吃 data URL；视频沿用 video_url part，音频按模型的 audioApi
+		const attachments = inputAttachments(m, config);
+		if (m.role === 'user' && attachments.length) {
+			const text = withMediaManifest(m.content, attachments);
 			inputMsgs.push({
 				role: 'user',
 				content: [
 					...(text ? [{ type: 'input_text', text }] : []),
-					...media.map((entry) => entry.kind === 'image'
-						? { type: 'input_image', image_url: toImageDataUrl(entry.image) }
-						: entry.kind === 'video'
-							? { type: 'video_url', video_url: { url: toVideoDataUrl(entry.video) } }
-							: audioPart(entry.audio, config.audioApi)),
+					...attachments.map((attachment) => attachment.kind === 'image'
+						? { type: 'input_image', image_url: toImageDataUrl(attachment) }
+						: attachment.kind === 'video'
+							? { type: 'video_url', video_url: { url: toVideoDataUrl(attachment) } }
+							: audioPart(attachment, config.audioApi)),
 				],
 			});
 			continue;
@@ -758,20 +723,19 @@ async function streamAnthropic(
 			});
 			continue;
 		}
-		// 用户消息带图 → Anthropic 的 base64 image block（media_type 必须写对）；视频 / 音频用同形 block
+		// 用户消息带附件 → Anthropic 的 base64 block（media_type 必须写对）；视频 / 音频用同形 block
 		// ⚠️ Anthropic 官方只收 text / image / PDF，audio（和 video）block 都不是官方规格，取决于上游网关
-		const media = orderedMedia(inputImages(m, config), inputVideos(m, config), inputAudios(m, config));
-		if (m.role === 'user' && media.length) {
-			const text = withMediaManifest(m.content, media);
+		const attachments = inputAttachments(m, config);
+		if (m.role === 'user' && attachments.length) {
+			const text = withMediaManifest(m.content, attachments);
 			convMsgs.push({
 				role: 'user',
 				content: [
 					...(text ? [{ type: 'text', text }] : []),
-					...media.map((entry) => entry.kind === 'image'
-						? { type: 'image', source: { type: 'base64', media_type: entry.image.mime, data: entry.image.base64 } }
-						: entry.kind === 'video'
-							? { type: 'video', source: { type: 'base64', media_type: entry.video.mime, data: entry.video.base64 } }
-							: { type: 'audio', source: { type: 'base64', media_type: entry.audio.mime, data: entry.audio.base64 } }),
+					...attachments.map((attachment) => ({
+						type: attachment.kind,
+						source: { type: 'base64', media_type: attachment.mime, data: attachment.base64 },
+					})),
 				],
 			});
 			continue;
@@ -1074,17 +1038,10 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 	// #endregion
 
 	logMsg(`[model] 将调用 LLM 接口`, config, messages, tools);
-	// ⭐ 把「真正发出去的媒体顺序」打出来：ctx / requestLog 存的是 images / videos / audios 三个数组，
-	// 看着永远像按类型分组，曾被误判成「wire 也重排了」。这里按 order 排序后打一行，排查时直接看它。
-	const wireOrder = messages
-		.map((msg) => orderedMedia(inputImages(msg, config), inputVideos(msg, config), inputAudios(msg, config)))
-		.filter((list) => list.length)
-		.map((list) => list.map((entry) => `${entry.kind}:${entry.kind === 'image' ? entry.image.name : entry.kind === 'video' ? entry.video.name : entry.audio.name}`).join(' → '));
-	if (wireOrder.length) logMsg('[model] wire 媒体顺序（清单编号与此一致）', wireOrder.join(' ｜ '));
 	// 清单本身默认不打（每条带媒体的消息都会刷一屏）；排查「清单有没有到上游」时置 MTG_LOG_MANIFEST=1
 	if (process.env.MTG_LOG_MANIFEST === '1') {
 		const manifests = messages
-			.map((msg) => mediaManifest(orderedMedia(inputImages(msg, config), inputVideos(msg, config), inputAudios(msg, config))))
+			.map((msg) => mediaManifest(inputAttachments(msg, config)))
 			.filter((text) => !!text);
 		if (manifests.length) logMsg('[model] 拼进用户文本的附件清单', manifests.join('\n---\n'));
 	}
@@ -1139,7 +1096,7 @@ export async function callLlm(req: LlmRequest, meta: LlmCallMeta): Promise<LlmCa
 		if (signal) signal.removeEventListener('abort', onExternalAbort);
 		const endedAt = Date.now();
 		const logOptions = getRequestLogOptions();
-		const loggedMessages = messagesWithoutImageBase64(messages);	// 日志只保留图片名（不含 base64），避免 requestLog 被几张图撑成几十 MB
+		const loggedMessages = messagesWithoutAttachmentBase64(messages);	// 日志只保留附件名（不含 base64），避免 requestLog 被几张图撑成几十 MB
 		const record: LlmRequestRecord = {
 			seq,
 			logId,

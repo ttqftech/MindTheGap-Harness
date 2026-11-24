@@ -15,10 +15,24 @@
       末尾天然留着非 uiOnly 条目，跑完很久的历史会话也会被一直标成 ≈。
    ========================================================================== */
 
-import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, UsageEntry } from '@shared/agent';
+import type { AgentCtx, AgentInstance, AgentInstanceMessage, AgentInstanceStatus, ImageQuality, UsageEntry, VideoQuality } from '@shared/agent';
 
-/** 一张图片在上下文里大致占的 token（OpenAI / Anthropic 高清图基本落在这个量级） */
-const IMAGE_TOKENS = 1024;
+/** 一张图片在上下文里大致占的 token：按压缩档位折算；老附件没有 quality（= 未重编码）按原图兜底 */
+const IMAGE_TOKENS: Record<ImageQuality, number> = {
+	low: 300,
+	normal: 2000,
+	original: 2000,
+};
+
+/** 视频每秒大致占的 token（统一 1fps 重编码，按档位） */
+const VIDEO_TOKENS_PER_SECOND: Record<VideoQuality, number> = {
+	low: 200,
+	normal: 600,
+	high: 2000,
+};
+
+/** 音频每秒大致占的 token（不压缩，token 只跟时长走） */
+const AUDIO_TOKENS_PER_SECOND = 10;
 
 /**
  * 估算文本 token（适配 o200k_base / gpt-5-codex，仅前端预估算进度条，非精确值、不可计费）
@@ -102,8 +116,16 @@ function messageTokens(msg: AgentInstanceMessage): number {
 	for (const call of msg.toolCalls ?? []) {
 		tokens += estimateTextTokens(call.function.name) + estimateTextTokens(call.function.arguments);
 	}
-	// 图片不计 base64 字符数（那会失真），按张折算
-	tokens += (msg.images?.length ?? 0) * IMAGE_TOKENS;
+	// 附件不计 base64 字符数（那会失真）：图片按压缩档位折算，视频 / 音频按时长 × 每秒 token 折算
+	for (const attachment of msg.attachments ?? []) {
+		if (attachment.kind === 'image') {
+			tokens += IMAGE_TOKENS[attachment.quality ?? 'original'];
+		} else if (attachment.kind === 'video') {
+			tokens += (attachment.duration ?? 0) * VIDEO_TOKENS_PER_SECOND[attachment.quality];
+		} else if (attachment.kind === 'audio') {
+			tokens += (attachment.duration ?? 0) * AUDIO_TOKENS_PER_SECOND;
+		}
+	}
 	return tokens;
 }
 

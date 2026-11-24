@@ -38,7 +38,7 @@ export const IMAGE_PROFILES: Record<ImageQuality, ImageProfile> = {
 
 export const VIDEO_PROFILES: Record<VideoQuality, VideoProfile> = {
 	low: { scale: 0.25, maxEdge: 480, label: '低清', desc: '四分之一宽高 · 长边 ≤ 480 · 1fps' },
-	normal: { scale: 0.5, maxEdge: 1280, label: '普通', desc: '二分之一宽高 · 长边 ≤ 1280 · 1fps' },
+	normal: { scale: 0.5, maxEdge: 960, label: '普通', desc: '二分之一宽高 · 长边 ≤ 960 · 1fps' },
 	high: { scale: 1, maxEdge: 1920, label: '高清', desc: '长边 ≤ 1920 · 1fps' },
 };
 

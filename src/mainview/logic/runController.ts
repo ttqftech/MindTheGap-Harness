@@ -31,7 +31,7 @@ import {
 	markConversationUnread,
 } from '@mainview/stores';
 import type { OverlayCtx } from '@mainview/logic/projection';
-import type { AgentInstanceMessage, AgentStreamEvent, ChatConfig, LlmAudioRef, LlmImageRef, LlmVideoRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
+import type { AgentInstanceMessage, AgentStreamEvent, ChatConfig, LlmAttachmentRef, ModelConfig, ParamValue, ToolResult, UsageEntry } from '@shared/agent';
 
 // #region 订阅集合
 
@@ -182,9 +182,7 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 			const existing = messages.find((m) => m.id === event.messageId);
 			if (existing) {
 				existing.content = content;
-				existing.images = event.images;
-				existing.videos = event.videos;
-				existing.audios = event.audios;
+				existing.attachments = event.attachments;
 				existing.updatedAt = event.timestamp;
 			} else {
 				// 发送时已经本地乐观种过一条（`seedUserMessage`），它还没有后端 id ——
@@ -193,12 +191,10 @@ function applyEvent(draft: OverlayCtx, event: AgentStreamEvent): void {
 				if (seeded) {
 					seeded.id = event.messageId;
 					seeded.content = content;
-					seeded.images = event.images;
-					seeded.videos = event.videos;
-					seeded.audios = event.audios;
+					seeded.attachments = event.attachments;
 					seeded.updatedAt = event.timestamp;
 				} else {
-					messages.push({ id: event.messageId, role: 'user', content, images: event.images, videos: event.videos, audios: event.audios, updatedAt: event.timestamp });
+					messages.push({ id: event.messageId, role: 'user', content, attachments: event.attachments, updatedAt: event.timestamp });
 				}
 			}
 			break;
@@ -458,13 +454,9 @@ export interface StartRunParams {
 	modeId: string;
 	runningDir?: string;
 	model: ModelConfig;
-	images?: LlmImageRef[];
-	videos?: LlmVideoRef[];
-	audios?: LlmAudioRef[];
-	/** Composer 下方动态表单的选择（覆盖 mode.json 的 params 默认值），见 shared/modeParams.ts */
-	params?: Record<string, ParamValue>;
-	/** 本轮生效的聊天配置，后端开跑时固化进该会话的 ctx.json */
-	chatConfig?: ChatConfig;
+	attachments?: LlmAttachmentRef[];
+	params?: Record<string, ParamValue>;	// Composer 下方动态表单的选择（覆盖 mode.json 的 params 默认值），见 shared/modeParams.ts
+	chatConfig?: ChatConfig;	// 本轮生效的聊天配置，后端开跑时固化进该会话的 ctx.json
 }
 
 /**
@@ -485,9 +477,7 @@ export async function startRun(params: StartRunParams): Promise<void> {
 			modeId: params.modeId,
 			runningDir: params.runningDir,
 			model: params.model,
-			images: params.images,
-			videos: params.videos,
-			audios: params.audios,
+			attachments: params.attachments,
 			params: params.params,
 			chatConfig: params.chatConfig,
 		});

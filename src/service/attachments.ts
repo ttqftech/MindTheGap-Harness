@@ -15,7 +15,7 @@
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import { basename, extname, join } from 'node:path';
-import type { ImageQuality, LlmAudioRef, LlmImageRef, LlmVideoRef, MediaPrepareRequest, MediaPrepareResult, VideoCodec, VideoQuality } from '../shared/agent';
+import type { ImageQuality, LlmAudioRef, LlmImageRef, LlmVideoRef, MediaKind, MediaPrepareRequest, MediaPrepareResult, VideoCodec, VideoQuality } from '../shared/agent';
 import { DRAFT_MEDIA_CONVERSATION_ID, IMAGE_QUALITY_VALUES, VIDEO_CODEC_VALUES, VIDEO_QUALITY_VALUES } from '../shared/agent';
 import { conversationDir, mediaCacheDir } from './storage';
 import { encodeImage, encodeVideo, probeAudio, probeSize, probeVideo } from './media';
@@ -83,8 +83,6 @@ const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.o
 export const MAX_IMAGE_BYTES = 20 * 1000 * 1000;	// 单张图片上限（超过直接拒收，避免一次上传把会话目录撑爆）
 export const MAX_VIDEO_BYTES = 500 * 1000 * 1000;	// 视频上限：转码后再存，原始文件只是换档位时的素材
 export const MAX_AUDIO_BYTES = 100 * 1000 * 1000;	// 音频上限：原样存，10 分钟 44.1kHz 立体声 WAV 约 100MB
-
-export type MediaKind = 'image' | 'video' | 'audio';
 
 interface MediaTarget {
 	kind: MediaKind;
@@ -215,7 +213,7 @@ function readSidecar(conversationId: string, file: string): MediaPrepareResult |
 	try {
 		const raw = readFileSync(attachmentPath(conversationId, file), 'utf-8');
 		const parsed = JSON.parse(raw) as MediaPrepareResult;
-		return parsed.image || parsed.video || parsed.audio ? parsed : null;
+		return parsed.attachment ? parsed : null;
 	} catch {
 		return null;
 	}
@@ -227,7 +225,7 @@ function writeSidecar(conversationId: string, file: string, result: MediaPrepare
 
 /** sidecar 里的引用所指的产物是否还在 */
 function productIntact(conversationId: string, result: MediaPrepareResult): boolean {
-	const file = result.image?.file ?? result.video?.file ?? result.audio?.file;
+	const file = result.attachment?.file;
 	return !!file && attachmentExists(conversationId, file);
 }
 
@@ -261,6 +259,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 			// 原图不重编码：产物就是 raw 本身
 			const size = await probeSize(rawPath);
 			const image: LlmImageRef = {
+				kind: 'image',
 				name: target.name,
 				mime: target.sourceMime,
 				file: target.rawFile,
@@ -268,7 +267,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 				quality,
 				...size,
 			};
-			const result: MediaPrepareResult = { ok: true, image };
+			const result: MediaPrepareResult = { ok: true, attachment: image };
 			writeSidecar(conversationId, target.sidecarFile, result);
 			return result;
 		}
@@ -276,6 +275,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 		if (!encoded.ok) return { ok: false, error: `图片压缩失败：${encoded.error}` };
 		const size = await probeSize(productPath);
 		const image: LlmImageRef = {
+			kind: 'image',
 			name: target.name,
 			mime: 'image/jpeg',
 			file: target.productFile,
@@ -283,7 +283,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 			quality,
 			...size,
 		};
-		const result: MediaPrepareResult = { ok: true, image };
+		const result: MediaPrepareResult = { ok: true, attachment: image };
 		writeSidecar(conversationId, target.sidecarFile, result);
 		return result;
 	}
@@ -292,6 +292,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 		// ⭐ 原样传输：产物就是 raw 本身，不调 ffmpeg 重编码；只补一个 ffprobe 时长（拿不到也不影响发送）
 		const probe = await probeAudio(rawPath);
 		const audio: LlmAudioRef = {
+			kind: 'audio',
 			name: target.name,
 			mime: target.sourceMime,
 			file: target.rawFile,
@@ -299,7 +300,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 			format: extname(target.rawFile).slice(1).toLowerCase(),
 			...probe,
 		};
-		const result: MediaPrepareResult = { ok: true, audio };
+		const result: MediaPrepareResult = { ok: true, attachment: audio };
 		writeSidecar(conversationId, target.sidecarFile, result);
 		return result;
 	}
@@ -311,6 +312,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 
 	const probe = await probeVideo(productPath);
 	const video: LlmVideoRef = {
+		kind: 'video',
 		name: target.name,
 		mime: 'video/mp4',
 		file: target.productFile,
@@ -319,7 +321,7 @@ async function encodeFromRaw(conversationId: string, target: MediaTarget, rawSiz
 		codec,
 		...probe,
 	};
-	const result: MediaPrepareResult = { ok: true, video };
+	const result: MediaPrepareResult = { ok: true, attachment: video };
 	writeSidecar(conversationId, target.sidecarFile, result);
 	return result;
 }
@@ -335,7 +337,7 @@ function hydrateFromCache(conversationId: string, target: MediaTarget): MediaPre
 	if (existsSync(sidecarPath)) {
 		let cached: MediaPrepareResult | null = null;
 		try { cached = JSON.parse(readFileSync(sidecarPath, 'utf-8')) as MediaPrepareResult; } catch { /* 缓存坏了就当没有 */ }
-		const ref = cached?.image ?? cached?.video ?? cached?.audio;
+		const ref = cached?.attachment;
 		if (cached && ref) {
 			const files = [target.sidecarFile, ref.file];
 			if (files.every((file) => existsSync(join(cacheDir, file)))) {

@@ -6,7 +6,7 @@
  * 所有 Agent 相关操作（会话、设置、运行、流式）全部走此 bridge。
  */
 
-import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ChatConfig, ConversationMeta, ServiceConversation, LoginResult, ModelConfig, ModelTestResult, ModeSummary, ImageQuality, LlmImageRef, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, MediaPrepareRequest, MediaPrepareResult, SettingsPatch, SettingsSnapshot, UserConfig, VideoCodec, VideoQuality } from '@shared/agent';
+import type { AgentRunRequest, AgentCtx, AgentInstance, AgentStreamEvent, AuthInfo, ChatConfig, ConversationMeta, ServiceConversation, LoginResult, ModelConfig, ModelTestResult, ModeSummary, ImageQuality, McpServerConfig, McpServerStatus, McpToolInfo, LlmRequestRecord, MediaPrepareRequest, MediaPrepareResult, SettingsPatch, SettingsSnapshot, UserConfig, VideoCodec, VideoQuality } from '@shared/agent';
 import type { ServiceHealth } from '@shared/buildInfo';
 import { sha256Hex } from '@shared/sha256';
 

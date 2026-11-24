@@ -2,7 +2,7 @@ import { Index, For, Show, Switch, Match, createSignal } from 'solid-js';
 import { useTooltip, type MenuItem } from 'ffbox-ui';
 import type { RenderAgentNode, RenderBlock, RenderLlmBlock, RenderSubBlock, RenderToolSub, RunUsage } from '@mainview/logic/projection';
 import { runOfTurn } from '@mainview/logic/projection';
-import type { UsageEntry, LlmImageRef, LlmVideoRef, LlmAudioRef } from '@shared/agent';
+import type { UsageEntry, LlmAudioRef } from '@shared/agent';
 import { answerAskUser } from '@mainview/logic/runController';
 import { showMenu } from '@mainview/bridges/ffboxBridge';
 import { getAttachmentUrl } from '@mainview/bridges/agentBridge';
@@ -17,21 +17,6 @@ import {
 	truncateWithNote, fmtUsageTriple, USAGE_GLYPH, fmtDuration, fmtClock, fmtSize, parseMcpName,
 } from './shared';
 import styles from './RenderTree.module.css';
-
-/**
- * 用户气泡里的媒体按**添加时的原始顺序**混排。
- * ctx 里 images / videos / audios 是三个数组，直接依次渲染会把顺序改成「图 → 视频 → 音频」——
- * 用户看到的就是「我明明先放的视频」。这里按每条 ref 上的 `order` 合并（老消息没有 order 时按类型兜底）。
- */
-function userMediaOf(block: { images?: LlmImageRef[]; videos?: LlmVideoRef[]; audios?: LlmAudioRef[] }) {
-	const FALLBACK = 1_000_000;
-	const entries = [
-		...(block.images ?? []).map((image) => ({ kind: 'image' as const, order: image.order ?? FALLBACK, image })),
-		...(block.videos ?? []).map((video) => ({ kind: 'video' as const, order: video.order ?? FALLBACK + 1, video })),
-		...(block.audios ?? []).map((audio) => ({ kind: 'audio' as const, order: audio.order ?? FALLBACK + 2, audio })),
-	];
-	return entries.sort((a, b) => a.order - b.order);
-}
 
 /** 音频那行小字：文件名 · 格式 · 时长（时长拿不到就省略） */
 function audioMeta(audio: LlmAudioRef): string {
@@ -556,12 +541,12 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 							<Show when={user().content?.trim()}>
 								<div>{user().content}</div>
 							</Show>
-							{/* 媒体按**添加时的原始顺序**混排（图片 / 视频 / 音频可以交错），与发给模型、清单编号完全一致 */}
-							<Show when={userMediaOf(user()).length > 0}>
+							{/* 附件按添加顺序渲染（图片 / 视频 / 音频可交错），与发给模型、清单编号完全一致 */}
+							<Show when={user().attachments?.length}>
 								<div class={styles['user-media']}>
-									<For each={userMediaOf(user())}>{(entry) => (
+									<For each={user().attachments}>{(attachment) => (
 										<Switch>
-											<Match when={entry.kind === 'image' ? (entry as { kind: 'image'; image: LlmImageRef }).image : null}>
+											<Match when={attachment.kind === 'image' ? attachment : null}>
 												{(img) => (
 													<a
 														class={styles['user-image']}
@@ -576,7 +561,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 												)}
 											</Match>
 											{/* 视频按所选编码转好后存在会话附件目录里；<video> 直接读这份 mp4，不设 poster */}
-											<Match when={entry.kind === 'video' ? (entry as { kind: 'video'; video: LlmVideoRef }).video : null}>
+											<Match when={attachment.kind === 'video' ? attachment : null}>
 												{(video) => (
 													<div class={styles['user-video']} title={`${video().name} · ${video().codec}`}>
 														<video
@@ -591,7 +576,7 @@ export default function RenderTreeView(props: { tree: RenderAgentNode; openState
 												)}
 											</Match>
 											{/* 音频不压缩，<audio> 直接读原始字节那份产物 */}
-											<Match when={entry.kind === 'audio' ? (entry as { kind: 'audio'; audio: LlmAudioRef }).audio : null}>
+											<Match when={attachment.kind === 'audio' ? attachment : null}>
 												{(audio) => (
 													<div class={styles['user-audio']} title={`${audio().name} · ${audio().mime}`}>
 														<audio src={getAttachmentUrl(props.convId, audio().file)} controls preload="metadata" />
