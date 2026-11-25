@@ -118,9 +118,12 @@ export interface AppRPC {
              * 前端报告退场进度（全程只有这一条，别再为每个时点加一条 RPC）。
              *   'collapse' = 外壳开始收、画面已进入尾声 → 主进程先停会话与 Service
              *   'finished' = 动画放完 → 主进程关窗口、退进程
+             *   'cancel'   = 画面上的打断按钮按了（外壳已还原之后才发这条）→ 主进程别关窗口。
+             *                只在收到过 'collapse' 之前有效；进第二阶段后前端会撤掉按钮，
+             *                这条即便误发也会被主进程忽略
              */
             exitStage: {
-                params: { stage: 'collapse' | 'finished' };
+                params: { stage: 'collapse' | 'finished' | 'cancel' };
                 response: RpcResult<void>;
             };
         };

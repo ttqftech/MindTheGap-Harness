@@ -6,11 +6,11 @@
  * 外壳：宽度不动，**上下同时压扁**到 0 —— 门缝被压成一条水平线。
  */
 
-import { createSignal } from 'solid-js';
-import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { createSignal, Show } from 'solid-js';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './gate.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 玻璃门合拢 */
 const CLOSE_MS = 2200;
@@ -30,7 +30,7 @@ const SOUNDS: SynthEvent[] = [
 type Stage = 'open' | 'closing';
 const [stage, setStage] = createSignal<Stage>('open');
 
-function Gate() {
+function Gate(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			{/* 门后：掠过的车厢灯 */}
@@ -51,6 +51,11 @@ function Gate() {
 			<div class={styles.seam} />
 
 			<div class={styles.sign}>车门关闭 · DOORS CLOSING</div>
+
+			{/* 门框上的紧急解锁盒：红蘑菇头朝下，撑住这扇门 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>撑住门</button>
+			</Show>
 		</div>
 	);
 }
@@ -61,9 +66,10 @@ const theme: ExitTheme = {
 	desc: '站台屏蔽门合拢，窗口上下同时压成一条线',
 	Component: Gate,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('open');
-		await playSynth(SOUNDS, CUE_MS);
+		playSynth(SOUNDS);
+		await sleep(CUE_MS, signal);
 
 		setStage('closing');
 		// 上下同时压：高度每少 2px，top 就下移 1px，宽度自始至终不动

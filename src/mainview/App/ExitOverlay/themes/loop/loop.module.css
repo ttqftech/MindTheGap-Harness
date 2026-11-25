@@ -196,3 +196,62 @@
 		opacity: 0;
 	}
 }
+
+/* ---------- 打断按钮：环心那枚调度盘 ---------- */
+
+/* 螺旋收的就是中心，按钮也就长在中心 —— 它是最后一个被拧进去的东西 */
+.interrupt {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 6;
+	pointer-events: auto;
+	width: 17vh;
+	height: 17vh;
+	max-width: 210px;
+	max-height: 210px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	/* 这里的内边距一律给 px：百分号是相对**包含块宽度**（整个 overlay）算的，
+	   12% 在宽窗口下会把圆盘挤成一条椭圆，字竖着一列排下来 */
+	padding: 0 14px;
+	border-radius: 50%;
+	border: 2px solid rgba(121, 220, 255, 0.45);
+	background: radial-gradient(circle at 50% 40%, rgba(18, 34, 52, 0.94) 0%, rgba(3, 7, 12, 0.97) 70%);
+	box-shadow: 0 0 42px rgba(121, 220, 255, 0.2), inset 0 0 28px rgba(121, 220, 255, 0.12);
+	color: #cfe9ff;
+	font-family: var(--font-mono);
+	font-size: clamp(12px, 2vh, 18px);
+	letter-spacing: 0.12em;
+	line-height: 1.7;
+	text-align: center;
+	cursor: pointer;
+	transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+
+	/* 一圈慢慢转的虚线轨道，与环线同一套语汇 */
+	&::before {
+		content: '';
+		position: absolute;
+		inset: 8%;
+		border-radius: 50%;
+		border: 1px dashed rgba(121, 220, 255, 0.34);
+		animation: interruptOrbit 11s linear infinite;
+	}
+
+	&:hover {
+		border-color: #79dcff;
+		box-shadow: 0 0 60px rgba(121, 220, 255, 0.38), inset 0 0 32px rgba(121, 220, 255, 0.2);
+	}
+
+	&:active {
+		transform: translate(-50%, -50%) scale(0.94);
+	}
+}
+
+@keyframes interruptOrbit {
+	to {
+		transform: rotate(360deg);
+	}
+}

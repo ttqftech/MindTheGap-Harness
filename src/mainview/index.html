@@ -589,13 +589,22 @@
         var layer = document.getElementById('boot-imgs');
 
         // 一张贴图：随机尺寸 + 随机位置，淡入→全程放大→淡出（动画本体在 CSS）
+        // 象限限制：以视口中轴（50vw / 50vh）为界把区域分成四象限，连续两次的中心不得落在同一象限
+        var lastQuad = -1; // -1 = 还没有上一次，第一次随便抽
         function spawnImg() {
           var el = document.createElement('img');
           el.className = 'boot-img';
           el.src = nextImg();
-          el.style.height = 20 + Math.random() * 30 + 'vh';
-          el.style.left = 12 + Math.random() * 76 + 'vw';
-          el.style.top = 14 + Math.random() * 72 + 'vh';
+          el.style.height = 25 + Math.random() * 40 + 'vh';
+          var left, top, quad;
+          do {
+            left = 12 + Math.random() * 76;
+            top = 14 + Math.random() * 72;
+            quad = (left < 50 ? 0 : 1) + (top < 50 ? 0 : 2);
+          } while (quad === lastQuad); // 与上次同象限就重抽，直到落在别的象限为止
+          lastQuad = quad;
+          el.style.left = left + 'vw';
+          el.style.top = top + 'vh';
           layer.appendChild(el);
           setTimeout(function () {
             el.remove();

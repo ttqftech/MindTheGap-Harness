@@ -188,3 +188,53 @@
 		opacity: 0;
 	}
 }
+
+/* ---------- 打断按钮：扶梯口的急停钥匙盒 ---------- */
+
+/* 这一段顶边钉死、底边往上追，所以贴顶部左侧的盒子留在画面里最久 */
+.interrupt {
+	position: absolute;
+	left: 7vh;
+	top: 6vh;
+	z-index: 6;
+	pointer-events: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 12px;
+	padding: 11px 18px 11px 12px;
+	border-radius: 6px;
+	border: 1px solid rgba(120, 92, 20, 0.5);
+	background: linear-gradient(180deg, #e9c34d 0%, #b3902b 100%);
+	box-shadow: 0 16px 34px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+	color: #1d1a12;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	font-weight: 700;
+	letter-spacing: 0.16em;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: filter 0.16s ease, transform 0.14s ease, box-shadow 0.16s ease;
+
+	/* 红钥匙头：中间那道槽就是可拧的方向 */
+	&::before {
+		content: '';
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		background:
+			linear-gradient(90deg, transparent 45%, rgba(20, 18, 12, 0.85) 45% 55%, transparent 55%),
+			radial-gradient(circle at 34% 30%, #ff8f8f 0%, #d3222c 58%, #7a0f15 100%);
+		box-shadow: 0 0 0 3px rgba(20, 18, 12, 0.85), inset 0 -2px 4px rgba(0, 0, 0, 0.4);
+		transition: transform 0.14s ease;
+	}
+
+	&:hover {
+		filter: brightness(1.09);
+		box-shadow: 0 18px 38px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 0 30px rgba(255, 210, 60, 0.3);
+	}
+
+	/* 拧一下：槽转 90°，扶梯就停 */
+	&:active::before {
+		transform: rotate(90deg);
+	}
+}

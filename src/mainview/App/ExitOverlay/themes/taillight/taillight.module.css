@@ -199,3 +199,45 @@
 		opacity: 0;
 	}
 }
+
+/* ---------- 打断按钮：右下角那枚追灯的 ---------- */
+
+/* 窗口正是往右下角收没的，这一角最后才暗 —— 按钮平时压得很暗，像远处还剩一点尾灯 */
+.interrupt {
+	position: absolute;
+	right: 8vh;
+	bottom: 8vh;
+	z-index: 6;
+	pointer-events: auto;
+	padding: 10px 20px 11px;
+	border-radius: 999px;
+	border: 1px solid rgba(255, 70, 70, 0.36);
+	background: rgba(18, 8, 10, 0.7);
+	color: rgba(255, 176, 176, 0.78);
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	letter-spacing: 0.3em;
+	white-space: nowrap;
+	box-shadow: 0 0 26px rgba(255, 40, 40, 0.16);
+	cursor: pointer;
+	transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.16s ease;
+
+	/* 外圈虚线：灯在视网膜上留下的那点晕 */
+	&::before {
+		content: '';
+		position: absolute;
+		inset: -6px;
+		border-radius: 999px;
+		border: 1px dashed rgba(255, 70, 70, 0.26);
+	}
+
+	&:hover {
+		color: #ffe2e2;
+		border-color: #ff5a5a;
+		box-shadow: 0 0 44px rgba(255, 50, 50, 0.45);
+	}
+
+	&:active {
+		transform: scale(0.97);
+	}
+}

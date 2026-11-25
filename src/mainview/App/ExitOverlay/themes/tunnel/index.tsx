@@ -6,12 +6,12 @@
  * 外壳：7s 后 4s 内左右同时收窄到 0 —— 宽度归零 = 列车驶进隧道尽头。
  */
 
-import { createSignal, For } from 'solid-js';
-import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { createSignal, For, Show } from 'solid-js';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playMusic } from '@mainview/App/ExitOverlay/audio';
 import exitMusicUrl from '@mainview/App/ExitOverlay/assets/mtr-close 带噪音_缩混.flac';
 import styles from './tunnel.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 隧道环（由小放大淡出，模拟一节节穿过的照明环） */
 const RING_COUNT = 9;
@@ -21,7 +21,7 @@ const STATIONS = ['小学', '高中', '大学', '硕士', '博士', '失业', '�
 type Stage = 'arrive' | 'depart';
 const [stage, setStage] = createSignal<Stage>('arrive');
 
-function Tunnel() {
+function Tunnel(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			{/* 隧道 */}
@@ -74,6 +74,11 @@ function Tunnel() {
 				<div class={styles.safetyLine} />
 				<div class={styles.platformEdge} />
 			</div>
+
+			{/* 站台上的急停：把这次关门按回去 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>阻止关门</button>
+			</Show>
 		</div>
 	);
 }
@@ -84,10 +89,11 @@ const theme: ExitTheme = {
 	desc: '列车进站报站，窗口左右同时收成一条缝',
 	Component: Tunnel,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('arrive');
-		// 这首曲子的第 7 秒进「离站」段，到那儿才开始收窗口（全曲 11.2s，收 4s 正好赶在结束前）
-		await playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 });
+		playMusic(exitMusicUrl, { volume: 0.85 });
+		// 第 7 秒进「离站」段，到那儿才开始收窗口（全曲 11.2s，收 4s 正好赶在结束前）
+		await sleep(7000, signal);
 
 		setStage('depart');
 		// 左右同时收窄：宽度每少 2px，left 就右移 1px，高度不动

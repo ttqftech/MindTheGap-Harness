@@ -80,7 +80,7 @@ interface RpcApi {
 		windowSetFrame: RequestFn<{ x: number; y: number; width: number; height: number }, RpcResult<void>>;
 		windowSetFrameUnlocked: RequestFn<{ unlocked: boolean }, RpcResult<void>>;
 		windowSetFullScreen: RequestFn<{ fullScreen: boolean }, RpcResult<void>>;
-		exitStage: RequestFn<{ stage: 'collapse' | 'finished' }, RpcResult<void>>;
+		exitStage: RequestFn<{ stage: 'collapse' | 'finished' | 'cancel' }, RpcResult<void>>;
 	};
 	send: {
 		log: (payload: { level: 'info' | 'warn' | 'error'; msg: string }) => void;

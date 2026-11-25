@@ -6,11 +6,11 @@
  * 外壳：**向右上角**收 —— x 增大、y 不动、宽高同时归零，像整张图被吸进终点那个点。
  */
 
-import { createSignal, For } from 'solid-js';
-import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { createSignal, For, Show } from 'solid-js';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './schematic.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 线路折点（SVG 用户坐标，viewBox 1200×600） */
 const STOPS = [
@@ -41,7 +41,7 @@ const SOUNDS: SynthEvent[] = [
 type Stage = 'trace' | 'collapse';
 const [stage, setStage] = createSignal<Stage>('trace');
 
-function Schematic() {
+function Schematic(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.grid} />
@@ -65,6 +65,11 @@ function Schematic() {
 
 			<div class={styles.title}>LINE MAP · 线路图</div>
 			<div class={styles.terminus}>TERMINUS · MindTheGap</div>
+
+			{/* 终点那个点上方盖一枚作废章：整张图就别往那儿收了 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>不去终点</button>
+			</Show>
 		</div>
 	);
 }
@@ -75,9 +80,10 @@ const theme: ExitTheme = {
 	desc: '光点跑到线路终点，窗口向右上角收成一点',
 	Component: Schematic,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('trace');
-		await playSynth(SOUNDS, CUE_MS);
+		playSynth(SOUNDS);
+		await sleep(CUE_MS, signal);
 
 		setStage('collapse');
 		// 右上角锚定：x 一路右移、y 不动，宽高同时收缩 → 收进右上角那个点

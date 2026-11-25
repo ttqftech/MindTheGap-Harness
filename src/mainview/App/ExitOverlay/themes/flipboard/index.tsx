@@ -6,11 +6,11 @@
  * 外壳：两段式 —— 先左右收成「一块牌」的宽度，停顿，再上下同时压扁到 0。
  */
 
-import { createSignal, For } from 'solid-js';
+import { createSignal, For, Show } from 'solid-js';
 import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './flipboard.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 const ROWS = [
 	{ text: 'TERMINUS 终点站', cls: 'rowLabel' },
@@ -41,7 +41,7 @@ const CUE_MS = 3200;
 type Stage = 'flip' | 'collapse';
 const [stage, setStage] = createSignal<Stage>('flip');
 
-function Flipboard() {
+function Flipboard(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.rail} />
@@ -67,6 +67,11 @@ function Flipboard() {
 			</div>
 
 			<div class={styles.footer}>末班车 · 请全体乘客下车　MIND THE GAP</div>
+
+			{/* 牌箱外挂着的一格备用牌：按下去把它翻回来 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>扣下末班</button>
+			</Show>
 		</div>
 	);
 }
@@ -77,9 +82,10 @@ const theme: ExitTheme = {
 	desc: '机械翻牌翻出终点站，窗口先收成一块牌再压扁',
 	Component: Flipboard,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('flip');
-		await playSynth(SOUNDS, CUE_MS);
+		playSynth(SOUNDS);
+		await sleep(CUE_MS, signal);
 
 		setStage('collapse');
 		// 一段：左右同时收到「一块牌」的宽度
@@ -89,7 +95,7 @@ const theme: ExitTheme = {
 			return { x: f.x + (f.width - width) / 2, y: f.y, width, height: f.height };
 		}, 1700);
 
-		await sleep(320);
+		await sleep(320, signal);
 
 		// 二段：上下同时压扁。起点是一段结束时的外框（由 f0 推得，不读实时 frame，避免累积误差）
 		await shell.run((t, f) => {

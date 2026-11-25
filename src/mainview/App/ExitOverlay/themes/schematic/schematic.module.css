@@ -194,3 +194,47 @@
 		opacity: 0;
 	}
 }
+
+/* ---------- 打断按钮：终点位上盖的一枚作废章 ---------- */
+
+/* 这一主题往右上角收，章就盖在那个角上：整张图被吸进终点之前，先把它按停 */
+.interrupt {
+	position: absolute;
+	right: 5vh;
+	top: 5vh;
+	z-index: 6;
+	pointer-events: auto;
+	padding: 9px 16px 10px;
+	border-radius: 3px;
+	border: 1px dashed rgba(127, 216, 255, 0.6);
+	background: rgba(6, 22, 36, 0.5);
+	color: #bfe6ff;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	letter-spacing: 0.28em;
+	white-space: nowrap;
+	cursor: pointer;
+	transform: rotate(-1.4deg);
+	transition: border-color 0.18s ease, border-style 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+
+	/* 第二行是工程图上的批注口吻 */
+	&::after {
+		content: 'ABORT COLLAPSE';
+		display: block;
+		margin-top: 3px;
+		font-size: var(--fs-xxs);
+		letter-spacing: 0.18em;
+		color: rgba(127, 216, 255, 0.5);
+	}
+
+	&:hover {
+		border-style: solid;
+		border-color: #7fd8ff;
+		background: rgba(12, 42, 66, 0.7);
+		box-shadow: 0 0 30px rgba(127, 216, 255, 0.28), inset 0 0 24px rgba(127, 216, 255, 0.1);
+	}
+
+	&:active {
+		transform: rotate(-1.4deg) scale(0.96);
+	}
+}

@@ -6,18 +6,18 @@
  * 外壳：**顶边钉死，底边一路向上追** —— 单向收高度（屏蔽门是上下对压，这个是只从下面收）。
  */
 
-import { createSignal } from 'solid-js';
-import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { createSignal, Show } from 'solid-js';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playMusic } from '@mainview/App/ExitOverlay/audio';
 import exitMusicUrl from '@mainview/App/ExitOverlay/assets/mtr-close 带噪音_缩混.flac';
 import styles from './escalator.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 本主题的画面阶段：由自己的 run() 推进，没有全局阶段这回事 */
 type Stage = 'ride' | 'rise';
 const [stage, setStage] = createSignal<Stage>('ride');
 
-function Escalator() {
+function Escalator(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.shaft}>
@@ -35,6 +35,11 @@ function Escalator() {
 			</div>
 
 			<div class={styles.tip}>请握紧扶手 · HOLD THE HANDRAIL</div>
+
+			{/* 扶梯口的急停钥匙盒：黄底红钥匙，顶边钉死所以它一直留在画面里 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>我要下去</button>
+			</Show>
 		</div>
 	);
 }
@@ -45,9 +50,10 @@ const theme: ExitTheme = {
 	desc: '上行扶梯把人送出站，窗口底边一路向上收',
 	Component: Escalator,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('ride');
-		await playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 });
+		playMusic(exitMusicUrl, { volume: 0.85 });
+		await sleep(7000, signal);
 
 		setStage('rise');
 		// y 不动 = 顶边钉死；高度一路减到 0，视觉上就是整扇窗被上头「吞」上去

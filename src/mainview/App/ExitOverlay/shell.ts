@@ -28,8 +28,27 @@ export const EASE = {
 
 // #endregion
 
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * 主题时间轴用的等待。带 signal：退场被打断时立刻 reject(AbortError)，
+ * 主题那条链就在这个 await 上退栈 —— 不会在下一轮退场进行到一半时醒过来改 stage。
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(new DOMException('退场已被打断', 'AbortError'));
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const abort = () => {
+			clearTimeout(timer);
+			reject(new DOMException('退场已被打断', 'AbortError'));
+		};
+		timer = setTimeout(() => {
+			signal?.removeEventListener('abort', abort);
+			resolve();
+		}, ms);
+		signal?.addEventListener('abort', abort, { once: true });
+	});
 }
 
 /** 原生窗口最小尺寸给 1：给 0 有些平台的窗口管理会直接把窗口销毁，动画就断了 */
@@ -47,7 +66,12 @@ async function getWindowFrame(): Promise<Frame> {
 	return { x: 0, y: 0, width: 1280, height: 800 };
 }
 
-export async function createShellAnimator(preview: boolean): Promise<ShellAnimator> {
+export async function createShellAnimator(
+	preview: boolean,
+	signal?: AbortSignal,
+	/** 外壳第一次动起来时打一次：编排层据此撤掉打断按钮（此时会话与 Service 已停，不能再反悔） */
+	onFirstMove?: () => void,
+): Promise<ShellAnimator> {
 	/**
 	 * 起点的外框**在第一次 run 时才读**：主进程是先 unmaximize 再通知前端的，
 	 * 最大化状态下读到的外框是无效值（窗口由 shell 托管，setFrame 不生效）。
@@ -58,21 +82,26 @@ export async function createShellAnimator(preview: boolean): Promise<ShellAnimat
 	/** 本次退场是否解过锁（主进程侧解/还原都是幂等的，这里只是省一次 RPC） */
 	let unlocked = false;
 
-	/** 外壳是否已经开始动（= 已经通知主进程「可以先停后端了」） */
+	/** 外壳是否已经开始动（= 已通知主进程「可以先停后端了」，同时也就是「不再可打断」的分界） */
 	let moved = false;
 
 	return {
 		preview,
 
 		async run(shape: FrameShape, durationMs: number) {
+			// 打断后这一段立刻停手：await 前后的检查各挡一道
+			if (signal?.aborted) return;
+
 			const f0 = await frame();	// 动画开始时窗口的外形尺寸
 			const end = shape(1, f0);	// 动画结束时窗口的外形尺寸
 
 			// 外壳第一次动起来 = 退场进入尾声（该演的画面已经演完），先让主进程停会话与后端，窗口留着放完剩下的动画。
 			// 不 await：停后端不耽误这一帧。预览只是看效果、应用还要继续用，绝不能真去停后端。
-			if (!preview && !moved) {
+			// 同一刻撤掉打断按钮：后端一停会话就找不回了，这次关闭不能再反悔（预览同样撤，两边表现一致）。
+			if (!moved) {
 				moved = true;
-				void rpc.request.exitStage({ stage: 'collapse' });
+				onFirstMove?.();
+				if (!preview) void rpc.request.exitStage({ stage: 'collapse' });
 			}
 
 			if (!unlocked && (end.width < 200 || end.height < 120)) {
@@ -87,6 +116,11 @@ export async function createShellAnimator(preview: boolean): Promise<ShellAnimat
 			return new Promise<void>((resolve) => {
 				const t0 = Date.now();
 				const timer = setInterval(() => {
+					if (signal?.aborted) {
+						clearInterval(timer);
+						resolve();
+						return;
+					}
 					const t = Math.min(1, (Date.now() - t0) / durationMs);
 					// 不等回程：逐帧 RPC 排队等待会让节奏越走越慢
 					void rpc.request.windowSetFrame(clamp(shape(t, f0)));
@@ -107,7 +141,9 @@ export async function createShellAnimator(preview: boolean): Promise<ShellAnimat
 					/* 预览收尾失败无所谓：下次预览会重新解/还原 */
 				}
 			}
-			void rpc.request.windowSetFrame(clamp(await frame()));
+			// 等这一条落地再返回：打断流程紧接着要告诉主进程「可以取消关闭了」，
+			// 主进程要在外框归位之后才把窗口最大化回去，两条 RPC 抢顺序会打架。
+			await rpc.request.windowSetFrame(clamp(await frame()));
 		},
 	};
 }

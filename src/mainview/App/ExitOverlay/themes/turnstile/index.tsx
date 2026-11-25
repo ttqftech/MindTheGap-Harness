@@ -6,11 +6,11 @@
  * 外壳：**宽高全程不变，整个窗口匀速向左滑出屏幕** —— 唯一一个「位移型」主题。
  */
 
-import { createSignal } from 'solid-js';
-import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { createSignal, Show } from 'solid-js';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './turnstile.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 刷卡到放行 */
 const PASS_MS = 1500;
@@ -34,7 +34,7 @@ const SOUNDS: SynthEvent[] = [
 type Stage = 'check' | 'leave';
 const [stage, setStage] = createSignal<Stage>('check');
 
-function Turnstile() {
+function Turnstile(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.hall} />
@@ -68,6 +68,11 @@ function Turnstile() {
 				<span class={styles.capA}>请验票 · INSERT TICKET</span>
 				<span class={styles.capB}>通行 · GO THROUGH</span>
 			</div>
+
+			{/* 站台侧的求助按钮：按下去机身就不认这张卡 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>拒绝出站</button>
+			</Show>
 		</div>
 	);
 }
@@ -78,9 +83,10 @@ const theme: ExitTheme = {
 	desc: '刷卡出站，窗口整体向左滑出屏幕',
 	Component: Turnstile,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('check');
-		await playSynth(SOUNDS, CUE_MS);
+		playSynth(SOUNDS);
+		await sleep(CUE_MS, signal);
 
 		setStage('leave');
 		// 两段：先原地顿一下（像闸机犹豫了半拍），再匀速向左滑出屏幕。

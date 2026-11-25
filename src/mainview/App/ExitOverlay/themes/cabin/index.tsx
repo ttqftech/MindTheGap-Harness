@@ -6,12 +6,12 @@
  * 外壳：先**撑大扑面**（1.1 倍，像冲出隧道口那一刻），再急速收成中心一点。
  */
 
-import { createSignal, For } from 'solid-js';
-import { EASE } from '@mainview/App/ExitOverlay/shell';
+import { createSignal, For, Show } from 'solid-js';
+import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playMusic } from '@mainview/App/ExitOverlay/audio';
 import exitMusicUrl from '@mainview/App/ExitOverlay/assets/mtr-close 带噪音_缩混.flac';
 import styles from './cabin.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 窗外掠过的壁灯数量 */
 const LAMP_COUNT = 7;
@@ -23,7 +23,7 @@ const COLLAPSE_MS = 2700;
 type Stage = 'ride' | 'burst';
 const [stage, setStage] = createSignal<Stage>('ride');
 
-function Cabin() {
+function Cabin(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			{/* 车窗：窗外的一切都发生在这一个框里 */}
@@ -46,6 +46,11 @@ function Cabin() {
 			</div>
 
 			<div class={styles.caption}>本次列车开往 MindTheGap · NEXT MindTheGap</div>
+
+			{/* 车门边的紧急解锁手柄：竖着的一条，顶上黄黑带 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>还没到站</button>
+			</Show>
 		</div>
 	);
 }
@@ -56,9 +61,10 @@ const theme: ExitTheme = {
 	desc: '车厢内向外看，冲出隧道口后窗口先撑大再收成一点',
 	Component: Cabin,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('ride');
-		await playMusic(exitMusicUrl, { cueSeconds: 7, volume: 0.85 });
+		playMusic(exitMusicUrl, { volume: 0.85 });
+		await sleep(7000, signal);
 
 		setStage('burst');
 		// 两段：先原地撑大 10%（画面扑面而来，窗口略微超出屏幕），再从撑大态急速收成中心一点

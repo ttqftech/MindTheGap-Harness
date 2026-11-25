@@ -1,38 +1,43 @@
 /**
  * 退场声音 —— 每个主题一份，节奏也由主题定
  *
- * 有音频文件的主题播文件（在自己的 cue 秒数上触发外壳动效）；
- * 没有文件的用 WebAudio 现场合成，免得为了几秒钟退场再背一个二进制资源。
+ * 有音频文件的主题播文件，没有文件的用 WebAudio 现场合成，免得为了几秒钟退场再背一个二进制资源。
+ * 两个函数都是「发射后不管」：只负责发声，立刻返回；什么时候开始收窗口由主题自己 `await sleep(ms, signal)` 决定。
+ *
+ * 正在响的都记在 liveAudios / liveContexts 里：用户按了画面上的打断按钮，
+ * 编排层调 stopExitAudio() 一次性掐掉 —— 动画停了还继续放关门音是最刺眼的穿帮。
  */
+
+// #region 在播清单
+
+const liveAudios = new Set<HTMLAudioElement>();
+const liveContexts = new Set<AudioContext>();
+
+/** 掐掉本轮退场里所有还在响的声音（没在响时是空操作，随时可调） */
+export function stopExitAudio(): void {
+	for (const audio of liveAudios) audio.pause();
+	liveAudios.clear();
+	for (const ctx of liveContexts) void ctx.close().catch(() => { /* 已经关了 */ });
+	liveContexts.clear();
+}
+
+// #endregion
 
 // #region 音乐
 
 /**
- * 播一段音乐，**在 cueSeconds 处 resolve**（音乐本身继续放到结束）。
- * 主题通常这样用：`await playMusic(...)` 之后才开始收窗口 —— 于是「什么时候开始收」落在音乐时间轴上。
+ * 播一段音乐，立刻返回（音乐在后台自己放到结束）。
+ * 主题通常在 `playMusic(...)` 之后 `await sleep(cueMs, signal)` —— 「什么时候开始收窗口」落在调用方的时间轴上。
  *
- * ⚠️ 没用户手势时 play() 被拒、currentTime 根本不走，所以另有按时钟的兜底；
- *    声音响不响都不影响节奏，否则「没声音就关不掉应用」。
+ * ⚠️ 没用户手势时 play() 被拒、声音根本不响，但这不影响节奏：节奏由调用方的 sleep 决定，
+ *    否则「没声音就关不掉应用」。
  */
-export function playMusic(src: string, opts: { cueSeconds: number; volume?: number }): Promise<void> {
-	return new Promise((resolve) => {
-		const audio = new Audio(src);
-		audio.volume = opts.volume ?? 0.85;
-
-		let cued = false;
-		const cue = () => {
-			if (cued) return;
-			cued = true;
-			resolve();
-		};
-
-		audio.addEventListener('timeupdate', () => {
-			if (audio.currentTime >= opts.cueSeconds) cue();
-		});
-		setTimeout(cue, opts.cueSeconds * 1000);
-
-		void audio.play().catch((e) => console.warn('[Exit] 退场音乐被浏览器策略拦截，退场按时钟进行:', e));
-	});
+export function playMusic(src: string, opts: { volume?: number } = {}): void {
+	const audio = new Audio(src);
+	audio.volume = opts.volume ?? 0.85;
+	liveAudios.add(audio);
+	audio.addEventListener('ended', () => liveAudios.delete(audio));
+	void audio.play().catch((e) => console.warn('[Exit] 退场音乐被浏览器策略拦截，退场按时钟进行:', e));
 }
 
 // #endregion
@@ -157,20 +162,24 @@ function blip(ctx: AudioContext, e: SynthEvent) {
 	}
 }
 
-/** 按事件表合成；返回的 Promise 在 cueAtMs 处 resolve（合成失败也照 resolve） */
-export function playSynth(events: SynthEvent[], cueAtMs: number): Promise<void> {
-	return new Promise((resolve) => {
-		try {
-			const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-			const ctx = new Ctor();
-			void ctx.resume();
-			for (const e of events) blip(ctx, e);
-		} catch (e) {
-			console.warn('[Exit] 合成音不可用，退场按时钟进行:', e);
-		}
+/** 按事件表合成，立刻返回（所有事件已排期进 AudioContext，调用方自己 sleep 等 cue 点） */
+export function playSynth(events: SynthEvent[]): void {
+	try {
+		const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+		const ctx = new Ctor();
+		void ctx.resume();
+		for (const e of events) blip(ctx, e);
 
-		setTimeout(resolve, cueAtMs);
-	});
+		// 记进在播清单直到最后一个事件响完：中途被打断就 close()，已排期的事件一并作废
+		liveContexts.add(ctx);
+		const lastMs = events.reduce((max, e) => Math.max(max, e.at + (e.durationMs ?? 260)), 0);
+		setTimeout(() => {
+			liveContexts.delete(ctx);
+			void ctx.close().catch(() => { /* 已被打断时关过了 */ });
+		}, lastMs + 300);
+	} catch (e) {
+		console.warn('[Exit] 合成音不可用，退场按时钟进行:', e);
+	}
 }
 
 // #endregion

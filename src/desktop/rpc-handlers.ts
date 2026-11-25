@@ -178,8 +178,9 @@ export const windowHandlers = {
 	 * 前端报告退场进度。只有这一个入口（不再为每个时点加一条 RPC）：
 	 *   collapse = 外壳开始收 → 先停会话与 Service，窗口留着放完动画
 	 *   finished = 动画放完 → 关窗、退进程
+	 *   cancel   = 画面上的打断按钮按了 → 别关窗（只在 collapse 之前认，详见 exitSequence）
 	 */
-	exitStage: (params: { stage: 'collapse' | 'finished' }): RpcResult<void> =>
+	exitStage: (params: { stage: 'collapse' | 'finished' | 'cancel' }): RpcResult<void> =>
 		safe(() => {
 			reportExitStage(params.stage);
 		}),

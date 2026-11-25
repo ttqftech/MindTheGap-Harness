@@ -4,8 +4,12 @@
  * 前端全程只用一条 RPC 报进度（`exitStage`），主进程不需要知道有几个主题、几段动画：
  *   collapse → 外壳开始收了（画面已进入尾声）：先停会话 + 停 Service，窗口留着让动画放完
  *   finished → 动画放完：关窗口、退进程
+ *   cancel   → 用户按了画面上的打断按钮（外壳已还原）：回到 idle，窗口留着别关
  *
- * 这里对原生窗口只碰「最大化还原」和「关窗」，动效全靠前端（windowGetFrame / windowSetFrame）。
+ * ⚠️ 打断只在第二阶段之前有效：一旦收到过 collapse（后端已经停了、会话也取消了）就不再认 cancel。
+ *    前端同步在 collapse 那一刻撤掉按钮，两边各挡一道。
+ *
+ * 这里对原生窗口只碰「最大化还原」「关窗」和「打断后把最大化还原回去」，动效全靠前端（windowGetFrame / windowSetFrame）。
  *
  * 拦截原理：electrobun 的 will-close 是 native 的**同步**回调（windowShouldCloseCallback 里
  * emit 完立刻读 event.response.allow 决定要不要 closeWindow），所以「不许关」必须同步写，
@@ -25,6 +29,12 @@ type ExitState = 'idle' | 'exiting' | 'closing';
 
 let state: ExitState = 'idle';
 let win: BrowserWindow | null = null;
+
+/** 看门狗句柄：退场被打断要撤掉，否则它会把下一次退场中途掐死 */
+let watchdog: ReturnType<typeof setTimeout> | null = null;
+
+/** 关闭事件到来时窗口是不是最大化的（打断后要还回去；frame 由前端 shell.restore 还原） */
+let wasMaximized = false;
 
 /** 停后端只做一次：collapse 先停一次，finished / 兜底再进来复用同一个 Promise */
 let stoppingBackend: Promise<void> | null = null;
@@ -60,18 +70,38 @@ export function attachExit(window: BrowserWindow, notifyFrontend: () => void) {
 		logMsg('[Exit] 截获关闭事件，交给前端放退场动画');
 
 		// 最大化状态下改 frame 不生效（窗口由 shell 托管），先还原成普通窗口
-		if (window.isMaximized()) window.unmaximize();
+		wasMaximized = window.isMaximized();
+		if (wasMaximized) window.unmaximize();
 
 		notifyFrontend();
-		setTimeout(() => {
+		watchdog = setTimeout(() => {
 			if (state === 'exiting') finish('前端未上报动画结束');
 		}, EXIT_WATCHDOG_MS);
 	});
 }
 
-/** 前端报进度：外壳开始收 / 动画放完 */
-export function reportExitStage(stage: 'collapse' | 'finished') {
+/** 前端报进度：外壳开始收 / 动画放完 / 被打断按钮取消 */
+export function reportExitStage(stage: 'collapse' | 'finished' | 'cancel') {
 	if (state === 'closing') return;
+
+	if (stage === 'cancel') {
+		// 只在真退场途中认：没在退场就收到 cancel（旧前端 / 预览误报）什么也不该发生
+		// stoppingBackend 非空 = 已进第二阶段（后端停过，会话找不回了），此时打断无效
+		if (state !== 'exiting' || stoppingBackend !== null) return;
+		state = 'idle';
+		if (watchdog) {
+			clearTimeout(watchdog);
+			watchdog = null;
+		}
+		logMsg('[Exit] 收到打断，取消本次关闭');
+
+		// 前端这条是在 shell.restore() 之后才发的，外框已经落回原位，此刻最大化回去不会打架
+		if (wasMaximized) {
+			wasMaximized = false;
+			win?.maximize();
+		}
+		return;
+	}
 
 	if (stage === 'collapse') {
 		// 只在真退场途中接受：没在退场就收到 collapse（旧前端 / 异常路径）不能把后端停了

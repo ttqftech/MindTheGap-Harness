@@ -6,11 +6,11 @@
  * 外壳：**阶梯式收窄** —— 分 5 档从两侧同时收，档间有停顿，像卷帘一档档落下。
  */
 
-import { createSignal, For } from 'solid-js';
+import { createSignal, For, Show } from 'solid-js';
 import { EASE, sleep } from '@mainview/App/ExitOverlay/shell';
 import { playSynth, type SynthEvent } from '@mainview/App/ExitOverlay/audio';
 import styles from './blackout.module.css';
-import type { ExitTheme } from '@mainview/App/ExitOverlay/types';
+import type { ExitTheme, ExitThemeProps } from '@mainview/App/ExitOverlay/types';
 
 /** 收窄的档数（与灯熄灭的盏数一致，一档一声继电器） */
 const STEPS = 5;
@@ -38,7 +38,7 @@ const LAMPS = [0, 1, 2, 3, 4];
 type Stage = 'dim' | 'out';
 const [stage, setStage] = createSignal<Stage>('dim');
 
-function Blackout() {
+function Blackout(props: ExitThemeProps) {
 	return (
 		<div class={styles.root} data-stage={stage()}>
 			<div class={styles.tunnel} />
@@ -66,6 +66,11 @@ function Blackout() {
 			<div class={styles.safety} />
 
 			<div class={styles.closed}>末班车已过 · SERVICE ENDED</div>
+
+			{/* 墙上剩的最后一个开关：把灯重新按亮 */}
+			<Show when={props.interruptible}>
+				<button type="button" class={styles.interrupt} onclick={props.onInterrupt}>别打烊</button>
+			</Show>
 		</div>
 	);
 }
@@ -76,9 +81,10 @@ const theme: ExitTheme = {
 	desc: '站台逐盏熄灯，窗口一档档收窄',
 	Component: Blackout,
 
-	async run({ shell }) {
+	async run({ shell, signal }) {
 		setStage('dim');
-		await playSynth(SOUNDS, CUE_MS);
+		playSynth(SOUNDS);
+		await sleep(CUE_MS, signal);
 
 		setStage('out');
 		// 阶梯式：每档收掉 1/STEPS，档内用 easeOutExpo（「咔」一下到位），档间停一下。
@@ -90,7 +96,7 @@ const theme: ExitTheme = {
 				const width = f.width * (1 - k);
 				return { x: f.x + (f.width - width) / 2, y: f.y, width, height: f.height };
 			}, STEP_MS);
-			await sleep(STEP_GAP_MS);
+			await sleep(STEP_GAP_MS, signal);
 		}
 	},
 };

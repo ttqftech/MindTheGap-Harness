@@ -310,3 +310,51 @@
 		background-position: -72px 0;
 	}
 }
+
+/* ---------- 打断按钮：站台上的急停 ---------- */
+
+/* 钉在正下方居中：外壳是从左右两侧同时收窄的，中间那一条最后才被裁掉，按钮因此留得最久 */
+.interrupt {
+	position: absolute;
+	left: 50%;
+	bottom: 3.4vh;
+	transform: translateX(-50%);
+	z-index: 6;
+	pointer-events: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 20px 8px 9px;
+	border-radius: 999px;
+	border: 1px solid rgba(255, 212, 90, 0.34);
+	background: linear-gradient(180deg, #1a2028 0%, #0a0e13 100%);
+	box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+	color: #ffe9ae;
+	font-family: var(--font-mono);
+	font-size: 15px;
+	letter-spacing: 0.22em;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+
+	/* 红蘑菇头：一圈黑底座 + 自身的光 */
+	&::before {
+		content: '';
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: radial-gradient(circle at 34% 30%, #ff8a8a 0%, #e0232f 55%, #7f1017 100%);
+		box-shadow: 0 0 0 3px #05070a, 0 0 16px rgba(255, 60, 60, 0.7);
+	}
+
+	&:hover {
+		border-color: rgba(255, 212, 90, 0.75);
+		box-shadow: 0 14px 34px rgba(0, 0, 0, 0.65), 0 0 26px rgba(255, 60, 60, 0.28);
+		/* transform 一旦重写就得把居中的位移一起带上 */
+		transform: translateX(-50%) translateY(-2px);
+	}
+
+	&:active {
+		transform: translateX(-50%) translateY(1px) scale(0.97);
+	}
+}
